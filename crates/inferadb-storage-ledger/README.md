@@ -152,8 +152,8 @@ Ledger SDK errors are mapped to `StorageError`:
 Run integration tests against a real Ledger cluster:
 
 ```bash
-# Start Ledger (requires Docker)
-cd crates/inferadb-storage-ledger/docker
+# Start Ledger (requires Docker, run from this crate's directory)
+cd docker
 docker-compose -f docker-compose.integration.yml up -d
 
 # Run tests
