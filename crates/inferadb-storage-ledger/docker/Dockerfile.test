@@ -1,0 +1,39 @@
+# Test runner for Ledger integration tests
+#
+# Uses the official Rust image with all dependencies needed to build and run
+# integration tests against a real Ledger cluster.
+
+FROM rust:1.85-bookworm
+
+# Install protobuf compiler (required for gRPC code generation)
+# and netcat for healthchecks
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    protobuf-compiler \
+    libprotobuf-dev \
+    netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Pre-cache dependencies by copying just the manifests first
+# This creates a cached layer that won't be rebuilt unless Cargo.toml changes
+COPY Cargo.toml Cargo.lock ./
+COPY crates/inferadb-storage/Cargo.toml crates/inferadb-storage/
+COPY crates/inferadb-storage-ledger/Cargo.toml crates/inferadb-storage-ledger/
+
+# Create stub files for dependency caching
+RUN mkdir -p crates/inferadb-storage/src crates/inferadb-storage-ledger/src \
+    && echo "fn main() {}" > crates/inferadb-storage/src/lib.rs \
+    && echo "fn main() {}" > crates/inferadb-storage-ledger/src/lib.rs
+
+# Build dependencies only (cached layer)
+RUN cargo fetch 2>/dev/null || true
+
+# Copy the full source code (will be overwritten by volume mount in dev)
+COPY . .
+
+# Touch source files to invalidate cargo cache for actual code
+RUN find crates -name "*.rs" -exec touch {} \;
+
+# Default command runs the integration tests
+CMD ["cargo", "test", "--package", "inferadb-storage-ledger", "--test", "real_ledger_integration", "--", "--test-threads=1"]

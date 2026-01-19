@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/inferadb-storage",
+    "crates/inferadb-storage-ledger",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/inferadb/inferadb"
+
+[workspace.dependencies]
+# Async
+async-trait = "0.1"
+tokio = { version = "1.41", features = ["time", "sync", "rt"] }
+
+# Data types
+bytes = "1.9"
+
+# Error handling
+thiserror = "2.0"
+
+# Concurrency
+parking_lot = "0.12"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+humantime-serde = "1"
+
+# Logging
+tracing = "0.1"
+
+# Encoding
+hex = "0.4"
+
+# gRPC
+tonic = "0.14"
+
+# Error handling
+snafu = "0.8"
+
+# Testing
+criterion = { version = "0.5", features = ["async_tokio"] }
+rand = "0.8"

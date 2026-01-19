@@ -1,0 +1,105 @@
+# Ledger Integration Test Environment
+# This setup provides a single-node Ledger cluster for running integration tests.
+# NOT FOR PRODUCTION USE
+#
+# Usage:
+#   docker-compose -f docker-compose.integration.yml up -d ledger
+#   docker-compose -f docker-compose.integration.yml run --rm test-runner
+#
+# Or with the helper script:
+#   ./run-integration-tests.sh
+
+services:
+  # Single-node Ledger cluster for integration testing
+  ledger:
+    build:
+      context: ../../../../ledger
+      dockerfile: Dockerfile
+    container_name: inferadb-ledger-test
+    hostname: ledger-server
+    networks:
+      - ledger-test-network
+    ports:
+      # gRPC port for the test runner
+      - "50051:50051"
+      # Metrics port (optional, for debugging)
+      - "9091:9090"
+    environment:
+      # Single-node bootstrap mode (auto-initializes on first start)
+      INFERADB__LEDGER__BOOTSTRAP_EXPECT: "1"
+      INFERADB__LEDGER__LISTEN_ADDR: "0.0.0.0:50051"
+      INFERADB__LEDGER__METRICS_ADDR: "0.0.0.0:9090"
+      INFERADB__LEDGER__DATA_DIR: "/var/lib/ledger"
+      # Logging
+      RUST_LOG: "info,inferadb_ledger_server=debug"
+    volumes:
+      # Named volume for persistence across test runs
+      - ledger-data:/var/lib/ledger
+    healthcheck:
+      # Use grpc_health_probe to check if the server is ready
+      # For now, just check if the process is running and port is listening
+      test: ["CMD-SHELL", "nc -z localhost 50051 || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    # Resource limits to prevent interference with host
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1G
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+
+  # Test runner for inferadb-storage-ledger integration tests
+  test-runner:
+    build:
+      context: ../../../..
+      dockerfile: crates/inferadb-storage-ledger/docker/Dockerfile.test
+    container_name: inferadb-ledger-test-runner
+    networks:
+      - ledger-test-network
+    depends_on:
+      ledger:
+        condition: service_healthy
+    environment:
+      # Point tests to the Ledger server
+      LEDGER_ENDPOINT: "http://ledger:50051"
+      LEDGER_NAMESPACE_ID: "1"
+      LEDGER_VAULT_ID: "1"
+      # Rust test configuration
+      RUST_BACKTRACE: "1"
+      RUST_LOG: "debug"
+      # Run integration tests against real Ledger
+      RUN_LEDGER_INTEGRATION_TESTS: "1"
+    volumes:
+      # Mount source for development iteration
+      - ../../../../:/workspace:cached
+      # Cache cargo artifacts
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target-cache:/workspace/target
+    working_dir: /workspace
+    # Default: run integration tests
+    command: >
+      cargo test
+        --package inferadb-storage-ledger
+        --test real_ledger_integration
+        -- --test-threads=1
+
+networks:
+  ledger-test-network:
+    driver: bridge
+    name: inferadb-ledger-test-net
+
+volumes:
+  ledger-data:
+    name: inferadb-ledger-data
+  cargo-registry:
+    name: inferadb-ledger-cargo-registry
+  cargo-git:
+    name: inferadb-ledger-cargo-git
+  target-cache:
+    name: inferadb-ledger-target-cache
