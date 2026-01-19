@@ -1,3 +1,7 @@
+// Allow passing unit to black_box - this is intentional in benchmarks to prevent
+// the compiler from optimizing away the call.
+#![allow(clippy::unit_arg)]
+
 //! Performance benchmarks for StorageBackend implementations.
 //!
 //! This benchmark suite measures the performance of core storage operations

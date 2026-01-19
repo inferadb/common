@@ -2,7 +2,7 @@
 //!
 //! This module defines the [`StorageBackend`] trait, which is the core abstraction
 //! for key-value storage in InferaDB. All storage implementations (MemoryBackend,
-//! FoundationDB, Ledger, etc.) implement this trait.
+//! LedgerBackend, etc.) implement this trait.
 //!
 //! # Design Philosophy
 //!

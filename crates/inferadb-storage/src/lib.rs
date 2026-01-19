@@ -18,10 +18,10 @@
 //! │                 inferadb-storage                            │
 //! │              StorageBackend trait                           │
 //! │    (get, set, delete, get_range, transaction)               │
-//! ├──────────────┬──────────────┬───────────────────────────────┤
-//! │ MemoryBackend│  FdbBackend  │       LedgerBackend           │
-//! │   (testing)  │  (legacy)    │   (target production)         │
-//! └──────────────┴──────────────┴───────────────────────────────┘
+//! ├──────────────┬───────────────────────────────────────────────┤
+//! │ MemoryBackend│            LedgerBackend                      │
+//! │   (testing)  │          (production)                         │
+//! └──────────────┴───────────────────────────────────────────────┘
 //! ```
 //!
 //! # Quick Start
@@ -56,8 +56,7 @@
 //! | Backend | Use Case | Persistence |
 //! |---------|----------|-------------|
 //! | [`MemoryBackend`] | Testing, development | No |
-//! | `FdbBackend` (in `inferadb-control-storage`) | Legacy production | Yes |
-//! | `LedgerBackend` (in `inferadb-storage-ledger`) | Target production | Yes |
+//! | `LedgerBackend` (in `inferadb-storage-ledger`) | Production | Yes |
 //!
 //! # Implementing a Backend
 //!

@@ -21,9 +21,9 @@ This crate provides the `StorageBackend` trait and related types that form the f
 │              StorageBackend trait                           │
 │    (get, set, delete, get_range, transaction)               │
 ├──────────────┬──────────────┬───────────────────────────────┤
-│ MemoryBackend│  FdbBackend  │       LedgerBackend           │
-│   (testing)  │  (legacy)    │   (target production)         │
-└──────────────┴──────────────┴───────────────────────────────┘
+│ MemoryBackend│       LedgerBackend           │
+│   (testing)  │    (production)               │
+└──────────────┴───────────────────────────────┘
 ```
 
 ## Quick Start
@@ -58,8 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Backend | Crate | Use Case | Persistence |
 |---------|-------|----------|-------------|
 | `MemoryBackend` | `inferadb-storage` | Testing, development | No |
-| `FdbBackend` | `inferadb-control-storage` | Legacy production | Yes |
-| `LedgerBackend` | `inferadb-storage-ledger` | Target production | Yes |
+| `LedgerBackend` | `inferadb-storage-ledger` | Production | Yes |
 
 ## Core Traits
 

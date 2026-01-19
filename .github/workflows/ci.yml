@@ -1,0 +1,339 @@
+# yaml-language-server: $schema=https://www.schemastore.org/github-workflow.json
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs when new commits are pushed
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default to read-only permissions
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Check code formatting
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Install Rust nightly toolchain
+        uses: dtolnay/rust-toolchain@0b1efabc08b657293548b77fb76cc02d26091c7e # master
+        with:
+          toolchain: nightly
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo +nightly fmt --all -- --check
+
+  # Run Clippy for linting
+  clippy:
+    name: Linting
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
+      RUSTFLAGS: "-C codegen-units=16 -C link-arg=-fuse-ld=mold"
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          submodules: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Install mold linker
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mold
+
+      - name: Install development tools via Mise
+        uses: step-security/mise-action@2fa1b2b4fa1577588d8ac75f4dfa0f67c266d2a0 # v3.4.1
+        with:
+          install_args: protobuf
+          cache: true
+
+      - name: Cache Rust dependencies
+        uses: step-security/rust-cache@f8fba7098297c8c53a7c9a30575ec2ad4ad85056 # v2.8.2
+        with:
+          shared-key: ubuntu-latest-common
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  # Build and test
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
+      RUSTFLAGS: "-C codegen-units=16 -C link-arg=-fuse-ld=mold"
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          submodules: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - name: Install mold linker
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mold
+
+      - name: Install development tools via Mise
+        uses: step-security/mise-action@2fa1b2b4fa1577588d8ac75f4dfa0f67c266d2a0 # v3.4.1
+        with:
+          install_args: protobuf cargo:cargo-nextest
+          cache: true
+
+      - name: Cache Rust dependencies
+        uses: step-security/rust-cache@f8fba7098297c8c53a7c9a30575ec2ad4ad85056 # v2.8.2
+        with:
+          shared-key: ubuntu-latest-common
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build workspace
+        run: cargo build --workspace
+
+      - name: Run tests
+        run: cargo nextest run --workspace
+
+      - name: Run doc tests
+        run: cargo test --workspace --doc
+
+  # Storage Backend Benchmarks
+  # Runs MemoryBackend benchmarks on every PR and saves baselines on main.
+  # Compares against main baseline and alerts on >10% regression.
+  benchmark:
+    name: Storage Benchmarks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # For posting benchmark comparison comments
+    env:
+      CARGO_INCREMENTAL: 0
+      RUSTFLAGS: "-C codegen-units=16 -C link-arg=-fuse-ld=mold"
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          submodules: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        with:
+          toolchain: stable
+
+      - name: Install mold linker
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mold
+
+      - name: Install development tools via Mise
+        uses: step-security/mise-action@2fa1b2b4fa1577588d8ac75f4dfa0f67c266d2a0 # v3.4.1
+        with:
+          install_args: protobuf
+          cache: true
+
+      - name: Cache Rust dependencies
+        uses: step-security/rust-cache@f8fba7098297c8c53a7c9a30575ec2ad4ad85056 # v2.8.2
+        with:
+          shared-key: ubuntu-latest-common
+          save-if: false
+
+      # Download baseline from main branch (if exists)
+      - name: Download baseline artifact
+        if: github.event_name == 'pull_request'
+        uses: dawidd6/action-download-artifact@07ab29fd4a977ae4d2b275087cf67563dfdf0295 # v9
+        with:
+          workflow: ci.yml
+          branch: main
+          name: benchmark-baseline
+          path: target/criterion-baseline
+        continue-on-error: true
+
+      # Run benchmarks with baseline comparison on PRs
+      - name: Run benchmarks (PR - compare to baseline)
+        if: github.event_name == 'pull_request'
+        id: bench-pr
+        run: |
+          mkdir -p target/criterion
+          # Check if baseline exists
+          if [ -d "target/criterion-baseline" ]; then
+            echo "Baseline found, running comparison benchmarks"
+            # Copy baseline to criterion directory
+            cp -r target/criterion-baseline/* target/criterion/ 2>/dev/null || true
+            # Run benchmarks with comparison
+            cargo bench -p inferadb-storage 2>&1 | tee benchmark-output.txt
+            echo "baseline_exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "No baseline found, running benchmarks without comparison"
+            cargo bench -p inferadb-storage 2>&1 | tee benchmark-output.txt
+            echo "baseline_exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      # Save baseline on main branch
+      - name: Run benchmarks (main - save baseline)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p target/criterion
+          cargo bench -p inferadb-storage -- --save-baseline main 2>&1 | tee benchmark-output.txt
+
+      # Check for performance regressions (>10%)
+      - name: Check for performance regressions
+        if: github.event_name == 'pull_request' && steps.bench-pr.outputs.baseline_exists == 'true'
+        id: regression-check
+        run: |
+          # Parse benchmark output for regressions
+          # Criterion outputs "Performance has regressed." when there's a regression
+          # and shows percentage changes like "+12.34%"
+          
+          REGRESSIONS=""
+          while IFS= read -r line; do
+            # Look for lines with significant regressions (>10%)
+            if echo "$line" | grep -E '\+[0-9]+\.[0-9]+%' | grep -v "change:" > /dev/null; then
+              # Extract the percentage
+              PCT=$(echo "$line" | grep -oE '\+[0-9]+\.[0-9]+%' | head -1 | tr -d '+%')
+              if [ -n "$PCT" ]; then
+                # Check if regression is > 10%
+                if awk "BEGIN {exit !($PCT > 10)}"; then
+                  REGRESSIONS="${REGRESSIONS}\n${line}"
+                fi
+              fi
+            fi
+          done < benchmark-output.txt
+          
+          if [ -n "$REGRESSIONS" ]; then
+            echo "regression_found=true" >> $GITHUB_OUTPUT
+            echo "regressions<<EOF" >> $GITHUB_OUTPUT
+            echo -e "$REGRESSIONS" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            echo "::warning::Performance regressions detected (>10%)"
+          else
+            echo "regression_found=false" >> $GITHUB_OUTPUT
+            echo "No significant regressions detected"
+          fi
+
+      # Post regression warning comment on PR
+      - name: Comment on PR with regression warning
+        if: github.event_name == 'pull_request' && steps.regression-check.outputs.regression_found == 'true'
+        uses: actions/github-script@e69ef5462fd455e02edcaf4dd7708eda96b9ead0 # v7.0.0
+        with:
+          script: |
+            const regressions = `${{ steps.regression-check.outputs.regressions }}`;
+            const body = `## ⚠️ Performance Regression Warning
+
+            The following benchmarks show >10% performance regression compared to main:
+
+            \`\`\`
+            ${regressions}
+            \`\`\`
+
+            Please review these changes carefully. If the regression is expected (e.g., due to added functionality), please note this in the PR description.
+
+            <details>
+            <summary>Full benchmark output</summary>
+
+            See the workflow artifacts for complete benchmark results.
+            </details>`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
+
+      # Upload benchmark results as artifacts
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: benchmark-results
+          path: |
+            benchmark-output.txt
+            target/criterion/
+          retention-days: 30
+
+      # Save baseline for future PRs (only on main)
+      - name: Upload baseline artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: benchmark-baseline
+          path: target/criterion/
+          retention-days: 90
+
+  # Overall status check
+  ci-success:
+    name: CI Success
+    needs: [fmt, clippy, build, benchmark]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    if: always()
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        with:
+          egress-policy: audit
+
+      - name: Check all jobs
+        run: |
+          if [[ "${{ needs.fmt.result }}" != "success" ]]; then
+            echo "Format check failed"
+            exit 1
+          fi
+          if [[ "${{ needs.clippy.result }}" != "success" ]]; then
+            echo "Clippy check failed"
+            exit 1
+          fi
+          if [[ "${{ needs.build.result }}" != "success" ]]; then
+            echo "Build and test failed"
+            exit 1
+          fi
+          # Benchmarks are informational - allow failure but warn
+          if [[ "${{ needs.benchmark.result }}" != "success" && "${{ needs.benchmark.result }}" != "skipped" ]]; then
+            echo "::warning::Benchmark job failed, but this is non-blocking"
+          fi
+          echo "All required checks passed!"
