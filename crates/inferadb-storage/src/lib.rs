@@ -78,6 +78,8 @@
 //!
 //! This crate has no optional features. All functionality is always available.
 
+#![deny(unsafe_code)]
+
 pub mod backend;
 pub mod backend_enum;
 pub mod batch;

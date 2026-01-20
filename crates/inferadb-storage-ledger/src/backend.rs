@@ -278,7 +278,7 @@ impl StorageBackend for LedgerBackend {
             include_expired: false,
             limit: 10000, // Reasonable page size
             page_token: None,
-            consistency: self.read_consistency.clone(),
+            consistency: self.read_consistency,
         };
 
         let result = self
@@ -387,7 +387,7 @@ impl StorageBackend for LedgerBackend {
             Arc::clone(&self.client),
             self.namespace_id,
             self.vault_id,
-            self.read_consistency.clone(),
+            self.read_consistency,
         );
         Ok(Box::new(txn))
     }

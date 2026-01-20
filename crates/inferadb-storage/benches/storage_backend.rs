@@ -47,7 +47,7 @@ fn make_key(prefix: &str, index: usize) -> Vec<u8> {
 /// Generate random value data of specified size.
 fn make_value(size: usize, seed: u64) -> Vec<u8> {
     let mut rng = StdRng::seed_from_u64(seed);
-    (0..size).map(|_| rng.gen()).collect()
+    (0..size).map(|_| rng.r#gen()).collect()
 }
 
 /// Setup backend with N keys pre-populated.
