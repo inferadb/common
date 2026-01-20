@@ -79,14 +79,20 @@
 //! This crate has no optional features. All functionality is always available.
 
 pub mod backend;
+pub mod backend_enum;
+pub mod batch;
 pub mod error;
 pub mod memory;
+pub mod metrics;
 pub mod transaction;
 pub mod types;
 
 // Re-export primary types at crate root for convenience
 pub use backend::StorageBackend;
+pub use backend_enum::Backend;
+pub use batch::{BatchConfig, BatchFlushStats, BatchOperation, BatchWriter};
 pub use error::{StorageError, StorageResult};
 pub use memory::MemoryBackend;
+pub use metrics::{Metrics, MetricsCollector, MetricsSnapshot};
 pub use transaction::Transaction;
 pub use types::KeyValue;

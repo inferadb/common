@@ -1,0 +1,468 @@
+//! Batch write operations for storage backends
+//!
+//! This module provides a generic [`BatchWriter`] that accumulates write operations
+//! and flushes them in optimized batches. It automatically splits large batches
+//! to respect transaction size limits.
+//!
+//! # Usage
+//!
+//! ```no_run
+//! use inferadb_storage::{MemoryBackend, batch::{BatchWriter, BatchConfig}};
+//!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! let backend = MemoryBackend::new();
+//! let mut writer = BatchWriter::new(backend, BatchConfig::default());
+//!
+//! // Accumulate operations
+//! writer.set(b"key1".to_vec(), b"value1".to_vec());
+//! writer.set(b"key2".to_vec(), b"value2".to_vec());
+//! writer.delete(b"old_key".to_vec());
+//!
+//! // Flush all at once
+//! let stats = writer.flush().await?;
+//! println!("Flushed {} operations in {} batches", stats.operations_count, stats.batches_count);
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Transaction Size Limits
+//!
+//! Many storage backends (particularly FoundationDB) have transaction size limits.
+//! The default configuration uses 9MB as the effective limit to leave room for
+//! metadata overhead, staying safely under the 10MB FoundationDB limit.
+
+use std::time::{Duration, Instant};
+
+use tracing::{debug, trace, warn};
+
+use crate::{StorageBackend, StorageResult};
+
+/// Transaction size limit (10MB with safety margin)
+/// We use 9MB as the effective limit to leave room for metadata overhead
+pub const TRANSACTION_SIZE_LIMIT: usize = 9 * 1024 * 1024;
+
+/// Default maximum batch size (number of operations)
+pub const DEFAULT_MAX_BATCH_SIZE: usize = 1000;
+
+/// Default maximum batch byte size (8MB to stay well under transaction limit)
+pub const DEFAULT_MAX_BATCH_BYTES: usize = 8 * 1024 * 1024;
+
+/// Configuration for batch writes
+#[derive(Debug, Clone)]
+pub struct BatchConfig {
+    /// Maximum number of operations per batch
+    pub max_batch_size: usize,
+    /// Maximum byte size per batch (should be under the 10MB transaction limit)
+    pub max_batch_bytes: usize,
+    /// Enable batching (can be disabled for testing)
+    pub enabled: bool,
+}
+
+impl Default for BatchConfig {
+    fn default() -> Self {
+        Self {
+            max_batch_size: DEFAULT_MAX_BATCH_SIZE,
+            max_batch_bytes: DEFAULT_MAX_BATCH_BYTES,
+            enabled: true,
+        }
+    }
+}
+
+impl BatchConfig {
+    /// Create a disabled batch config
+    #[must_use]
+    pub fn disabled() -> Self {
+        Self {
+            max_batch_size: 0,
+            max_batch_bytes: 0,
+            enabled: false,
+        }
+    }
+
+    /// Create a batch config with custom settings
+    #[must_use]
+    pub fn new(max_batch_size: usize, max_batch_bytes: usize) -> Self {
+        Self {
+            max_batch_size,
+            max_batch_bytes,
+            enabled: true,
+        }
+    }
+
+    /// Create a batch config optimized for large transactions
+    #[must_use]
+    pub fn for_large_transactions() -> Self {
+        Self {
+            max_batch_size: DEFAULT_MAX_BATCH_SIZE,
+            max_batch_bytes: TRANSACTION_SIZE_LIMIT,
+            enabled: true,
+        }
+    }
+}
+
+/// Represents a single write operation in a batch
+#[derive(Debug, Clone)]
+pub enum BatchOperation {
+    /// Set a key-value pair
+    Set { key: Vec<u8>, value: Vec<u8> },
+    /// Delete a key
+    Delete { key: Vec<u8> },
+}
+
+impl BatchOperation {
+    /// Calculate the approximate size of this operation in bytes
+    #[must_use]
+    pub fn size_bytes(&self) -> usize {
+        match self {
+            BatchOperation::Set { key, value } => {
+                // Key + value + overhead for encoding (estimate ~50 bytes)
+                key.len() + value.len() + 50
+            }
+            BatchOperation::Delete { key } => {
+                // Key + overhead
+                key.len() + 50
+            }
+        }
+    }
+
+    /// Get the key for this operation
+    #[must_use]
+    pub fn key(&self) -> &[u8] {
+        match self {
+            BatchOperation::Set { key, .. } | BatchOperation::Delete { key } => key,
+        }
+    }
+}
+
+/// Statistics from a batch flush operation
+#[derive(Debug, Clone, Default)]
+pub struct BatchFlushStats {
+    /// Number of operations flushed
+    pub operations_count: usize,
+    /// Number of sub-batches created (due to size limits)
+    pub batches_count: usize,
+    /// Total bytes written
+    pub total_bytes: usize,
+    /// Time taken to flush
+    pub duration: Duration,
+}
+
+/// Batch writer for accumulating and flushing write operations
+///
+/// This writer accumulates write operations and flushes them in optimized batches.
+/// It automatically splits large batches to respect transaction size limits.
+pub struct BatchWriter<B: StorageBackend> {
+    backend: B,
+    operations: Vec<BatchOperation>,
+    current_size_bytes: usize,
+    config: BatchConfig,
+}
+
+impl<B: StorageBackend + Clone> BatchWriter<B> {
+    /// Create a new batch writer
+    #[must_use]
+    pub fn new(backend: B, config: BatchConfig) -> Self {
+        Self {
+            backend,
+            operations: Vec::new(),
+            current_size_bytes: 0,
+            config,
+        }
+    }
+
+    /// Add a set operation to the batch
+    pub fn set(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        let op = BatchOperation::Set { key, value };
+        self.current_size_bytes += op.size_bytes();
+        self.operations.push(op);
+    }
+
+    /// Add a delete operation to the batch
+    pub fn delete(&mut self, key: Vec<u8>) {
+        let op = BatchOperation::Delete { key };
+        self.current_size_bytes += op.size_bytes();
+        self.operations.push(op);
+    }
+
+    /// Get the current number of pending operations
+    #[must_use]
+    pub fn pending_count(&self) -> usize {
+        self.operations.len()
+    }
+
+    /// Get the current estimated size in bytes
+    #[must_use]
+    pub fn pending_bytes(&self) -> usize {
+        self.current_size_bytes
+    }
+
+    /// Check if the batch should be flushed based on size limits
+    #[must_use]
+    pub fn should_flush(&self) -> bool {
+        if !self.config.enabled {
+            return !self.operations.is_empty();
+        }
+        self.operations.len() >= self.config.max_batch_size
+            || self.current_size_bytes >= self.config.max_batch_bytes
+    }
+
+    /// Get a reference to pending operations
+    #[must_use]
+    pub fn pending_operations(&self) -> &[BatchOperation] {
+        &self.operations
+    }
+
+    /// Split operations into sub-batches that fit within size limits
+    fn split_into_batches(&self) -> Vec<Vec<&BatchOperation>> {
+        if self.operations.is_empty() {
+            return Vec::new();
+        }
+
+        let max_bytes = if self.config.enabled {
+            self.config.max_batch_bytes
+        } else {
+            TRANSACTION_SIZE_LIMIT
+        };
+
+        let max_ops = if self.config.enabled {
+            self.config.max_batch_size
+        } else {
+            usize::MAX
+        };
+
+        let mut batches = Vec::new();
+        let mut current_batch = Vec::new();
+        let mut current_bytes = 0usize;
+
+        for op in &self.operations {
+            let op_size = op.size_bytes();
+
+            // If this single operation exceeds the limit, it goes in its own batch
+            // (storage backend will reject it, but we let it through for proper error handling)
+            if op_size > max_bytes {
+                if !current_batch.is_empty() {
+                    batches.push(current_batch);
+                    current_batch = Vec::new();
+                    current_bytes = 0;
+                }
+                batches.push(vec![op]);
+                continue;
+            }
+
+            // Check if adding this operation would exceed limits
+            if (current_bytes + op_size > max_bytes || current_batch.len() >= max_ops)
+                && !current_batch.is_empty()
+            {
+                batches.push(current_batch);
+                current_batch = Vec::new();
+                current_bytes = 0;
+            }
+
+            current_batch.push(op);
+            current_bytes += op_size;
+        }
+
+        if !current_batch.is_empty() {
+            batches.push(current_batch);
+        }
+
+        batches
+    }
+
+    /// Flush all pending operations to the backend
+    ///
+    /// This method splits operations into appropriately-sized batches and
+    /// commits each batch in a separate transaction for optimal performance.
+    pub async fn flush(&mut self) -> StorageResult<BatchFlushStats> {
+        if self.operations.is_empty() {
+            return Ok(BatchFlushStats::default());
+        }
+
+        let start = Instant::now();
+        let total_ops = self.operations.len();
+        let total_bytes = self.current_size_bytes;
+
+        let batches = self.split_into_batches();
+        let batches_count = batches.len();
+
+        debug!(
+            operations = total_ops,
+            bytes = total_bytes,
+            batches = batches_count,
+            "Flushing batch writes"
+        );
+
+        // Execute each sub-batch in its own transaction
+        for (batch_idx, batch_ops) in batches.into_iter().enumerate() {
+            let mut txn = self.backend.transaction().await?;
+
+            for op in batch_ops {
+                match op {
+                    BatchOperation::Set { key, value } => {
+                        txn.set(key.clone(), value.clone());
+                    }
+                    BatchOperation::Delete { key } => {
+                        txn.delete(key.clone());
+                    }
+                }
+            }
+
+            txn.commit().await.map_err(|e| {
+                warn!(batch = batch_idx, error = %e, "Batch commit failed");
+                e
+            })?;
+
+            trace!(batch = batch_idx, "Batch committed successfully");
+        }
+
+        // Clear the pending operations
+        self.operations.clear();
+        self.current_size_bytes = 0;
+
+        let stats = BatchFlushStats {
+            operations_count: total_ops,
+            batches_count,
+            total_bytes,
+            duration: start.elapsed(),
+        };
+
+        debug!(
+            operations = stats.operations_count,
+            batches = stats.batches_count,
+            duration_ms = stats.duration.as_millis(),
+            "Batch flush complete"
+        );
+
+        Ok(stats)
+    }
+
+    /// Clear all pending operations without flushing
+    pub fn clear(&mut self) {
+        self.operations.clear();
+        self.current_size_bytes = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MemoryBackend;
+
+    #[test]
+    fn test_batch_operation_size() {
+        let set_op = BatchOperation::Set {
+            key: vec![0; 10],
+            value: vec![0; 100],
+        };
+        // 10 + 100 + 50 overhead = 160
+        assert_eq!(set_op.size_bytes(), 160);
+
+        let delete_op = BatchOperation::Delete { key: vec![0; 10] };
+        // 10 + 50 overhead = 60
+        assert_eq!(delete_op.size_bytes(), 60);
+    }
+
+    #[test]
+    fn test_batch_config_default() {
+        let config = BatchConfig::default();
+        assert_eq!(config.max_batch_size, DEFAULT_MAX_BATCH_SIZE);
+        assert_eq!(config.max_batch_bytes, DEFAULT_MAX_BATCH_BYTES);
+        assert!(config.enabled);
+    }
+
+    #[test]
+    fn test_batch_config_disabled() {
+        let config = BatchConfig::disabled();
+        assert!(!config.enabled);
+    }
+
+    #[tokio::test]
+    async fn test_batch_writer_basic() {
+        let backend = MemoryBackend::new();
+        let mut writer = BatchWriter::new(backend.clone(), BatchConfig::default());
+
+        writer.set(b"key1".to_vec(), b"value1".to_vec());
+        writer.set(b"key2".to_vec(), b"value2".to_vec());
+
+        assert_eq!(writer.pending_count(), 2);
+
+        let stats = writer.flush().await.expect("flush failed");
+        assert_eq!(stats.operations_count, 2);
+        assert_eq!(stats.batches_count, 1);
+
+        // Verify data was written
+        let v1 = backend.get(b"key1").await.expect("get failed");
+        assert_eq!(v1.map(|b| b.to_vec()), Some(b"value1".to_vec()));
+
+        let v2 = backend.get(b"key2").await.expect("get failed");
+        assert_eq!(v2.map(|b| b.to_vec()), Some(b"value2".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_batch_writer_delete() {
+        let backend = MemoryBackend::new();
+
+        // Pre-populate
+        backend
+            .set(b"to_delete".to_vec(), b"value".to_vec())
+            .await
+            .expect("set failed");
+
+        let mut writer = BatchWriter::new(backend.clone(), BatchConfig::default());
+        writer.delete(b"to_delete".to_vec());
+
+        writer.flush().await.expect("flush failed");
+
+        let v = backend.get(b"to_delete").await.expect("get failed");
+        assert!(v.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_batch_writer_split_by_count() {
+        let backend = MemoryBackend::new();
+        let config = BatchConfig::new(5, usize::MAX); // Max 5 ops per batch
+        let mut writer = BatchWriter::new(backend, config);
+
+        // Add 12 operations - should split into 3 batches (5, 5, 2)
+        for i in 0..12 {
+            writer.set(
+                format!("key{i}").into_bytes(),
+                format!("value{i}").into_bytes(),
+            );
+        }
+
+        let stats = writer.flush().await.expect("flush failed");
+        assert_eq!(stats.operations_count, 12);
+        assert_eq!(stats.batches_count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_should_flush() {
+        let backend = MemoryBackend::new();
+        let config = BatchConfig::new(3, usize::MAX);
+        let mut writer = BatchWriter::new(backend, config);
+
+        assert!(!writer.should_flush());
+
+        writer.set(b"key1".to_vec(), b"value1".to_vec());
+        writer.set(b"key2".to_vec(), b"value2".to_vec());
+        assert!(!writer.should_flush());
+
+        writer.set(b"key3".to_vec(), b"value3".to_vec());
+        assert!(writer.should_flush());
+    }
+
+    #[tokio::test]
+    async fn test_clear() {
+        let backend = MemoryBackend::new();
+        let mut writer = BatchWriter::new(backend, BatchConfig::default());
+
+        writer.set(b"key1".to_vec(), b"value1".to_vec());
+        writer.set(b"key2".to_vec(), b"value2".to_vec());
+        assert_eq!(writer.pending_count(), 2);
+
+        writer.clear();
+        assert_eq!(writer.pending_count(), 0);
+        assert_eq!(writer.pending_bytes(), 0);
+    }
+}
