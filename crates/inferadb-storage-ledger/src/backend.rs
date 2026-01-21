@@ -171,6 +171,15 @@ impl LedgerBackend {
         &self.client
     }
 
+    /// Returns a cloned reference to the underlying SDK client.
+    ///
+    /// This is useful when you need to pass the client to other components
+    /// that require ownership, such as `LedgerSigningKeyStore`.
+    #[must_use]
+    pub fn client_arc(&self) -> Arc<LedgerClient> {
+        Arc::clone(&self.client)
+    }
+
     /// Encodes a key as a hexadecimal string.
     ///
     /// This encoding preserves byte ordering, which is essential for

@@ -81,6 +81,9 @@ mod config;
 mod error;
 mod transaction;
 
+/// Authentication-related storage implementations.
+pub mod auth;
+
 pub use backend::LedgerBackend;
 pub use config::{LedgerBackendConfig, LedgerBackendConfigBuilder};
 pub use error::{LedgerStorageError, Result};

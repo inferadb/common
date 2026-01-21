@@ -46,7 +46,7 @@ use std::ops::RangeBounds;
 use async_trait::async_trait;
 use bytes::Bytes;
 
-use crate::{types::KeyValue, MemoryBackend, StorageBackend, StorageResult, Transaction};
+use crate::{MemoryBackend, StorageBackend, StorageResult, Transaction, types::KeyValue};
 
 /// Unified storage backend enum
 ///

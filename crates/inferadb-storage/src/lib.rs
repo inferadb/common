@@ -80,6 +80,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod auth;
 pub mod backend;
 pub mod backend_enum;
 pub mod batch;

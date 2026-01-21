@@ -1,0 +1,574 @@
+//! Metrics collection for signing key storage operations.
+//! Metrics collection for signing key storage operations.
+//!
+//! Provides observability into signing key lifecycle operations including
+//! counts, latencies, and error rates.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use std::time::Duration;
+//! use inferadb_storage::auth::{SigningKeyErrorKind, SigningKeyMetrics};
+//!
+//! let metrics = SigningKeyMetrics::new();
+//!
+//! // Record a successful get operation
+//! metrics.record_get(Duration::from_micros(150));
+//!
+//! // Record an error
+//! metrics.record_error(SigningKeyErrorKind::NotFound);
+//!
+//! // Get a snapshot for reporting
+//! let snapshot = metrics.snapshot();
+//! println!("Get operations: {}", snapshot.get_count);
+//! ```
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+/// Error categories for signing key operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigningKeyErrorKind {
+    /// Key not found in storage.
+    NotFound,
+    /// Key already exists (conflict on create).
+    Conflict,
+    /// Connection or network error.
+    Connection,
+    /// Serialization/deserialization error.
+    Serialization,
+    /// Key state validation error (inactive, revoked, expired).
+    InvalidState,
+    /// Other/unknown error.
+    Other,
+}
+
+/// Snapshot of signing key metrics at a point in time.
+#[derive(Debug, Clone, Default)]
+pub struct SigningKeyMetricsSnapshot {
+    // Operation counts
+    /// Total create_key operations.
+    pub create_count: u64,
+    /// Total get_key operations.
+    pub get_count: u64,
+    /// Total list_active_keys operations.
+    pub list_count: u64,
+    /// Total deactivate_key operations.
+    pub deactivate_count: u64,
+    /// Total revoke_key operations.
+    pub revoke_count: u64,
+    /// Total activate_key operations.
+    pub activate_count: u64,
+    /// Total delete_key operations.
+    pub delete_count: u64,
+
+    // Latencies (cumulative microseconds)
+    /// Total latency for create operations in microseconds.
+    pub create_latency_us: u64,
+    /// Total latency for get operations in microseconds.
+    pub get_latency_us: u64,
+    /// Total latency for list operations in microseconds.
+    pub list_latency_us: u64,
+    /// Total latency for deactivate operations in microseconds.
+    pub deactivate_latency_us: u64,
+    /// Total latency for revoke operations in microseconds.
+    pub revoke_latency_us: u64,
+    /// Total latency for activate operations in microseconds.
+    pub activate_latency_us: u64,
+    /// Total latency for delete operations in microseconds.
+    pub delete_latency_us: u64,
+
+    // Error counts by category
+    /// Not found errors.
+    pub error_not_found: u64,
+    /// Conflict errors.
+    pub error_conflict: u64,
+    /// Connection errors.
+    pub error_connection: u64,
+    /// Serialization errors.
+    pub error_serialization: u64,
+    /// Invalid state errors.
+    pub error_invalid_state: u64,
+    /// Other errors.
+    pub error_other: u64,
+}
+
+impl SigningKeyMetricsSnapshot {
+    /// Returns the total number of operations.
+    #[must_use]
+    pub fn total_operations(&self) -> u64 {
+        self.create_count
+            + self.get_count
+            + self.list_count
+            + self.deactivate_count
+            + self.revoke_count
+            + self.activate_count
+            + self.delete_count
+    }
+
+    /// Returns the total number of errors.
+    #[must_use]
+    pub fn total_errors(&self) -> u64 {
+        self.error_not_found
+            + self.error_conflict
+            + self.error_connection
+            + self.error_serialization
+            + self.error_invalid_state
+            + self.error_other
+    }
+
+    /// Returns the error rate as a fraction (0.0 to 1.0).
+    #[must_use]
+    pub fn error_rate(&self) -> f64 {
+        let total = self.total_operations();
+        if total == 0 {
+            0.0
+        } else {
+            self.total_errors() as f64 / total as f64
+        }
+    }
+
+    /// Returns the average get latency in microseconds.
+    #[must_use]
+    pub fn avg_get_latency_us(&self) -> f64 {
+        if self.get_count == 0 {
+            0.0
+        } else {
+            self.get_latency_us as f64 / self.get_count as f64
+        }
+    }
+
+    /// Returns the average create latency in microseconds.
+    #[must_use]
+    pub fn avg_create_latency_us(&self) -> f64 {
+        if self.create_count == 0 {
+            0.0
+        } else {
+            self.create_latency_us as f64 / self.create_count as f64
+        }
+    }
+
+    /// Returns the average list latency in microseconds.
+    #[must_use]
+    pub fn avg_list_latency_us(&self) -> f64 {
+        if self.list_count == 0 {
+            0.0
+        } else {
+            self.list_latency_us as f64 / self.list_count as f64
+        }
+    }
+}
+
+/// Inner storage for atomic counters.
+struct SigningKeyMetricsInner {
+    // Operation counts
+    create_count: AtomicU64,
+    get_count: AtomicU64,
+    list_count: AtomicU64,
+    deactivate_count: AtomicU64,
+    revoke_count: AtomicU64,
+    activate_count: AtomicU64,
+    delete_count: AtomicU64,
+
+    // Latencies (cumulative microseconds)
+    create_latency_us: AtomicU64,
+    get_latency_us: AtomicU64,
+    list_latency_us: AtomicU64,
+    deactivate_latency_us: AtomicU64,
+    revoke_latency_us: AtomicU64,
+    activate_latency_us: AtomicU64,
+    delete_latency_us: AtomicU64,
+
+    // Error counts
+    error_not_found: AtomicU64,
+    error_conflict: AtomicU64,
+    error_connection: AtomicU64,
+    error_serialization: AtomicU64,
+    error_invalid_state: AtomicU64,
+    error_other: AtomicU64,
+}
+
+/// Metrics collector for signing key storage operations.
+///
+/// Thread-safe metrics collection using atomic counters. Designed to be
+/// shared across threads via cloning (uses `Arc` internally).
+///
+/// # Example
+///
+/// ```no_run
+/// use std::time::{Duration, Instant};
+/// use inferadb_storage::auth::{SigningKeyMetrics, SigningKeyErrorKind};
+///
+/// let metrics = SigningKeyMetrics::new();
+///
+/// // Record operation with timing
+/// let start = Instant::now();
+/// // ... perform get_key operation ...
+/// metrics.record_get(start.elapsed());
+///
+/// // Record an error
+/// metrics.record_error(SigningKeyErrorKind::NotFound);
+///
+/// // Log metrics periodically
+/// metrics.log_metrics();
+/// ```
+#[derive(Clone)]
+pub struct SigningKeyMetrics {
+    inner: Arc<SigningKeyMetricsInner>,
+}
+
+impl SigningKeyMetrics {
+    /// Creates a new metrics collector.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(SigningKeyMetricsInner {
+                create_count: AtomicU64::new(0),
+                get_count: AtomicU64::new(0),
+                list_count: AtomicU64::new(0),
+                deactivate_count: AtomicU64::new(0),
+                revoke_count: AtomicU64::new(0),
+                activate_count: AtomicU64::new(0),
+                delete_count: AtomicU64::new(0),
+                create_latency_us: AtomicU64::new(0),
+                get_latency_us: AtomicU64::new(0),
+                list_latency_us: AtomicU64::new(0),
+                deactivate_latency_us: AtomicU64::new(0),
+                revoke_latency_us: AtomicU64::new(0),
+                activate_latency_us: AtomicU64::new(0),
+                delete_latency_us: AtomicU64::new(0),
+                error_not_found: AtomicU64::new(0),
+                error_conflict: AtomicU64::new(0),
+                error_connection: AtomicU64::new(0),
+                error_serialization: AtomicU64::new(0),
+                error_invalid_state: AtomicU64::new(0),
+                error_other: AtomicU64::new(0),
+            }),
+        }
+    }
+
+    /// Records a create_key operation.
+    pub fn record_create(&self, duration: Duration) {
+        self.inner.create_count.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .create_latency_us
+            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+    }
+
+    /// Records a get_key operation.
+    pub fn record_get(&self, duration: Duration) {
+        self.inner.get_count.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .get_latency_us
+            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+    }
+
+    /// Records a list_active_keys operation.
+    pub fn record_list(&self, duration: Duration) {
+        self.inner.list_count.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .list_latency_us
+            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+    }
+
+    /// Records a deactivate_key operation.
+    pub fn record_deactivate(&self, duration: Duration) {
+        self.inner.deactivate_count.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .deactivate_latency_us
+            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+    }
+
+    /// Records a revoke_key operation.
+    pub fn record_revoke(&self, duration: Duration) {
+        self.inner.revoke_count.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .revoke_latency_us
+            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+    }
+
+    /// Records an activate_key operation.
+    pub fn record_activate(&self, duration: Duration) {
+        self.inner.activate_count.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .activate_latency_us
+            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+    }
+
+    /// Records a delete_key operation.
+    pub fn record_delete(&self, duration: Duration) {
+        self.inner.delete_count.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .delete_latency_us
+            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+    }
+
+    /// Records an error by category.
+    pub fn record_error(&self, kind: SigningKeyErrorKind) {
+        match kind {
+            SigningKeyErrorKind::NotFound => {
+                self.inner.error_not_found.fetch_add(1, Ordering::Relaxed);
+            }
+            SigningKeyErrorKind::Conflict => {
+                self.inner.error_conflict.fetch_add(1, Ordering::Relaxed);
+            }
+            SigningKeyErrorKind::Connection => {
+                self.inner.error_connection.fetch_add(1, Ordering::Relaxed);
+            }
+            SigningKeyErrorKind::Serialization => {
+                self.inner
+                    .error_serialization
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            SigningKeyErrorKind::InvalidState => {
+                self.inner
+                    .error_invalid_state
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            SigningKeyErrorKind::Other => {
+                self.inner.error_other.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Returns a snapshot of current metrics.
+    #[must_use]
+    pub fn snapshot(&self) -> SigningKeyMetricsSnapshot {
+        SigningKeyMetricsSnapshot {
+            create_count: self.inner.create_count.load(Ordering::Relaxed),
+            get_count: self.inner.get_count.load(Ordering::Relaxed),
+            list_count: self.inner.list_count.load(Ordering::Relaxed),
+            deactivate_count: self.inner.deactivate_count.load(Ordering::Relaxed),
+            revoke_count: self.inner.revoke_count.load(Ordering::Relaxed),
+            activate_count: self.inner.activate_count.load(Ordering::Relaxed),
+            delete_count: self.inner.delete_count.load(Ordering::Relaxed),
+            create_latency_us: self.inner.create_latency_us.load(Ordering::Relaxed),
+            get_latency_us: self.inner.get_latency_us.load(Ordering::Relaxed),
+            list_latency_us: self.inner.list_latency_us.load(Ordering::Relaxed),
+            deactivate_latency_us: self.inner.deactivate_latency_us.load(Ordering::Relaxed),
+            revoke_latency_us: self.inner.revoke_latency_us.load(Ordering::Relaxed),
+            activate_latency_us: self.inner.activate_latency_us.load(Ordering::Relaxed),
+            delete_latency_us: self.inner.delete_latency_us.load(Ordering::Relaxed),
+            error_not_found: self.inner.error_not_found.load(Ordering::Relaxed),
+            error_conflict: self.inner.error_conflict.load(Ordering::Relaxed),
+            error_connection: self.inner.error_connection.load(Ordering::Relaxed),
+            error_serialization: self.inner.error_serialization.load(Ordering::Relaxed),
+            error_invalid_state: self.inner.error_invalid_state.load(Ordering::Relaxed),
+            error_other: self.inner.error_other.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Resets all metrics to zero.
+    pub fn reset(&self) {
+        self.inner.create_count.store(0, Ordering::Relaxed);
+        self.inner.get_count.store(0, Ordering::Relaxed);
+        self.inner.list_count.store(0, Ordering::Relaxed);
+        self.inner.deactivate_count.store(0, Ordering::Relaxed);
+        self.inner.revoke_count.store(0, Ordering::Relaxed);
+        self.inner.activate_count.store(0, Ordering::Relaxed);
+        self.inner.delete_count.store(0, Ordering::Relaxed);
+        self.inner.create_latency_us.store(0, Ordering::Relaxed);
+        self.inner.get_latency_us.store(0, Ordering::Relaxed);
+        self.inner.list_latency_us.store(0, Ordering::Relaxed);
+        self.inner.deactivate_latency_us.store(0, Ordering::Relaxed);
+        self.inner.revoke_latency_us.store(0, Ordering::Relaxed);
+        self.inner.activate_latency_us.store(0, Ordering::Relaxed);
+        self.inner.delete_latency_us.store(0, Ordering::Relaxed);
+        self.inner.error_not_found.store(0, Ordering::Relaxed);
+        self.inner.error_conflict.store(0, Ordering::Relaxed);
+        self.inner.error_connection.store(0, Ordering::Relaxed);
+        self.inner.error_serialization.store(0, Ordering::Relaxed);
+        self.inner.error_invalid_state.store(0, Ordering::Relaxed);
+        self.inner.error_other.store(0, Ordering::Relaxed);
+    }
+
+    /// Logs current metrics at INFO level.
+    pub fn log_metrics(&self) {
+        let snapshot = self.snapshot();
+        tracing::info!(
+            create_count = snapshot.create_count,
+            get_count = snapshot.get_count,
+            list_count = snapshot.list_count,
+            deactivate_count = snapshot.deactivate_count,
+            revoke_count = snapshot.revoke_count,
+            activate_count = snapshot.activate_count,
+            delete_count = snapshot.delete_count,
+            total_operations = snapshot.total_operations(),
+            total_errors = snapshot.total_errors(),
+            error_rate = format!("{:.2}%", snapshot.error_rate() * 100.0),
+            avg_get_latency_us = format!("{:.1}", snapshot.avg_get_latency_us()),
+            avg_create_latency_us = format!("{:.1}", snapshot.avg_create_latency_us()),
+            "signing_key_metrics"
+        );
+    }
+}
+
+impl Default for SigningKeyMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for SigningKeyMetrics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SigningKeyMetrics")
+            .field("snapshot", &self.snapshot())
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_new_metrics_are_zero() {
+        let metrics = SigningKeyMetrics::new();
+        let snapshot = metrics.snapshot();
+
+        assert_eq!(snapshot.total_operations(), 0);
+        assert_eq!(snapshot.total_errors(), 0);
+    }
+
+    #[test]
+    fn test_record_operations() {
+        let metrics = SigningKeyMetrics::new();
+
+        metrics.record_create(Duration::from_micros(100));
+        metrics.record_get(Duration::from_micros(50));
+        metrics.record_get(Duration::from_micros(150));
+        metrics.record_list(Duration::from_micros(200));
+        metrics.record_deactivate(Duration::from_micros(75));
+        metrics.record_revoke(Duration::from_micros(80));
+        metrics.record_activate(Duration::from_micros(60));
+        metrics.record_delete(Duration::from_micros(90));
+
+        let snapshot = metrics.snapshot();
+
+        assert_eq!(snapshot.create_count, 1);
+        assert_eq!(snapshot.get_count, 2);
+        assert_eq!(snapshot.list_count, 1);
+        assert_eq!(snapshot.deactivate_count, 1);
+        assert_eq!(snapshot.revoke_count, 1);
+        assert_eq!(snapshot.activate_count, 1);
+        assert_eq!(snapshot.delete_count, 1);
+        assert_eq!(snapshot.total_operations(), 8);
+
+        assert_eq!(snapshot.create_latency_us, 100);
+        assert_eq!(snapshot.get_latency_us, 200); // 50 + 150
+        assert_eq!(snapshot.list_latency_us, 200);
+    }
+
+    #[test]
+    fn test_record_errors() {
+        let metrics = SigningKeyMetrics::new();
+
+        metrics.record_error(SigningKeyErrorKind::NotFound);
+        metrics.record_error(SigningKeyErrorKind::NotFound);
+        metrics.record_error(SigningKeyErrorKind::Conflict);
+        metrics.record_error(SigningKeyErrorKind::Connection);
+        metrics.record_error(SigningKeyErrorKind::Serialization);
+        metrics.record_error(SigningKeyErrorKind::InvalidState);
+        metrics.record_error(SigningKeyErrorKind::Other);
+
+        let snapshot = metrics.snapshot();
+
+        assert_eq!(snapshot.error_not_found, 2);
+        assert_eq!(snapshot.error_conflict, 1);
+        assert_eq!(snapshot.error_connection, 1);
+        assert_eq!(snapshot.error_serialization, 1);
+        assert_eq!(snapshot.error_invalid_state, 1);
+        assert_eq!(snapshot.error_other, 1);
+        assert_eq!(snapshot.total_errors(), 7);
+    }
+
+    #[test]
+    fn test_error_rate() {
+        let metrics = SigningKeyMetrics::new();
+
+        // No operations = 0% error rate
+        assert!((metrics.snapshot().error_rate() - 0.0).abs() < f64::EPSILON);
+
+        // 10 operations, 2 errors = 20% error rate
+        for _ in 0..10 {
+            metrics.record_get(Duration::from_micros(10));
+        }
+        metrics.record_error(SigningKeyErrorKind::NotFound);
+        metrics.record_error(SigningKeyErrorKind::Connection);
+
+        let snapshot = metrics.snapshot();
+        assert!((snapshot.error_rate() - 0.2).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_average_latency() {
+        let metrics = SigningKeyMetrics::new();
+
+        metrics.record_get(Duration::from_micros(100));
+        metrics.record_get(Duration::from_micros(200));
+        metrics.record_get(Duration::from_micros(300));
+
+        let snapshot = metrics.snapshot();
+        assert!((snapshot.avg_get_latency_us() - 200.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_reset() {
+        let metrics = SigningKeyMetrics::new();
+
+        metrics.record_create(Duration::from_micros(100));
+        metrics.record_get(Duration::from_micros(50));
+        metrics.record_error(SigningKeyErrorKind::NotFound);
+
+        assert!(metrics.snapshot().total_operations() > 0);
+        assert!(metrics.snapshot().total_errors() > 0);
+
+        metrics.reset();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.total_operations(), 0);
+        assert_eq!(snapshot.total_errors(), 0);
+        assert_eq!(snapshot.create_latency_us, 0);
+        assert_eq!(snapshot.get_latency_us, 0);
+    }
+
+    #[test]
+    fn test_clone_shares_state() {
+        let metrics1 = SigningKeyMetrics::new();
+        let metrics2 = metrics1.clone();
+
+        metrics1.record_get(Duration::from_micros(100));
+        metrics2.record_get(Duration::from_micros(200));
+
+        // Both clones should see 2 get operations
+        assert_eq!(metrics1.snapshot().get_count, 2);
+        assert_eq!(metrics2.snapshot().get_count, 2);
+    }
+
+    #[test]
+    fn test_debug_impl() {
+        let metrics = SigningKeyMetrics::new();
+        metrics.record_get(Duration::from_micros(100));
+
+        let debug_str = format!("{metrics:?}");
+        assert!(debug_str.contains("SigningKeyMetrics"));
+        assert!(debug_str.contains("snapshot"));
+    }
+
+    #[test]
+    fn test_default_impl() {
+        let metrics = SigningKeyMetrics::default();
+        assert_eq!(metrics.snapshot().total_operations(), 0);
+    }
+
+    #[test]
+    fn test_snapshot_avg_methods_with_zero_count() {
+        let snapshot = SigningKeyMetricsSnapshot::default();
+
+        // Should return 0.0 for zero counts, not NaN or panic
+        assert!((snapshot.avg_get_latency_us() - 0.0).abs() < f64::EPSILON);
+        assert!((snapshot.avg_create_latency_us() - 0.0).abs() < f64::EPSILON);
+        assert!((snapshot.avg_list_latency_us() - 0.0).abs() < f64::EPSILON);
+    }
+}

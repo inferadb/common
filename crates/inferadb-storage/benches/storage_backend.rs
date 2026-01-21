@@ -34,7 +34,7 @@
 use std::hint::black_box;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use inferadb_storage::{MemoryBackend, StorageBackend};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
