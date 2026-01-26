@@ -82,7 +82,6 @@
 
 pub mod auth;
 pub mod backend;
-pub mod backend_enum;
 pub mod batch;
 pub mod error;
 pub mod memory;
@@ -92,7 +91,6 @@ pub mod types;
 
 // Re-export primary types at crate root for convenience
 pub use backend::StorageBackend;
-pub use backend_enum::Backend;
 pub use batch::{BatchConfig, BatchFlushStats, BatchOperation, BatchWriter};
 pub use error::{StorageError, StorageResult};
 pub use memory::MemoryBackend;

@@ -211,12 +211,12 @@ impl LedgerSigningKeyStore {
 
     /// Deserializes a key from stored bytes.
     fn deserialize_key(bytes: &[u8]) -> StorageResult<PublicSigningKey> {
-        serde_json::from_slice(bytes).map_err(|e| StorageError::Serialization(e.to_string()))
+        serde_json::from_slice(bytes).map_err(|e| StorageError::serialization(e.to_string()))
     }
 
     /// Serializes a key to bytes for storage.
     fn serialize_key(key: &PublicSigningKey) -> StorageResult<Vec<u8>> {
-        serde_json::to_vec(key).map_err(|e| StorageError::Serialization(e.to_string()))
+        serde_json::to_vec(key).map_err(|e| StorageError::serialization(e.to_string()))
     }
 
     /// Records an error to metrics if configured.
@@ -229,10 +229,10 @@ impl LedgerSigningKeyStore {
     /// Converts a storage error to a metrics error kind.
     fn error_to_kind(error: &StorageError) -> SigningKeyErrorKind {
         match error {
-            StorageError::NotFound(_) => SigningKeyErrorKind::NotFound,
-            StorageError::Conflict => SigningKeyErrorKind::Conflict,
-            StorageError::Connection(_) => SigningKeyErrorKind::Connection,
-            StorageError::Serialization(_) => SigningKeyErrorKind::Serialization,
+            StorageError::NotFound { .. } => SigningKeyErrorKind::NotFound,
+            StorageError::Conflict { .. } => SigningKeyErrorKind::Conflict,
+            StorageError::Connection { .. } => SigningKeyErrorKind::Connection,
+            StorageError::Serialization { .. } => SigningKeyErrorKind::Serialization,
             _ => SigningKeyErrorKind::Other,
         }
     }
@@ -247,7 +247,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         // Check if key already exists
         if let Some(_existing) = self.do_read(namespace_id, &storage_key).await? {
             self.record_error(SigningKeyErrorKind::Conflict);
-            return Err(StorageError::Conflict);
+            return Err(StorageError::conflict());
         }
 
         let value = Self::serialize_key(key)?;
@@ -266,7 +266,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
                 if let inferadb_ledger_sdk::SdkError::Rpc { code, .. } = &e
                     && *code == Code::AlreadyExists
                 {
-                    return StorageError::Conflict;
+                    return StorageError::conflict();
                 }
                 StorageError::from(LedgerStorageError::Sdk(e))
             });
@@ -375,7 +375,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
             let bytes = self
                 .do_read(namespace_id, &storage_key)
                 .await?
-                .ok_or_else(|| StorageError::NotFound(format!("Key not found: {kid}")))?;
+                .ok_or_else(|| StorageError::not_found(format!("Key not found: {kid}")))?;
 
             let mut key = Self::deserialize_key(&bytes)?;
             key.active = false;
@@ -418,7 +418,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
             let bytes = self
                 .do_read(namespace_id, &storage_key)
                 .await?
-                .ok_or_else(|| StorageError::NotFound(format!("Key not found: {kid}")))?;
+                .ok_or_else(|| StorageError::not_found(format!("Key not found: {kid}")))?;
 
             let mut key = Self::deserialize_key(&bytes)?;
 
@@ -461,13 +461,13 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
             let bytes = self
                 .do_read(namespace_id, &storage_key)
                 .await?
-                .ok_or_else(|| StorageError::NotFound(format!("Key not found: {kid}")))?;
+                .ok_or_else(|| StorageError::not_found(format!("Key not found: {kid}")))?;
 
             let mut key = Self::deserialize_key(&bytes)?;
 
             // Cannot reactivate a revoked key
             if key.revoked_at.is_some() {
-                return Err(StorageError::Internal(format!(
+                return Err(StorageError::internal(format!(
                     "Cannot reactivate revoked key: {kid}"
                 )));
             }
@@ -506,7 +506,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         let result = async {
             // Check if key exists
             if self.do_read(namespace_id, &storage_key).await?.is_none() {
-                return Err(StorageError::NotFound(format!("Key not found: {kid}")));
+                return Err(StorageError::not_found(format!("Key not found: {kid}")));
             }
 
             self.client
@@ -570,23 +570,23 @@ mod tests {
     #[test]
     fn test_error_to_kind_mapping() {
         assert_eq!(
-            LedgerSigningKeyStore::error_to_kind(&StorageError::NotFound("key".into())),
+            LedgerSigningKeyStore::error_to_kind(&StorageError::not_found("key")),
             SigningKeyErrorKind::NotFound
         );
         assert_eq!(
-            LedgerSigningKeyStore::error_to_kind(&StorageError::Conflict),
+            LedgerSigningKeyStore::error_to_kind(&StorageError::conflict()),
             SigningKeyErrorKind::Conflict
         );
         assert_eq!(
-            LedgerSigningKeyStore::error_to_kind(&StorageError::Connection("err".into())),
+            LedgerSigningKeyStore::error_to_kind(&StorageError::connection("err")),
             SigningKeyErrorKind::Connection
         );
         assert_eq!(
-            LedgerSigningKeyStore::error_to_kind(&StorageError::Serialization("err".into())),
+            LedgerSigningKeyStore::error_to_kind(&StorageError::serialization("err")),
             SigningKeyErrorKind::Serialization
         );
         assert_eq!(
-            LedgerSigningKeyStore::error_to_kind(&StorageError::Internal("err".into())),
+            LedgerSigningKeyStore::error_to_kind(&StorageError::internal("err")),
             SigningKeyErrorKind::Other
         );
     }

@@ -262,7 +262,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         let mut keys = self.keys.write();
 
         if keys.contains_key(&map_key) {
-            return Err(StorageError::Internal(format!(
+            return Err(StorageError::internal(format!(
                 "Key already exists: {}",
                 key.kid
             )));
@@ -308,7 +308,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
 
         let key = keys
             .get_mut(&map_key)
-            .ok_or_else(|| StorageError::NotFound(kid.to_string()))?;
+            .ok_or_else(|| StorageError::not_found(kid))?;
 
         key.active = false;
         Ok(())
@@ -325,7 +325,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
 
         let key = keys
             .get_mut(&map_key)
-            .ok_or_else(|| StorageError::NotFound(kid.to_string()))?;
+            .ok_or_else(|| StorageError::not_found(kid))?;
 
         // Idempotent: only set revoked_at if not already revoked
         if key.revoked_at.is_none() {
@@ -341,10 +341,10 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
 
         let key = keys
             .get_mut(&map_key)
-            .ok_or_else(|| StorageError::NotFound(kid.to_string()))?;
+            .ok_or_else(|| StorageError::not_found(kid))?;
 
         if key.revoked_at.is_some() {
-            return Err(StorageError::Internal(format!(
+            return Err(StorageError::internal(format!(
                 "Cannot reactivate permanently revoked key: {}",
                 kid
             )));
@@ -359,7 +359,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         let mut keys = self.keys.write();
 
         if keys.remove(&map_key).is_none() {
-            return Err(StorageError::NotFound(kid.to_string()));
+            return Err(StorageError::not_found(kid));
         }
         Ok(())
     }
@@ -445,7 +445,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.expect_err("duplicate should fail");
-        assert!(matches!(err, StorageError::Internal(_)));
+        assert!(matches!(err, StorageError::Internal { .. }));
     }
 
     #[tokio::test]
@@ -557,7 +557,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.expect_err("should be NotFound"),
-            StorageError::NotFound(_)
+            StorageError::NotFound { .. }
         ));
     }
 
@@ -625,7 +625,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.expect_err("should be NotFound"),
-            StorageError::NotFound(_)
+            StorageError::NotFound { .. }
         ));
     }
 
@@ -680,7 +680,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.expect_err("should be Internal"),
-            StorageError::Internal(_)
+            StorageError::Internal { .. }
         ));
     }
 
@@ -710,7 +710,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.expect_err("should be NotFound"),
-            StorageError::NotFound(_)
+            StorageError::NotFound { .. }
         ));
     }
 

@@ -45,6 +45,7 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LedgerBackendConfig {
     /// Server endpoint URLs.
     pub(crate) endpoints: Vec<String>,
@@ -113,6 +114,7 @@ impl From<ReadConsistencyConfig> for ReadConsistency {
 
 /// Serializable retry policy configuration.
 #[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RetryPolicyConfig {
     /// Maximum number of retry attempts.
     #[serde(default = "default_max_attempts")]

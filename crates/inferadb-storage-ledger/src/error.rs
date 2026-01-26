@@ -37,10 +37,10 @@ impl From<LedgerStorageError> for StorageError {
     fn from(err: LedgerStorageError) -> Self {
         match err {
             LedgerStorageError::Sdk(sdk_err) => sdk_error_to_storage_error(sdk_err),
-            LedgerStorageError::Config(msg) => StorageError::Internal(format!("Config: {msg}")),
-            LedgerStorageError::KeyEncoding(msg) => StorageError::Serialization(msg),
+            LedgerStorageError::Config(msg) => StorageError::internal(format!("Config: {msg}")),
+            LedgerStorageError::KeyEncoding(msg) => StorageError::serialization(msg),
             LedgerStorageError::Transaction(msg) => {
-                StorageError::Internal(format!("Transaction: {msg}"))
+                StorageError::internal(format!("Transaction: {msg}"))
             }
         }
     }
@@ -53,37 +53,37 @@ impl From<LedgerStorageError> for StorageError {
 fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
     match &err {
         // Connection and transport errors
-        SdkError::Connection { message, .. } => StorageError::Connection(message.clone()),
-        SdkError::Transport { source, .. } => StorageError::Connection(source.to_string()),
-        SdkError::Unavailable { message } => StorageError::Connection(message.clone()),
-        SdkError::StreamDisconnected { message } => StorageError::Connection(message.clone()),
+        SdkError::Connection { message, .. } => StorageError::connection(message.clone()),
+        SdkError::Transport { source, .. } => StorageError::connection(source.to_string()),
+        SdkError::Unavailable { message } => StorageError::connection(message.clone()),
+        SdkError::StreamDisconnected { message } => StorageError::connection(message.clone()),
 
         // Timeout errors
         SdkError::Timeout { duration_ms } => {
             // Log the timeout duration for debugging
             tracing::warn!(duration_ms = duration_ms, "Ledger operation timed out");
-            StorageError::Timeout
+            StorageError::timeout()
         }
 
         // RPC errors - map based on gRPC status code
         SdkError::Rpc { code, message } => match code {
-            Code::NotFound => StorageError::NotFound(message.clone()),
-            Code::AlreadyExists => StorageError::Conflict,
-            Code::Aborted | Code::FailedPrecondition => StorageError::Conflict,
-            Code::InvalidArgument => StorageError::Serialization(message.clone()),
+            Code::NotFound => StorageError::not_found(message.clone()),
+            Code::AlreadyExists => StorageError::conflict(),
+            Code::Aborted | Code::FailedPrecondition => StorageError::conflict(),
+            Code::InvalidArgument => StorageError::serialization(message.clone()),
             Code::Unavailable | Code::DeadlineExceeded | Code::ResourceExhausted => {
                 if err.is_retryable() {
                     // Retryable errors are typically transient
-                    StorageError::Connection(message.clone())
+                    StorageError::connection(message.clone())
                 } else {
-                    StorageError::Internal(message.clone())
+                    StorageError::internal(message.clone())
                 }
             }
             Code::PermissionDenied | Code::Unauthenticated => {
-                StorageError::Internal(format!("Auth error: {message}"))
+                StorageError::internal(format!("Auth error: {message}"))
             }
-            Code::DataLoss => StorageError::Internal(format!("Data loss: {message}")),
-            _ => StorageError::Internal(format!("gRPC error ({code:?}): {message}")),
+            Code::DataLoss => StorageError::internal(format!("Data loss: {message}")),
+            _ => StorageError::internal(format!("gRPC error ({code:?}): {message}")),
         },
 
         // Retry exhausted
@@ -92,7 +92,7 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
             last_error,
         } => {
             tracing::error!(attempts = attempts, "Retry exhausted: {}", last_error);
-            StorageError::Connection(format!(
+            StorageError::connection(format!(
                 "Retry exhausted after {attempts} attempts: {last_error}"
             ))
         }
@@ -109,33 +109,33 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
                 "Operation already committed"
             );
             // Return internal error as this shouldn't happen in normal flow
-            StorageError::Internal(format!("Unexpected: already committed tx={tx_id}"))
+            StorageError::internal(format!("Unexpected: already committed tx={tx_id}"))
         }
 
         SdkError::SequenceGap {
             expected,
             server_has,
-        } => StorageError::Internal(format!(
+        } => StorageError::internal(format!(
             "Sequence gap: expected {expected}, server has {server_has}"
         )),
 
         SdkError::Idempotency { message } => {
-            StorageError::Internal(format!("Idempotency error: {message}"))
+            StorageError::internal(format!("Idempotency error: {message}"))
         }
 
         // Configuration and validation errors
-        SdkError::Config { message } => StorageError::Internal(format!("Config: {message}")),
+        SdkError::Config { message } => StorageError::internal(format!("Config: {message}")),
         SdkError::InvalidUrl { url, message } => {
-            StorageError::Internal(format!("Invalid URL '{url}': {message}"))
+            StorageError::internal(format!("Invalid URL '{url}': {message}"))
         }
 
         // Client shutdown
-        SdkError::Shutdown => StorageError::Connection("Client shutting down".into()),
+        SdkError::Shutdown => StorageError::connection("Client shutting down"),
 
         // Proof verification - indicates data integrity issue
         SdkError::ProofVerification { reason } => {
             tracing::error!("Proof verification failed: {}", reason);
-            StorageError::Internal(format!("Proof verification failed: {reason}"))
+            StorageError::internal(format!("Proof verification failed: {reason}"))
         }
     }
 }
@@ -154,7 +154,7 @@ mod tests {
         };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
-        assert!(matches!(storage_err, StorageError::Connection(_)));
+        assert!(matches!(storage_err, StorageError::Connection { .. }));
     }
 
     #[test]
@@ -162,7 +162,7 @@ mod tests {
         let sdk_err = SdkError::Timeout { duration_ms: 30000 };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
-        assert!(matches!(storage_err, StorageError::Timeout));
+        assert!(matches!(storage_err, StorageError::Timeout { .. }));
     }
 
     #[test]
@@ -173,7 +173,7 @@ mod tests {
         };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
-        assert!(matches!(storage_err, StorageError::NotFound(_)));
+        assert!(matches!(storage_err, StorageError::NotFound { .. }));
     }
 
     #[test]
@@ -184,7 +184,7 @@ mod tests {
         };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
-        assert!(matches!(storage_err, StorageError::Conflict));
+        assert!(matches!(storage_err, StorageError::Conflict { .. }));
     }
 
     #[test]
@@ -195,7 +195,7 @@ mod tests {
         };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
-        assert!(matches!(storage_err, StorageError::Conflict));
+        assert!(matches!(storage_err, StorageError::Conflict { .. }));
     }
 
     #[test]
@@ -206,7 +206,7 @@ mod tests {
         };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
-        assert!(matches!(storage_err, StorageError::Serialization(_)));
+        assert!(matches!(storage_err, StorageError::Serialization { .. }));
     }
 
     #[test]
@@ -214,7 +214,7 @@ mod tests {
         let err = LedgerStorageError::Config("missing endpoint".into());
         let storage_err: StorageError = err.into();
 
-        assert!(matches!(storage_err, StorageError::Internal(_)));
+        assert!(matches!(storage_err, StorageError::Internal { .. }));
     }
 
     #[test]
@@ -222,6 +222,6 @@ mod tests {
         let err = LedgerStorageError::KeyEncoding("invalid hex".into());
         let storage_err: StorageError = err.into();
 
-        assert!(matches!(storage_err, StorageError::Serialization(_)));
+        assert!(matches!(storage_err, StorageError::Serialization { .. }));
     }
 }

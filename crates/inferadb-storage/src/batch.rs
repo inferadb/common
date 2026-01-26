@@ -37,14 +37,14 @@ use tracing::{debug, trace, warn};
 
 use crate::{StorageBackend, StorageResult};
 
-/// Transaction size limit (10MB with safety margin)
-/// We use 9MB as the effective limit to leave room for metadata overhead
+/// Transaction size limit (10MB with safety margin).
+/// We use 9MB as the effective limit to leave room for metadata overhead.
 pub const TRANSACTION_SIZE_LIMIT: usize = 9 * 1024 * 1024;
 
-/// Default maximum batch size (number of operations)
+/// Default maximum batch size (number of operations).
 pub const DEFAULT_MAX_BATCH_SIZE: usize = 1000;
 
-/// Default maximum batch byte size (8MB to stay well under transaction limit)
+/// Default maximum batch byte size (8MB to stay well under transaction limit).
 pub const DEFAULT_MAX_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 /// Configuration for batch writes

@@ -58,6 +58,7 @@ use serde::{Deserialize, Serialize};
 /// assert!(key_with_expiry.valid_until.is_some());
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, bon::Builder)]
+#[serde(deny_unknown_fields)]
 pub struct PublicSigningKey {
     /// Key ID (matches JWT `kid` header).
     ///

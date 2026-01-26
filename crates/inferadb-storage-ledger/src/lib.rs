@@ -85,9 +85,6 @@ mod transaction;
 pub mod auth;
 
 pub use backend::LedgerBackend;
-pub use config::LedgerBackendConfig;
+pub use config::{LedgerBackendConfig, ReadConsistencyConfig, RetryPolicyConfig};
 pub use error::{LedgerStorageError, Result};
 pub use transaction::LedgerTransaction;
-
-// Re-export key types from dependencies for convenience
-pub use inferadb_ledger_sdk::{ReadConsistency, RetryPolicy, TlsConfig};
