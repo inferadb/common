@@ -36,47 +36,65 @@ use std::{
 use tracing::warn;
 
 /// Metrics snapshot for export
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, bon::Builder)]
 pub struct MetricsSnapshot {
     /// Total GET operations
+    #[builder(default)]
     pub get_count: u64,
     /// Total SET operations
+    #[builder(default)]
     pub set_count: u64,
     /// Total DELETE operations
+    #[builder(default)]
     pub delete_count: u64,
     /// Total GET_RANGE operations
+    #[builder(default)]
     pub get_range_count: u64,
     /// Total CLEAR_RANGE operations
+    #[builder(default)]
     pub clear_range_count: u64,
     /// Total TRANSACTION operations
+    #[builder(default)]
     pub transaction_count: u64,
 
     /// Total GET latency in microseconds
+    #[builder(default)]
     pub get_latency_us: u64,
     /// Total SET latency in microseconds
+    #[builder(default)]
     pub set_latency_us: u64,
     /// Total DELETE latency in microseconds
+    #[builder(default)]
     pub delete_latency_us: u64,
     /// Total GET_RANGE latency in microseconds
+    #[builder(default)]
     pub get_range_latency_us: u64,
     /// Total TRANSACTION latency in microseconds
+    #[builder(default)]
     pub transaction_latency_us: u64,
 
     /// Total errors
+    #[builder(default)]
     pub error_count: u64,
     /// Transaction conflicts
+    #[builder(default)]
     pub conflict_count: u64,
     /// Timeout errors
+    #[builder(default)]
     pub timeout_count: u64,
 
     /// Cache hits (if caching enabled)
+    #[builder(default)]
     pub cache_hits: u64,
     /// Cache misses
+    #[builder(default)]
     pub cache_misses: u64,
 
     /// TTL operations count
+    #[builder(default)]
     pub ttl_operations: u64,
     /// Health check count
+    #[builder(default)]
     pub health_check_count: u64,
 }
 
