@@ -20,9 +20,6 @@ inferadb-ledger-sdk = { path = "../../../ledger/crates/sdk" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["sync"] }
 
-# Error handling
-thiserror = "2"
-
 # Logging
 tracing = "0.1"
 
@@ -43,7 +40,7 @@ hex = "0.4"
 # gRPC (for tonic::Code in error mapping)
 tonic = "0.14"
 
-# snafu (for SDK error Location type)
+# Error handling
 snafu = "0.8"
 
 # Builder pattern

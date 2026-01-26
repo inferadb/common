@@ -122,7 +122,7 @@ impl LedgerTransaction {
             }
         };
 
-        result.map_err(LedgerStorageError::Sdk)
+        result.map_err(LedgerStorageError::from)
     }
 }
 
@@ -193,7 +193,7 @@ impl Transaction for LedgerTransaction {
         self.client
             .write(self.namespace_id, self.vault_id, operations)
             .await
-            .map_err(|e| StorageError::from(LedgerStorageError::Sdk(e)))?;
+            .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
         Ok(())
     }

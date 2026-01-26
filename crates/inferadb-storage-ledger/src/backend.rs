@@ -124,7 +124,7 @@ impl LedgerBackend {
         let client_config = config.build_client_config()?;
         let client = LedgerClient::new(client_config)
             .await
-            .map_err(LedgerStorageError::Sdk)?;
+            .map_err(LedgerStorageError::from)?;
 
         Ok(Self {
             client: Arc::new(client),
@@ -190,7 +190,9 @@ impl LedgerBackend {
 
     /// Decodes a hexadecimal key string back to bytes.
     fn decode_key(key: &str) -> std::result::Result<Vec<u8>, LedgerStorageError> {
-        hex::decode(key).map_err(|e| LedgerStorageError::KeyEncoding(e.to_string()))
+        hex::decode(key).map_err(|e| LedgerStorageError::KeyEncoding {
+            message: e.to_string(),
+        })
     }
 
     /// Performs a read with the configured consistency level.
@@ -208,7 +210,7 @@ impl LedgerBackend {
             }
         };
 
-        result.map_err(LedgerStorageError::Sdk)
+        result.map_err(LedgerStorageError::from)
     }
 }
 
@@ -234,7 +236,7 @@ impl StorageBackend for LedgerBackend {
                 vec![Operation::set_entity(encoded_key, value)],
             )
             .await
-            .map_err(|e| StorageError::from(LedgerStorageError::Sdk(e)))?;
+            .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
         Ok(())
     }
@@ -249,7 +251,7 @@ impl StorageBackend for LedgerBackend {
                 vec![Operation::delete_entity(encoded_key)],
             )
             .await
-            .map_err(|e| StorageError::from(LedgerStorageError::Sdk(e)))?;
+            .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
         Ok(())
     }
@@ -294,7 +296,7 @@ impl StorageBackend for LedgerBackend {
             .client
             .list_entities(self.namespace_id, opts)
             .await
-            .map_err(|e| StorageError::from(LedgerStorageError::Sdk(e)))?;
+            .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
         // Filter results to match exact range bounds
         let mut key_values = Vec::new();
@@ -356,7 +358,7 @@ impl StorageBackend for LedgerBackend {
         self.client
             .write(self.namespace_id, self.vault_id, operations)
             .await
-            .map_err(|e| StorageError::from(LedgerStorageError::Sdk(e)))?;
+            .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
         Ok(())
     }
@@ -386,7 +388,7 @@ impl StorageBackend for LedgerBackend {
                 )],
             )
             .await
-            .map_err(|e| StorageError::from(LedgerStorageError::Sdk(e)))?;
+            .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
         Ok(())
     }
@@ -407,7 +409,7 @@ impl StorageBackend for LedgerBackend {
         self.client
             .health_check()
             .await
-            .map_err(|e| StorageError::from(LedgerStorageError::Sdk(e)))?;
+            .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
         // If we get here, the service is either healthy or degraded (both are OK for this check)
         Ok(())

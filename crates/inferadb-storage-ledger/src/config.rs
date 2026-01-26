@@ -206,15 +206,15 @@ impl LedgerBackendConfig {
         tls: Option<TlsConfig>,
     ) -> Result<Self> {
         if endpoints.is_empty() {
-            return Err(LedgerStorageError::Config(
-                "at least one endpoint is required".into(),
-            ));
+            return Err(LedgerStorageError::Config {
+                message: "at least one endpoint is required".into(),
+            });
         }
 
         if client_id.is_empty() {
-            return Err(LedgerStorageError::Config(
-                "client_id cannot be empty".into(),
-            ));
+            return Err(LedgerStorageError::Config {
+                message: "client_id cannot be empty".into(),
+            });
         }
 
         Ok(Self {

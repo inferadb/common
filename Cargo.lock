@@ -1538,7 +1538,6 @@ dependencies = [
  "serde",
  "serde_json",
  "snafu",
- "thiserror 2.0.18",
  "tokio",
  "tonic",
  "tracing",

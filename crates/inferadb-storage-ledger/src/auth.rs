@@ -1,8 +1,8 @@
 //! Ledger-backed implementation of public signing key storage.
 //!
-//! This module provides [`LedgerSigningKeyStore`], which implements the
-//! [`PublicSigningKeyStore`] trait using the InferaDB Ledger as the backing
-//! store.
+//! This module provides [`LedgerSigningKeyStore`](crate::auth::LedgerSigningKeyStore),
+//! which implements the [`PublicSigningKeyStore`](inferadb_storage::auth::PublicSigningKeyStore)
+//! trait using the InferaDB Ledger as the backing store.
 //!
 //! # Architecture
 //!
@@ -206,7 +206,7 @@ impl LedgerSigningKeyStore {
             ReadConsistency::Eventual => self.client.read(namespace_id, None, key).await,
         };
 
-        result.map_err(LedgerStorageError::Sdk)
+        result.map_err(LedgerStorageError::from)
     }
 
     /// Deserializes a key from stored bytes.
@@ -268,7 +268,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
                 {
                     return StorageError::conflict();
                 }
-                StorageError::from(LedgerStorageError::Sdk(e))
+                StorageError::from(LedgerStorageError::from(e))
             });
 
         if let Err(ref e) = result {
@@ -322,7 +322,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
             .client
             .list_entities(namespace_id, opts)
             .await
-            .map_err(|e| StorageError::from(LedgerStorageError::Sdk(e)));
+            .map_err(|e| StorageError::from(LedgerStorageError::from(e)));
 
         let list_result = match result {
             Ok(result) => {
@@ -390,7 +390,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
                 )
                 .await
                 .map(|_| ())
-                .map_err(|e| StorageError::from(LedgerStorageError::Sdk(e)))
+                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
         }
         .await;
 
@@ -438,7 +438,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
                 )
                 .await
                 .map(|_| ())
-                .map_err(|e| StorageError::from(LedgerStorageError::Sdk(e)))
+                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
         }
         .await;
 
@@ -484,7 +484,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
                 )
                 .await
                 .map(|_| ())
-                .map_err(|e| StorageError::from(LedgerStorageError::Sdk(e)))
+                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
         }
         .await;
 
@@ -517,7 +517,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
                 )
                 .await
                 .map(|_| ())
-                .map_err(|e| StorageError::from(LedgerStorageError::Sdk(e)))
+                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
         }
         .await;
 
