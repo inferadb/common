@@ -221,17 +221,12 @@ pub trait PublicSigningKeyStore: Send + Sync {
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let store = MemorySigningKeyStore::new();
 ///     
-///     let key = PublicSigningKey {
-///         kid: "test-key-1".to_string(),
-///         public_key: "MCowBQYDK2VwAyEA...".to_string(),
-///         client_id: 1,
-///         cert_id: 1,
-///         created_at: Utc::now(),
-///         valid_from: Utc::now(),
-///         valid_until: None,
-///         active: true,
-///         revoked_at: None,
-///     };
+///     let key = PublicSigningKey::builder()
+///         .kid("test-key-1".to_owned())
+///         .public_key("MCowBQYDK2VwAyEA...".to_owned())
+///         .client_id(1)
+///         .cert_id(1)
+///         .build();
 ///     
 ///     store.create_key(1, &key).await?;
 ///     
@@ -377,17 +372,12 @@ mod tests {
 
     /// Creates a test key with the given kid.
     fn make_test_key(kid: &str) -> PublicSigningKey {
-        PublicSigningKey {
-            kid: kid.to_string(),
-            public_key: "MCowBQYDK2VwAyEAtest".to_string(),
-            client_id: 1,
-            cert_id: 1,
-            created_at: Utc::now(),
-            valid_from: Utc::now(),
-            valid_until: None,
-            active: true,
-            revoked_at: None,
-        }
+        PublicSigningKey::builder()
+            .kid(kid.to_owned())
+            .public_key("MCowBQYDK2VwAyEAtest".to_owned())
+            .client_id(1)
+            .cert_id(1)
+            .build()
     }
 
     /// Creates a test key with specified validity window.
@@ -396,17 +386,14 @@ mod tests {
         valid_from: chrono::DateTime<Utc>,
         valid_until: Option<chrono::DateTime<Utc>>,
     ) -> PublicSigningKey {
-        PublicSigningKey {
-            kid: kid.to_string(),
-            public_key: "MCowBQYDK2VwAyEAtest".to_string(),
-            client_id: 1,
-            cert_id: 1,
-            created_at: Utc::now(),
-            valid_from,
-            valid_until,
-            active: true,
-            revoked_at: None,
-        }
+        PublicSigningKey::builder()
+            .kid(kid.to_owned())
+            .public_key("MCowBQYDK2VwAyEAtest".to_owned())
+            .client_id(1)
+            .cert_id(1)
+            .valid_from(valid_from)
+            .maybe_valid_until(valid_until)
+            .build()
     }
 
     #[tokio::test]

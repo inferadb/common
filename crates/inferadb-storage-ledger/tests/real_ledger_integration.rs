@@ -70,10 +70,10 @@ fn unique_vault_id() -> i64 {
 /// Creates a LedgerBackend for testing with a unique vault.
 async fn create_test_backend() -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
-        .with_endpoint(ledger_endpoint())
-        .with_client_id(format!("test-client-{}", unique_vault_id()))
-        .with_namespace_id(ledger_namespace_id())
-        .with_vault_id(unique_vault_id())
+        .endpoints([ledger_endpoint()])
+        .client_id(format!("test-client-{}", unique_vault_id()))
+        .namespace_id(ledger_namespace_id())
+        .vault_id(unique_vault_id())
         .build()
         .expect("valid config");
 
@@ -85,10 +85,10 @@ async fn create_test_backend() -> LedgerBackend {
 /// Creates a LedgerBackend with a specific vault ID (for isolation tests).
 async fn create_backend_with_vault(vault_id: i64) -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
-        .with_endpoint(ledger_endpoint())
-        .with_client_id(format!("test-client-vault-{}", vault_id))
-        .with_namespace_id(ledger_namespace_id())
-        .with_vault_id(vault_id)
+        .endpoints([ledger_endpoint()])
+        .client_id(format!("test-client-vault-{}", vault_id))
+        .namespace_id(ledger_namespace_id())
+        .vault_id(vault_id)
         .build()
         .expect("valid config");
 

@@ -45,52 +45,72 @@ pub enum SigningKeyErrorKind {
 }
 
 /// Snapshot of signing key metrics at a point in time.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, bon::Builder)]
 pub struct SigningKeyMetricsSnapshot {
     // Operation counts
     /// Total create_key operations.
+    #[builder(default)]
     pub create_count: u64,
     /// Total get_key operations.
+    #[builder(default)]
     pub get_count: u64,
     /// Total list_active_keys operations.
+    #[builder(default)]
     pub list_count: u64,
     /// Total deactivate_key operations.
+    #[builder(default)]
     pub deactivate_count: u64,
     /// Total revoke_key operations.
+    #[builder(default)]
     pub revoke_count: u64,
     /// Total activate_key operations.
+    #[builder(default)]
     pub activate_count: u64,
     /// Total delete_key operations.
+    #[builder(default)]
     pub delete_count: u64,
 
     // Latencies (cumulative microseconds)
     /// Total latency for create operations in microseconds.
+    #[builder(default)]
     pub create_latency_us: u64,
     /// Total latency for get operations in microseconds.
+    #[builder(default)]
     pub get_latency_us: u64,
     /// Total latency for list operations in microseconds.
+    #[builder(default)]
     pub list_latency_us: u64,
     /// Total latency for deactivate operations in microseconds.
+    #[builder(default)]
     pub deactivate_latency_us: u64,
     /// Total latency for revoke operations in microseconds.
+    #[builder(default)]
     pub revoke_latency_us: u64,
     /// Total latency for activate operations in microseconds.
+    #[builder(default)]
     pub activate_latency_us: u64,
     /// Total latency for delete operations in microseconds.
+    #[builder(default)]
     pub delete_latency_us: u64,
 
     // Error counts by category
     /// Not found errors.
+    #[builder(default)]
     pub error_not_found: u64,
     /// Conflict errors.
+    #[builder(default)]
     pub error_conflict: u64,
     /// Connection errors.
+    #[builder(default)]
     pub error_connection: u64,
     /// Serialization errors.
+    #[builder(default)]
     pub error_serialization: u64,
     /// Invalid state errors.
+    #[builder(default)]
     pub error_invalid_state: u64,
     /// Other errors.
+    #[builder(default)]
     pub error_other: u64,
 }
 
@@ -570,5 +590,90 @@ mod tests {
         assert!((snapshot.avg_get_latency_us() - 0.0).abs() < f64::EPSILON);
         assert!((snapshot.avg_create_latency_us() - 0.0).abs() < f64::EPSILON);
         assert!((snapshot.avg_list_latency_us() - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_metrics_snapshot_builder_defaults() {
+        // Builder with no fields should produce all zeros (matching Default)
+        let built = SigningKeyMetricsSnapshot::builder().build();
+        let default = SigningKeyMetricsSnapshot::default();
+
+        assert_eq!(built.create_count, default.create_count);
+        assert_eq!(built.get_count, default.get_count);
+        assert_eq!(built.list_count, default.list_count);
+        assert_eq!(built.error_not_found, default.error_not_found);
+        assert_eq!(built.total_operations(), 0);
+        assert_eq!(built.total_errors(), 0);
+    }
+
+    #[test]
+    fn test_metrics_snapshot_builder_partial() {
+        // Builder should allow setting only some fields
+        let snapshot = SigningKeyMetricsSnapshot::builder()
+            .get_count(5)
+            .error_not_found(1)
+            .build();
+
+        assert_eq!(snapshot.get_count, 5);
+        assert_eq!(snapshot.error_not_found, 1);
+        assert_eq!(snapshot.total_operations(), 5);
+        assert_eq!(snapshot.total_errors(), 1);
+        // Other fields should be 0
+        assert_eq!(snapshot.create_count, 0);
+        assert_eq!(snapshot.list_count, 0);
+    }
+
+    #[test]
+    fn test_metrics_snapshot_builder_all_fields() {
+        let snapshot = SigningKeyMetricsSnapshot::builder()
+            // Operation counts
+            .create_count(1)
+            .get_count(2)
+            .list_count(3)
+            .deactivate_count(4)
+            .revoke_count(5)
+            .activate_count(6)
+            .delete_count(7)
+            // Latencies
+            .create_latency_us(100)
+            .get_latency_us(200)
+            .list_latency_us(300)
+            .deactivate_latency_us(400)
+            .revoke_latency_us(500)
+            .activate_latency_us(600)
+            .delete_latency_us(700)
+            // Errors
+            .error_not_found(10)
+            .error_conflict(11)
+            .error_connection(12)
+            .error_serialization(13)
+            .error_invalid_state(14)
+            .error_other(15)
+            .build();
+
+        assert_eq!(snapshot.total_operations(), 1 + 2 + 3 + 4 + 5 + 6 + 7);
+        assert_eq!(snapshot.total_errors(), 10 + 11 + 12 + 13 + 14 + 15);
+    }
+
+    #[test]
+    fn test_metrics_snapshot_builder_for_comparison() {
+        // Real use case: compare actual metrics with expected
+        let metrics = SigningKeyMetrics::new();
+        metrics.record_get(Duration::from_micros(100));
+        metrics.record_get(Duration::from_micros(200));
+        metrics.record_error(SigningKeyErrorKind::NotFound);
+
+        let actual = metrics.snapshot();
+
+        // Build expected snapshot for comparison
+        let expected = SigningKeyMetricsSnapshot::builder()
+            .get_count(2)
+            .get_latency_us(300)
+            .error_not_found(1)
+            .build();
+
+        assert_eq!(actual.get_count, expected.get_count);
+        assert_eq!(actual.get_latency_us, expected.get_latency_us);
+        assert_eq!(actual.error_not_found, expected.error_not_found);
     }
 }

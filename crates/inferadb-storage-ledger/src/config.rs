@@ -37,10 +37,10 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// use inferadb_storage_ledger::LedgerBackendConfig;
 ///
 /// let config = LedgerBackendConfig::builder()
-///     .with_endpoint("http://localhost:50051")
-///     .with_client_id("my-service-001")
-///     .with_namespace_id(1)
-///     .with_vault_id(100)  // Optional
+///     .endpoints(vec!["http://localhost:50051"])
+///     .client_id("my-service-001")
+///     .namespace_id(1)
+///     .vault_id(100)  // Optional
 ///     .build()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -112,18 +112,21 @@ impl From<ReadConsistencyConfig> for ReadConsistency {
 }
 
 /// Serializable retry policy configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, bon::Builder, Serialize, Deserialize)]
 pub struct RetryPolicyConfig {
     /// Maximum number of retry attempts.
     #[serde(default = "default_max_attempts")]
+    #[builder(default = default_max_attempts())]
     pub max_attempts: u32,
 
     /// Initial backoff duration.
     #[serde(with = "humantime_serde", default = "default_initial_backoff")]
+    #[builder(default = default_initial_backoff())]
     pub initial_backoff: Duration,
 
     /// Maximum backoff duration.
     #[serde(with = "humantime_serde", default = "default_max_backoff")]
+    #[builder(default = default_max_backoff())]
     pub max_backoff: Duration,
 }
 
@@ -152,18 +155,78 @@ impl Default for RetryPolicyConfig {
 impl From<RetryPolicyConfig> for RetryPolicy {
     fn from(config: RetryPolicyConfig) -> Self {
         RetryPolicy::builder()
-            .with_max_attempts(config.max_attempts)
-            .with_initial_backoff(config.initial_backoff)
-            .with_max_backoff(config.max_backoff)
+            .max_attempts(config.max_attempts)
+            .initial_backoff(config.initial_backoff)
+            .max_backoff(config.max_backoff)
             .build()
     }
 }
 
+#[bon::bon]
 impl LedgerBackendConfig {
-    /// Creates a new configuration builder.
-    #[must_use]
-    pub fn builder() -> LedgerBackendConfigBuilder {
-        LedgerBackendConfigBuilder::default()
+    /// Creates a new configuration, validating all required fields.
+    ///
+    /// # Arguments
+    ///
+    /// * `endpoints` - Server endpoint URLs. At least one must be provided.
+    /// * `client_id` - Unique client identifier for idempotency tracking.
+    /// * `namespace_id` - Namespace ID for key scoping.
+    ///
+    /// # Optional Fields
+    ///
+    /// * `vault_id` - Vault ID for finer-grained scoping within the namespace.
+    /// * `timeout` - Request timeout (default: 30 seconds).
+    /// * `connect_timeout` - Connection timeout (default: 5 seconds).
+    /// * `read_consistency` - Read consistency level (default: Linearizable).
+    /// * `retry_policy` - Retry policy (default: RetryPolicyConfig default).
+    /// * `compression` - Enable gzip compression (default: false).
+    /// * `tls` - TLS configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - No endpoints provided or endpoints list is empty
+    /// - Client ID is empty
+    #[builder]
+    pub fn new(
+        #[builder(with = |iter: impl IntoIterator<Item = impl Into<String>>| {
+            iter.into_iter().map(Into::into).collect()
+        })]
+        endpoints: Vec<String>,
+        #[builder(into)] client_id: String,
+        namespace_id: i64,
+        vault_id: Option<i64>,
+        #[builder(default = DEFAULT_TIMEOUT)] timeout: Duration,
+        #[builder(default = DEFAULT_CONNECT_TIMEOUT)] connect_timeout: Duration,
+        #[builder(default)] read_consistency: ReadConsistencyConfig,
+        #[builder(default)] retry_policy: RetryPolicyConfig,
+        #[builder(default)] compression: bool,
+        tls: Option<TlsConfig>,
+    ) -> Result<Self> {
+        if endpoints.is_empty() {
+            return Err(LedgerStorageError::Config(
+                "at least one endpoint is required".into(),
+            ));
+        }
+
+        if client_id.is_empty() {
+            return Err(LedgerStorageError::Config(
+                "client_id cannot be empty".into(),
+            ));
+        }
+
+        Ok(Self {
+            endpoints,
+            client_id,
+            namespace_id,
+            vault_id,
+            timeout,
+            connect_timeout,
+            read_consistency,
+            retry_policy,
+            compression,
+            tls,
+        })
     }
 
     /// Returns the configured endpoints.
@@ -216,183 +279,16 @@ impl LedgerBackendConfig {
 
     /// Builds the SDK client configuration from this backend config.
     pub(crate) fn build_client_config(&self) -> Result<ClientConfig> {
-        let mut builder = ClientConfig::builder()
-            .with_endpoints(self.endpoints.clone())
-            .with_client_id(&self.client_id)
-            .with_timeout(self.timeout)
-            .with_connect_timeout(self.connect_timeout)
-            .with_retry_policy(self.retry_policy.clone().into())
-            .with_compression(self.compression);
-
-        if let Some(ref tls) = self.tls {
-            builder = builder.with_tls(tls.clone());
-        }
-
-        builder.build().map_err(LedgerStorageError::from)
-    }
-}
-
-/// Builder for [`LedgerBackendConfig`].
-#[derive(Debug, Default)]
-pub struct LedgerBackendConfigBuilder {
-    endpoints: Vec<String>,
-    client_id: Option<String>,
-    namespace_id: Option<i64>,
-    vault_id: Option<i64>,
-    timeout: Option<Duration>,
-    connect_timeout: Option<Duration>,
-    read_consistency: ReadConsistencyConfig,
-    retry_policy: RetryPolicyConfig,
-    compression: bool,
-    tls: Option<TlsConfig>,
-}
-
-impl LedgerBackendConfigBuilder {
-    /// Sets the server endpoint URLs.
-    ///
-    /// At least one endpoint must be provided.
-    #[must_use]
-    pub fn with_endpoints<I, S>(mut self, endpoints: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.endpoints = endpoints.into_iter().map(Into::into).collect();
-        self
-    }
-
-    /// Adds a single endpoint URL.
-    #[must_use]
-    pub fn with_endpoint<S: Into<String>>(mut self, endpoint: S) -> Self {
-        self.endpoints.push(endpoint.into());
-        self
-    }
-
-    /// Sets the client identifier for idempotency tracking.
-    ///
-    /// This must be unique per client instance to ensure correct
-    /// duplicate detection.
-    #[must_use]
-    pub fn with_client_id<S: Into<String>>(mut self, client_id: S) -> Self {
-        self.client_id = Some(client_id.into());
-        self
-    }
-
-    /// Sets the namespace ID for key scoping.
-    ///
-    /// All keys will be stored within this namespace.
-    #[must_use]
-    pub fn with_namespace_id(mut self, namespace_id: i64) -> Self {
-        self.namespace_id = Some(namespace_id);
-        self
-    }
-
-    /// Sets the vault ID for key scoping.
-    ///
-    /// If set, keys will be scoped to this specific vault within the namespace.
-    /// If not set, keys are stored at the namespace level.
-    #[must_use]
-    pub fn with_vault_id(mut self, vault_id: i64) -> Self {
-        self.vault_id = Some(vault_id);
-        self
-    }
-
-    /// Sets the request timeout.
-    ///
-    /// Default: 30 seconds.
-    #[must_use]
-    pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
-    }
-
-    /// Sets the connection timeout.
-    ///
-    /// Default: 5 seconds.
-    #[must_use]
-    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
-        self.connect_timeout = Some(timeout);
-        self
-    }
-
-    /// Sets the read consistency level.
-    ///
-    /// Default: Linearizable (strong consistency).
-    #[must_use]
-    pub fn with_read_consistency(mut self, consistency: ReadConsistency) -> Self {
-        self.read_consistency = match consistency {
-            ReadConsistency::Eventual => ReadConsistencyConfig::Eventual,
-            ReadConsistency::Linearizable => ReadConsistencyConfig::Linearizable,
-        };
-        self
-    }
-
-    /// Sets the retry policy.
-    #[must_use]
-    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
-        self.retry_policy = RetryPolicyConfig {
-            max_attempts: policy.max_attempts,
-            initial_backoff: policy.initial_backoff,
-            max_backoff: policy.max_backoff,
-        };
-        self
-    }
-
-    /// Enables gzip compression.
-    #[must_use]
-    pub fn with_compression(mut self, enabled: bool) -> Self {
-        self.compression = enabled;
-        self
-    }
-
-    /// Sets the TLS configuration.
-    #[must_use]
-    pub fn with_tls(mut self, tls: TlsConfig) -> Self {
-        self.tls = Some(tls);
-        self
-    }
-
-    /// Builds the configuration, validating all settings.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - No endpoints provided
-    /// - Client ID is missing or empty
-    /// - Namespace ID is not set
-    pub fn build(self) -> Result<LedgerBackendConfig> {
-        if self.endpoints.is_empty() {
-            return Err(LedgerStorageError::Config(
-                "at least one endpoint is required".into(),
-            ));
-        }
-
-        let client_id = self
-            .client_id
-            .ok_or_else(|| LedgerStorageError::Config("client_id is required".into()))?;
-
-        if client_id.is_empty() {
-            return Err(LedgerStorageError::Config(
-                "client_id cannot be empty".into(),
-            ));
-        }
-
-        let namespace_id = self
-            .namespace_id
-            .ok_or_else(|| LedgerStorageError::Config("namespace_id is required".into()))?;
-
-        Ok(LedgerBackendConfig {
-            endpoints: self.endpoints,
-            client_id,
-            namespace_id,
-            vault_id: self.vault_id,
-            timeout: self.timeout.unwrap_or(DEFAULT_TIMEOUT),
-            connect_timeout: self.connect_timeout.unwrap_or(DEFAULT_CONNECT_TIMEOUT),
-            read_consistency: self.read_consistency,
-            retry_policy: self.retry_policy,
-            compression: self.compression,
-            tls: self.tls,
-        })
+        ClientConfig::builder()
+            .endpoints(self.endpoints.clone())
+            .client_id(&self.client_id)
+            .timeout(self.timeout)
+            .connect_timeout(self.connect_timeout)
+            .retry_policy(self.retry_policy.clone().into())
+            .compression(self.compression)
+            .maybe_tls(self.tls.clone())
+            .build()
+            .map_err(LedgerStorageError::from)
     }
 }
 
@@ -404,9 +300,9 @@ mod tests {
     #[test]
     fn test_valid_config() {
         let config = LedgerBackendConfig::builder()
-            .with_endpoint("http://localhost:50051")
-            .with_client_id("test-client")
-            .with_namespace_id(1)
+            .endpoints(vec!["http://localhost:50051"])
+            .client_id("test-client")
+            .namespace_id(1)
             .build();
 
         assert!(config.is_ok());
@@ -420,10 +316,10 @@ mod tests {
     #[test]
     fn test_config_with_vault() {
         let config = LedgerBackendConfig::builder()
-            .with_endpoint("http://localhost:50051")
-            .with_client_id("test-client")
-            .with_namespace_id(1)
-            .with_vault_id(100)
+            .endpoints(vec!["http://localhost:50051"])
+            .client_id("test-client")
+            .namespace_id(1)
+            .vault_id(100)
             .build()
             .unwrap();
 
@@ -431,30 +327,22 @@ mod tests {
     }
 
     #[test]
-    fn test_missing_endpoint() {
+    fn test_validation_empty_endpoints() {
         let result = LedgerBackendConfig::builder()
-            .with_client_id("test-client")
-            .with_namespace_id(1)
+            .endpoints(Vec::<String>::new())
+            .client_id("test-client")
+            .namespace_id(1)
             .build();
 
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_missing_client_id() {
+    fn test_validation_empty_client_id() {
         let result = LedgerBackendConfig::builder()
-            .with_endpoint("http://localhost:50051")
-            .with_namespace_id(1)
-            .build();
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_missing_namespace_id() {
-        let result = LedgerBackendConfig::builder()
-            .with_endpoint("http://localhost:50051")
-            .with_client_id("test-client")
+            .endpoints(vec!["http://localhost:50051"])
+            .client_id("")
+            .namespace_id(1)
             .build();
 
         assert!(result.is_err());
@@ -463,11 +351,11 @@ mod tests {
     #[test]
     fn test_custom_timeouts() {
         let config = LedgerBackendConfig::builder()
-            .with_endpoint("http://localhost:50051")
-            .with_client_id("test-client")
-            .with_namespace_id(1)
-            .with_timeout(Duration::from_secs(60))
-            .with_connect_timeout(Duration::from_secs(10))
+            .endpoints(vec!["http://localhost:50051"])
+            .client_id("test-client")
+            .namespace_id(1)
+            .timeout(Duration::from_secs(60))
+            .connect_timeout(Duration::from_secs(10))
             .build()
             .unwrap();
 
@@ -478,9 +366,9 @@ mod tests {
     #[test]
     fn test_read_consistency_default_is_linearizable() {
         let config = LedgerBackendConfig::builder()
-            .with_endpoint("http://localhost:50051")
-            .with_client_id("test-client")
-            .with_namespace_id(1)
+            .endpoints(vec!["http://localhost:50051"])
+            .client_id("test-client")
+            .namespace_id(1)
             .build()
             .unwrap();
 
@@ -493,10 +381,10 @@ mod tests {
     #[test]
     fn test_read_consistency_eventual() {
         let config = LedgerBackendConfig::builder()
-            .with_endpoint("http://localhost:50051")
-            .with_client_id("test-client")
-            .with_namespace_id(1)
-            .with_read_consistency(ReadConsistency::Eventual)
+            .endpoints(vec!["http://localhost:50051"])
+            .client_id("test-client")
+            .namespace_id(1)
+            .read_consistency(ReadConsistencyConfig::Eventual)
             .build()
             .unwrap();
 
@@ -504,5 +392,58 @@ mod tests {
             config.read_consistency(),
             ReadConsistency::Eventual
         ));
+    }
+
+    #[test]
+    fn test_all_optional_fields() {
+        let config = LedgerBackendConfig::builder()
+            .endpoints(vec!["http://localhost:50051"])
+            .client_id("test-client")
+            .namespace_id(1)
+            .vault_id(100)
+            .timeout(Duration::from_secs(60))
+            .connect_timeout(Duration::from_secs(10))
+            .read_consistency(ReadConsistencyConfig::Eventual)
+            .retry_policy(RetryPolicyConfig::default())
+            .compression(true)
+            .build()
+            .unwrap();
+
+        assert_eq!(config.vault_id(), Some(100));
+        assert_eq!(config.timeout(), Duration::from_secs(60));
+        assert!(config.compression());
+    }
+
+    #[test]
+    fn test_retry_policy_builder_defaults_match_default_impl() {
+        let built = RetryPolicyConfig::builder().build();
+        let default = RetryPolicyConfig::default();
+
+        assert_eq!(built.max_attempts, default.max_attempts);
+        assert_eq!(built.initial_backoff, default.initial_backoff);
+        assert_eq!(built.max_backoff, default.max_backoff);
+    }
+
+    #[test]
+    fn test_retry_policy_builder_with_custom_values() {
+        let config = RetryPolicyConfig::builder()
+            .max_attempts(5)
+            .initial_backoff(Duration::from_millis(200))
+            .max_backoff(Duration::from_secs(30))
+            .build();
+
+        assert_eq!(config.max_attempts, 5);
+        assert_eq!(config.initial_backoff, Duration::from_millis(200));
+        assert_eq!(config.max_backoff, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn test_retry_policy_builder_partial_overrides() {
+        let config = RetryPolicyConfig::builder().max_attempts(10).build();
+
+        assert_eq!(config.max_attempts, 10);
+        // Other fields should use defaults
+        assert_eq!(config.initial_backoff, default_initial_backoff());
+        assert_eq!(config.max_backoff, default_max_backoff());
     }
 }

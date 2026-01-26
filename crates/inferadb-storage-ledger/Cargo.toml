@@ -46,6 +46,9 @@ tonic = "0.14"
 # snafu (for SDK error Location type)
 snafu = "0.8"
 
+# Builder pattern
+bon = "3.8"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 

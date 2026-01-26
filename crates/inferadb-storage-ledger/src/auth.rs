@@ -38,17 +38,12 @@
 //! # let client: Arc<LedgerClient> = todo!();
 //! let store = LedgerSigningKeyStore::new(client);
 //!
-//! let key = PublicSigningKey {
-//!     kid: "key-2024-001".to_string(),
-//!     public_key: "MCowBQYDK2VwAyEA...".to_string(),
-//!     client_id: 1001,
-//!     cert_id: 42,
-//!     created_at: Utc::now(),
-//!     valid_from: Utc::now(),
-//!     valid_until: None,
-//!     active: true,
-//!     revoked_at: None,
-//! };
+//! let key = PublicSigningKey::builder()
+//!     .kid("key-2024-001".to_owned())
+//!     .public_key("MCowBQYDK2VwAyEA...".to_owned())
+//!     .client_id(1001)
+//!     .cert_id(42)
+//!     .build();
 //!
 //! // Store the key in the org's namespace
 //! store.create_key(100, &key).await?;
@@ -553,17 +548,14 @@ mod tests {
     #[test]
     fn test_serialization_round_trip() {
         let now = Utc::now();
-        let key = PublicSigningKey {
-            kid: "test-key".to_string(),
-            public_key: "MCowBQYDK2VwAyEAtest".to_string(),
-            client_id: 12345,
-            cert_id: 42,
-            created_at: now,
-            valid_from: now,
-            valid_until: None,
-            active: true,
-            revoked_at: None,
-        };
+        let key = PublicSigningKey::builder()
+            .kid("test-key".to_owned())
+            .public_key("MCowBQYDK2VwAyEAtest".to_owned())
+            .client_id(12345)
+            .cert_id(42)
+            .created_at(now)
+            .valid_from(now)
+            .build();
 
         let bytes = LedgerSigningKeyStore::serialize_key(&key).expect("serialize");
         let deserialized = LedgerSigningKeyStore::deserialize_key(&bytes).expect("deserialize");

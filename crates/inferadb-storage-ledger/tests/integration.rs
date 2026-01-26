@@ -19,10 +19,10 @@ use inferadb_storage_ledger::{LedgerBackend, LedgerBackendConfig};
 /// Creates a LedgerBackend connected to the given mock server.
 async fn create_test_backend(server: &MockLedgerServer) -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
-        .with_endpoint(server.endpoint())
-        .with_client_id("test-client")
-        .with_namespace_id(1)
-        .with_vault_id(0)
+        .endpoints([server.endpoint()])
+        .client_id("test-client")
+        .namespace_id(1)
+        .vault_id(0)
         .build()
         .expect("valid config");
 
@@ -475,18 +475,18 @@ async fn test_vault_isolation() {
 
     // Create two backends with different vaults
     let config1 = LedgerBackendConfig::builder()
-        .with_endpoint(server.endpoint())
-        .with_client_id("client-vault-1")
-        .with_namespace_id(1)
-        .with_vault_id(100)
+        .endpoints([server.endpoint()])
+        .client_id("client-vault-1")
+        .namespace_id(1)
+        .vault_id(100)
         .build()
         .unwrap();
 
     let config2 = LedgerBackendConfig::builder()
-        .with_endpoint(server.endpoint())
-        .with_client_id("client-vault-2")
-        .with_namespace_id(1)
-        .with_vault_id(200)
+        .endpoints([server.endpoint()])
+        .client_id("client-vault-2")
+        .namespace_id(1)
+        .vault_id(200)
         .build()
         .unwrap();
 

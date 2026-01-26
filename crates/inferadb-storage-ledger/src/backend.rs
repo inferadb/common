@@ -52,9 +52,9 @@ fn common_prefix(a: &str, b: &str) -> String {
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let config = LedgerBackendConfig::builder()
-///         .with_endpoint("http://localhost:50051")
-///         .with_client_id("my-service")
-///         .with_namespace_id(1)
+///         .endpoints(["http://localhost:50051"])
+///         .client_id("my-service")
+///         .namespace_id(1)
 ///         .build()?;
 ///
 ///     let backend = LedgerBackend::new(config).await?;
@@ -111,9 +111,9 @@ impl LedgerBackend {
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let config = LedgerBackendConfig::builder()
-    ///     .with_endpoint("http://localhost:50051")
-    ///     .with_client_id("my-service")
-    ///     .with_namespace_id(1)
+    ///     .endpoints(["http://localhost:50051"])
+    ///     .client_id("my-service")
+    ///     .namespace_id(1)
     ///     .build()?;
     ///
     /// let backend = LedgerBackend::new(config).await?;

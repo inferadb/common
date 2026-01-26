@@ -48,13 +48,16 @@ pub const DEFAULT_MAX_BATCH_SIZE: usize = 1000;
 pub const DEFAULT_MAX_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 /// Configuration for batch writes
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, bon::Builder)]
 pub struct BatchConfig {
     /// Maximum number of operations per batch
+    #[builder(default = DEFAULT_MAX_BATCH_SIZE)]
     pub max_batch_size: usize,
     /// Maximum byte size per batch (should be under the 10MB transaction limit)
+    #[builder(default = DEFAULT_MAX_BATCH_BYTES)]
     pub max_batch_bytes: usize,
     /// Enable batching (can be disabled for testing)
+    #[builder(default = true)]
     pub enabled: bool,
 }
 
@@ -72,31 +75,24 @@ impl BatchConfig {
     /// Create a disabled batch config
     #[must_use]
     pub fn disabled() -> Self {
-        Self {
-            max_batch_size: 0,
-            max_batch_bytes: 0,
-            enabled: false,
-        }
+        Self::builder().enabled(false).build()
     }
 
     /// Create a batch config with custom settings
     #[must_use]
     pub fn new(max_batch_size: usize, max_batch_bytes: usize) -> Self {
-        Self {
-            max_batch_size,
-            max_batch_bytes,
-            enabled: true,
-        }
+        Self::builder()
+            .max_batch_size(max_batch_size)
+            .max_batch_bytes(max_batch_bytes)
+            .build()
     }
 
     /// Create a batch config optimized for large transactions
     #[must_use]
     pub fn for_large_transactions() -> Self {
-        Self {
-            max_batch_size: DEFAULT_MAX_BATCH_SIZE,
-            max_batch_bytes: TRANSACTION_SIZE_LIMIT,
-            enabled: true,
-        }
+        Self::builder()
+            .max_batch_bytes(TRANSACTION_SIZE_LIMIT)
+            .build()
     }
 }
 
@@ -373,6 +369,38 @@ mod tests {
     #[test]
     fn test_batch_config_disabled() {
         let config = BatchConfig::disabled();
+        assert!(!config.enabled);
+    }
+
+    #[test]
+    fn test_batch_config_builder() {
+        let config = BatchConfig::builder()
+            .max_batch_size(500)
+            .enabled(true)
+            .build();
+        assert_eq!(config.max_batch_size, 500);
+        assert_eq!(config.max_batch_bytes, DEFAULT_MAX_BATCH_BYTES);
+        assert!(config.enabled);
+    }
+
+    #[test]
+    fn test_batch_config_builder_defaults() {
+        let built = BatchConfig::builder().build();
+        let default = BatchConfig::default();
+        assert_eq!(built.max_batch_size, default.max_batch_size);
+        assert_eq!(built.max_batch_bytes, default.max_batch_bytes);
+        assert_eq!(built.enabled, default.enabled);
+    }
+
+    #[test]
+    fn test_batch_config_builder_all_fields() {
+        let config = BatchConfig::builder()
+            .max_batch_size(100)
+            .max_batch_bytes(1024)
+            .enabled(false)
+            .build();
+        assert_eq!(config.max_batch_size, 100);
+        assert_eq!(config.max_batch_bytes, 1024);
         assert!(!config.enabled);
     }
 

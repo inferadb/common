@@ -39,17 +39,12 @@
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let store = MemorySigningKeyStore::new();
 //!     
-//!     let key = PublicSigningKey {
-//!         kid: "key-abc123".to_string(),
-//!         public_key: "MCowBQYDK2VwAyEA...".to_string(),
-//!         client_id: 1001,
-//!         cert_id: 42,
-//!         created_at: Utc::now(),
-//!         valid_from: Utc::now(),
-//!         valid_until: None,
-//!         active: true,
-//!         revoked_at: None,
-//!     };
+//!     let key = PublicSigningKey::builder()
+//!         .kid("key-abc123".to_owned())
+//!         .public_key("MCowBQYDK2VwAyEA...".to_owned())
+//!         .client_id(1001)
+//!         .cert_id(42)
+//!         .build();
 //!     
 //!     store.create_key(100, &key).await?;
 //!     

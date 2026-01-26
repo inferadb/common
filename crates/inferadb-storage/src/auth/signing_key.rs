@@ -31,27 +31,33 @@ use serde::{Deserialize, Serialize};
 ///
 /// # Example
 ///
-/// ```
+/// ```no_run
 /// use chrono::{Duration, Utc};
 /// use inferadb_storage::auth::PublicSigningKey;
 ///
-/// // Create a key that's valid for 1 year
-/// let key = PublicSigningKey {
-///     kid: "key-2024-001".to_string(),
-///     public_key: "MCowBQYDK2VwAyEAabcd1234...".to_string(),
-///     client_id: 12345,
-///     cert_id: 1,
-///     created_at: Utc::now(),
-///     valid_from: Utc::now(),
-///     valid_until: Some(Utc::now() + Duration::days(365)),
-///     active: true,
-///     revoked_at: None,
-/// };
+/// // Create a key with minimal required fields (defaults: active=true, valid times=now)
+/// let key = PublicSigningKey::builder()
+///     .kid("key-2024-001".to_owned())
+///     .public_key("MCowBQYDK2VwAyEAabcd1234...".to_owned())
+///     .client_id(12345)
+///     .cert_id(1)
+///     .build();
 ///
 /// assert!(key.active);
 /// assert!(key.revoked_at.is_none());
+///
+/// // Create a key with expiry
+/// let key_with_expiry = PublicSigningKey::builder()
+///     .kid("key-2024-002".to_owned())
+///     .public_key("MCowBQYDK2VwAyEAabcd1234...".to_owned())
+///     .client_id(12345)
+///     .cert_id(2)
+///     .valid_until(Utc::now() + Duration::days(365))
+///     .build();
+///
+/// assert!(key_with_expiry.valid_until.is_some());
 /// ```
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, bon::Builder)]
 pub struct PublicSigningKey {
     /// Key ID (matches JWT `kid` header).
     ///
@@ -85,6 +91,7 @@ pub struct PublicSigningKey {
     /// When the key was registered in Ledger.
     ///
     /// This is set once at key creation and never changes.
+    #[builder(default = Utc::now())]
     pub created_at: DateTime<Utc>,
 
     /// When the key becomes valid (for rotation grace periods).
@@ -92,6 +99,7 @@ pub struct PublicSigningKey {
     /// During key rotation, new keys may be created with a `valid_from`
     /// time slightly in the future to allow for cache propagation.
     /// Tokens signed with this key are rejected until this time.
+    #[builder(default = Utc::now())]
     pub valid_from: DateTime<Utc>,
 
     /// When the key expires (optional).
@@ -106,6 +114,7 @@ pub struct PublicSigningKey {
     ///
     /// Inactive keys are not used for validation. This provides a
     /// soft-disable mechanism that's reversible, unlike revocation.
+    #[builder(default = true)]
     pub active: bool,
 
     /// Revocation timestamp (if revoked).
@@ -121,19 +130,102 @@ mod tests {
     use super::*;
     use chrono::Duration;
 
+    // ===== TDD Tests for bon::Builder =====
+
+    #[test]
+    fn test_public_signing_key_builder_minimal() {
+        let key = PublicSigningKey::builder()
+            .kid("test-key".to_owned())
+            .public_key("MCowBQYDK2VwAyEAtest".to_owned())
+            .client_id(1001)
+            .cert_id(42)
+            .build();
+
+        assert_eq!(key.kid, "test-key");
+        assert_eq!(key.client_id, 1001);
+        assert_eq!(key.cert_id, 42);
+        // Defaults
+        assert!(key.active); // default true
+        assert!(key.valid_until.is_none()); // default None
+        assert!(key.revoked_at.is_none()); // default None
+    }
+
+    #[test]
+    fn test_public_signing_key_builder_with_expiry() {
+        let expiry = Utc::now() + Duration::days(365);
+        let key = PublicSigningKey::builder()
+            .kid("test-key".to_owned())
+            .public_key("MCowBQYDK2VwAyEAtest".to_owned())
+            .client_id(1001)
+            .cert_id(42)
+            .valid_until(expiry)
+            .build();
+
+        assert_eq!(key.valid_until, Some(expiry));
+    }
+
+    #[test]
+    fn test_public_signing_key_builder_inactive() {
+        let key = PublicSigningKey::builder()
+            .kid("test-key".to_owned())
+            .public_key("MCowBQYDK2VwAyEAtest".to_owned())
+            .client_id(1001)
+            .cert_id(42)
+            .active(false)
+            .build();
+
+        assert!(!key.active);
+    }
+
+    #[test]
+    fn test_public_signing_key_builder_with_revocation() {
+        let revoked = Utc::now();
+        let key = PublicSigningKey::builder()
+            .kid("test-key".to_owned())
+            .public_key("MCowBQYDK2VwAyEAtest".to_owned())
+            .client_id(1001)
+            .cert_id(42)
+            .revoked_at(revoked)
+            .build();
+
+        assert_eq!(key.revoked_at, Some(revoked));
+    }
+
+    #[test]
+    fn test_public_signing_key_builder_all_fields() {
+        let now = Utc::now();
+        let expiry = now + Duration::days(365);
+        let key = PublicSigningKey::builder()
+            .kid("full-key".to_owned())
+            .public_key("MCowBQYDK2VwAyEAfull".to_owned())
+            .client_id(5555)
+            .cert_id(999)
+            .created_at(now)
+            .valid_from(now)
+            .valid_until(expiry)
+            .active(false)
+            .revoked_at(now)
+            .build();
+
+        assert_eq!(key.kid, "full-key");
+        assert_eq!(key.public_key, "MCowBQYDK2VwAyEAfull");
+        assert_eq!(key.client_id, 5555);
+        assert_eq!(key.cert_id, 999);
+        assert_eq!(key.created_at, now);
+        assert_eq!(key.valid_from, now);
+        assert_eq!(key.valid_until, Some(expiry));
+        assert!(!key.active);
+        assert_eq!(key.revoked_at, Some(now));
+    }
+
     fn create_test_key() -> PublicSigningKey {
-        PublicSigningKey {
-            kid: "test-key-001".to_string(),
+        PublicSigningKey::builder()
+            .kid("test-key-001".to_owned())
             // This is a valid base64url-encoded 32-byte value (no padding)
-            public_key: "MCowBQYDK2VwAyEAabcdefghijklmnopqrstuvwxyz12".to_string(),
-            client_id: 1001,
-            cert_id: 42,
-            created_at: Utc::now(),
-            valid_from: Utc::now(),
-            valid_until: None,
-            active: true,
-            revoked_at: None,
-        }
+            .public_key("MCowBQYDK2VwAyEAabcdefghijklmnopqrstuvwxyz12".to_owned())
+            .client_id(1001)
+            .cert_id(42)
+            .build()
     }
 
     #[test]
@@ -152,17 +244,12 @@ mod tests {
 
     #[test]
     fn test_serialization_with_optional_fields_none() {
-        let key = PublicSigningKey {
-            kid: "key-no-expiry".to_string(),
-            public_key: "MCowBQYDK2VwAyEAabcdefghijklmnopqrstuvwxyz12".to_string(),
-            client_id: 2002,
-            cert_id: 100,
-            created_at: Utc::now(),
-            valid_from: Utc::now(),
-            valid_until: None,
-            active: true,
-            revoked_at: None,
-        };
+        let key = PublicSigningKey::builder()
+            .kid("key-no-expiry".to_owned())
+            .public_key("MCowBQYDK2VwAyEAabcdefghijklmnopqrstuvwxyz12".to_owned())
+            .client_id(2002)
+            .cert_id(100)
+            .build();
 
         let json = serde_json::to_string(&key).expect("serialization should succeed");
         let deserialized: PublicSigningKey =
@@ -176,17 +263,17 @@ mod tests {
     #[test]
     fn test_serialization_with_optional_fields_some() {
         let now = Utc::now();
-        let key = PublicSigningKey {
-            kid: "key-with-expiry".to_string(),
-            public_key: "MCowBQYDK2VwAyEAabcdefghijklmnopqrstuvwxyz12".to_string(),
-            client_id: 3003,
-            cert_id: 200,
-            created_at: now,
-            valid_from: now,
-            valid_until: Some(now + Duration::days(365)),
-            active: false,
-            revoked_at: Some(now + Duration::hours(1)),
-        };
+        let key = PublicSigningKey::builder()
+            .kid("key-with-expiry".to_owned())
+            .public_key("MCowBQYDK2VwAyEAabcdefghijklmnopqrstuvwxyz12".to_owned())
+            .client_id(3003)
+            .cert_id(200)
+            .created_at(now)
+            .valid_from(now)
+            .valid_until(now + Duration::days(365))
+            .active(false)
+            .revoked_at(now + Duration::hours(1))
+            .build();
 
         let json = serde_json::to_string(&key).expect("serialization should succeed");
         let deserialized: PublicSigningKey =

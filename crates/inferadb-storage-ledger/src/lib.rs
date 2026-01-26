@@ -40,9 +40,9 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let config = LedgerBackendConfig::builder()
-//!         .with_endpoint("http://localhost:50051")
-//!         .with_client_id("my-service")
-//!         .with_namespace_id(1)
+//!         .endpoints(["http://localhost:50051"])
+//!         .client_id("my-service")
+//!         .namespace_id(1)
 //!         .build()?;
 //!
 //!     let backend = LedgerBackend::new(config).await?;
@@ -85,7 +85,7 @@ mod transaction;
 pub mod auth;
 
 pub use backend::LedgerBackend;
-pub use config::{LedgerBackendConfig, LedgerBackendConfigBuilder};
+pub use config::LedgerBackendConfig;
 pub use error::{LedgerStorageError, Result};
 pub use transaction::LedgerTransaction;
 
