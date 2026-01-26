@@ -14,14 +14,11 @@ repository = "https://github.com/inferadb/inferadb"
 [workspace.dependencies]
 # Async
 async-trait = "0.1"
-tokio = { version = "1.41", features = ["time", "sync", "rt"] }
+tokio = { version = "1.43", features = ["time", "sync", "rt"] }
 
 # Data types
 bytes = "1.9"
-chrono = { version = "0.4", features = ["serde"] }
-
-# Error handling
-thiserror = "2.0"
+chrono = { version = "0.4", default-features = false, features = ["serde"] }
 
 # Concurrency
 parking_lot = "0.12"
@@ -44,8 +41,19 @@ hex = "0.4"
 tonic = "0.14"
 
 # Error handling
-snafu = "0.8"
+thiserror = "1.0"
 
 # Testing
 criterion = { version = "0.5", features = ["async_tokio"] }
 rand = "0.8"
+snafu = "0.8"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"

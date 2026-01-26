@@ -1,6 +1,6 @@
 // Allow passing unit to black_box - this is intentional in benchmarks to prevent
 // the compiler from optimizing away the call.
-#![allow(clippy::unit_arg)]
+#![allow(clippy::unit_arg, clippy::unwrap_used, clippy::expect_used)]
 
 //! Performance benchmarks for StorageBackend implementations.
 //!

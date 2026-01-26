@@ -12,11 +12,6 @@
 //! - [`StorageError::Internal`] - Backend-specific internal errors
 //! - [`StorageError::Timeout`] - Operation exceeded time limit
 //!
-//! # Backtraces
-//!
-//! All error variants capture a backtrace at the point of creation. Set
-//! `RUST_BACKTRACE=1` to enable backtrace capture at runtime.
-//!
 //! # Example
 //!
 //! ```
@@ -27,9 +22,7 @@
 //! }
 //! ```
 
-use std::backtrace::Backtrace;
-
-use snafu::Snafu;
+use thiserror::Error;
 
 /// Result type alias for storage operations.
 ///
@@ -42,20 +35,15 @@ pub type StorageResult<T> = Result<T, StorageError>;
 /// This enum represents the canonical set of errors that any storage backend
 /// can produce. Backend implementations should map their internal error types
 /// to these variants.
-///
-/// All variants capture a backtrace at the point of creation for debugging.
-#[derive(Debug, Snafu)]
-#[snafu(visibility(pub))]
+#[derive(Debug, Error)]
 pub enum StorageError {
     /// The requested key was not found in the storage backend.
     ///
     /// This is a recoverable error indicating the key does not exist.
-    #[snafu(display("Key not found: {key}"))]
+    #[error("Key not found: {key}")]
     NotFound {
         /// The key that was not found.
         key: String,
-        /// Backtrace captured at error creation.
-        backtrace: Backtrace,
     },
 
     /// Transaction conflict due to optimistic locking failure.
@@ -63,22 +51,17 @@ pub enum StorageError {
     /// This error occurs when a transaction attempts to commit but another
     /// concurrent transaction has modified the same keys. The transaction
     /// should typically be retried.
-    #[snafu(display("Transaction conflict"))]
-    Conflict {
-        /// Backtrace captured at error creation.
-        backtrace: Backtrace,
-    },
+    #[error("Transaction conflict")]
+    Conflict,
 
     /// Connection or network error.
     ///
     /// This error indicates a failure to communicate with the storage backend,
     /// such as a network timeout, DNS failure, or connection refused.
-    #[snafu(display("Connection error: {message}"))]
+    #[error("Connection error: {message}")]
     Connection {
         /// Description of the connection error.
         message: String,
-        /// Backtrace captured at error creation.
-        backtrace: Backtrace,
     },
 
     /// Serialization or deserialization error.
@@ -86,80 +69,70 @@ pub enum StorageError {
     /// This error occurs when data cannot be encoded for storage or decoded
     /// when retrieved. This typically indicates data corruption or schema
     /// incompatibility.
-    #[snafu(display("Serialization error: {message}"))]
+    #[error("Serialization error: {message}")]
     Serialization {
         /// Description of the serialization error.
         message: String,
-        /// Backtrace captured at error creation.
-        backtrace: Backtrace,
     },
 
     /// Internal storage backend error.
     ///
     /// This is a catch-all for backend-specific errors that don't fit other
     /// categories.
-    #[snafu(display("Internal error: {message}"))]
+    #[error("Internal error: {message}")]
     Internal {
         /// Description of the internal error.
         message: String,
-        /// Backtrace captured at error creation.
-        backtrace: Backtrace,
     },
 
     /// Operation timed out.
     ///
     /// The storage operation exceeded its configured time limit. This can occur
     /// during long-running queries, slow network conditions, or backend overload.
-    #[snafu(display("Operation timeout"))]
-    Timeout {
-        /// Backtrace captured at error creation.
-        backtrace: Backtrace,
-    },
+    #[error("Operation timeout")]
+    Timeout,
 }
 
 impl StorageError {
     /// Creates a new `NotFound` error for the given key.
     #[must_use]
     pub fn not_found(key: impl Into<String>) -> Self {
-        NotFoundSnafu { key: key.into() }.build()
+        Self::NotFound { key: key.into() }
     }
 
     /// Creates a new `Conflict` error.
     #[must_use]
     pub fn conflict() -> Self {
-        ConflictSnafu.build()
+        Self::Conflict
     }
 
     /// Creates a new `Connection` error with the given message.
     #[must_use]
     pub fn connection(message: impl Into<String>) -> Self {
-        ConnectionSnafu {
+        Self::Connection {
             message: message.into(),
         }
-        .build()
     }
 
     /// Creates a new `Serialization` error with the given message.
     #[must_use]
     pub fn serialization(message: impl Into<String>) -> Self {
-        SerializationSnafu {
+        Self::Serialization {
             message: message.into(),
         }
-        .build()
     }
 
     /// Creates a new `Internal` error with the given message.
     #[must_use]
     pub fn internal(message: impl Into<String>) -> Self {
-        InternalSnafu {
+        Self::Internal {
             message: message.into(),
         }
-        .build()
     }
 
     /// Creates a new `Timeout` error.
     #[must_use]
     pub fn timeout() -> Self {
-        TimeoutSnafu.build()
+        Self::Timeout
     }
 }

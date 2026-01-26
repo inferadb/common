@@ -190,9 +190,7 @@ impl LedgerBackend {
 
     /// Decodes a hexadecimal key string back to bytes.
     fn decode_key(key: &str) -> std::result::Result<Vec<u8>, LedgerStorageError> {
-        hex::decode(key).map_err(|e| LedgerStorageError::KeyEncoding {
-            message: e.to_string(),
-        })
+        hex::decode(key).map_err(|e| LedgerStorageError::KeyEncoding(e.to_string()))
     }
 
     /// Performs a read with the configured consistency level.
@@ -417,6 +415,7 @@ impl StorageBackend for LedgerBackend {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

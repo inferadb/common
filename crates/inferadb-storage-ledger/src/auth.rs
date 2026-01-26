@@ -230,7 +230,7 @@ impl LedgerSigningKeyStore {
     fn error_to_kind(error: &StorageError) -> SigningKeyErrorKind {
         match error {
             StorageError::NotFound { .. } => SigningKeyErrorKind::NotFound,
-            StorageError::Conflict { .. } => SigningKeyErrorKind::Conflict,
+            StorageError::Conflict => SigningKeyErrorKind::Conflict,
             StorageError::Connection { .. } => SigningKeyErrorKind::Connection,
             StorageError::Serialization { .. } => SigningKeyErrorKind::Serialization,
             _ => SigningKeyErrorKind::Other,
@@ -534,6 +534,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

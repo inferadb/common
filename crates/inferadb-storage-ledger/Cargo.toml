@@ -1,53 +1,38 @@
 [package]
 name = "inferadb-storage-ledger"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Ledger-backed implementation of StorageBackend for InferaDB"
-license = "Apache-2.0"
-repository = "https://github.com/inferadb/inferadb"
 readme = "README.md"
 keywords = ["storage", "ledger", "blockchain", "database"]
 categories = ["database", "asynchronous"]
 
-[dependencies]
-# Shared storage abstraction
-inferadb-storage = { path = "../inferadb-storage" }
+[lints]
+workspace = true
 
-# Ledger SDK
+[dependencies]
+inferadb-storage = { path = "../inferadb-storage" }
 inferadb-ledger-sdk = { path = "../../../ledger/crates/sdk" }
 
-# Async runtime
-async-trait = "0.1"
-tokio = { version = "1", features = ["sync"] }
-
-# Logging
-tracing = "0.1"
-
-# Serialization (for config)
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-humantime-serde = "1"
-
-# Time
-chrono = { version = "0.4", default-features = false, features = ["serde"] }
-
-# Bytes
-bytes = "1"
-
-# Encoding
-hex = "0.4"
-
-# gRPC (for tonic::Code in error mapping)
-tonic = "0.14"
-
-# Error handling
-snafu = "0.8"
-
-# Builder pattern
-bon = "3.8"
+async-trait.workspace = true
+bon.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+hex.workspace = true
+humantime-serde.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tonic.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+snafu.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [[test]]
 name = "integration"
