@@ -168,11 +168,8 @@ jobs:
           cache: true
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@735e5933943122c5ac182670a935f54a949265c1 # v2.52.4
-        with:
-          tool: nextest
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
 
       - name: Cache Rust dependencies
         uses: step-security/rust-cache@f8fba7098297c8c53a7c9a30575ec2ad4ad85056 # v2.8.2
