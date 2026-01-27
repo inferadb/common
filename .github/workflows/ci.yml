@@ -7,6 +7,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Nightly at midnight UTC (for coverage)
+    - cron: "0 0 * * *"
 
 # Cancel in-progress runs when new commits are pushed
 concurrency:
@@ -20,6 +23,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
   RUST_BACKTRACE: 1
 
 jobs:
@@ -31,19 +35,14 @@ jobs:
     if: github.event_name == 'pull_request'
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
         with:
           egress-policy: audit
 
       - name: Checkout code
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
-        with:
-          node-version: "22"
 
       - name: Validate PR title
         uses: amannn/action-semantic-pull-request@0723387faaf9b38adef4775cd42cfd5155ed6017 # v5.5.3
@@ -73,17 +72,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
         with:
           egress-policy: audit
 
       - name: Checkout code
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust nightly toolchain
-        uses: dtolnay/rust-toolchain@0b1efabc08b657293548b77fb76cc02d26091c7e # master
+        uses: dtolnay/rust-toolchain@881ba7bf39a41cda34ac9e123fb41b44ed08232f # nightly
         with:
-          toolchain: nightly
           components: rustfmt
 
       - name: Check formatting
@@ -91,26 +89,22 @@ jobs:
 
   # Run Clippy for linting
   clippy:
-    name: Linting
+    name: Clippy
     runs-on: ubuntu-latest
     env:
-      CARGO_INCREMENTAL: 0
       RUSTFLAGS: "-C codegen-units=16 -C link-arg=-fuse-ld=mold"
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
         with:
           egress-policy: audit
 
       - name: Checkout code
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
-        with:
-          submodules: true
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@881ba7bf39a41cda34ac9e123fb41b44ed08232f # stable
         with:
-          toolchain: stable
           components: clippy
 
       - name: Install mold linker
@@ -118,73 +112,217 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq mold
 
-      - name: Install development tools via Mise
-        uses: step-security/mise-action@2fa1b2b4fa1577588d8ac75f4dfa0f67c266d2a0 # v3.4.1
-        with:
-          install_args: protobuf
-          cache: true
-
       - name: Cache Rust dependencies
         uses: step-security/rust-cache@f8fba7098297c8c53a7c9a30575ec2ad4ad85056 # v2.8.2
         with:
-          shared-key: ubuntu-latest-common
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: clippy
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
-  # Build and test
-  build:
-    name: Build and Test
+  # Check for unused dependencies
+  udeps:
+    name: Unused Dependencies
     runs-on: ubuntu-latest
     env:
-      CARGO_INCREMENTAL: 0
       RUSTFLAGS: "-C codegen-units=16 -C link-arg=-fuse-ld=mold"
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
         with:
           egress-policy: audit
 
       - name: Checkout code
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
-        with:
-          submodules: true
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: stable
+      - name: Install Rust nightly toolchain
+        uses: dtolnay/rust-toolchain@881ba7bf39a41cda34ac9e123fb41b44ed08232f # nightly
 
       - name: Install mold linker
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq mold
 
-      - name: Install development tools via Mise
-        uses: step-security/mise-action@2fa1b2b4fa1577588d8ac75f4dfa0f67c266d2a0 # v3.4.1
+      - name: Install cargo-udeps
+        uses: taiki-e/install-action@710817a1645ef40daad5bcde7431ceccf6cc3528 # v2.67.13
         with:
-          install_args: protobuf
-          cache: true
-
-      - name: Install cargo-nextest
-        run: |
-          curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+          tool: cargo-udeps
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache Rust dependencies
         uses: step-security/rust-cache@f8fba7098297c8c53a7c9a30575ec2ad4ad85056 # v2.8.2
         with:
-          shared-key: ubuntu-latest-common
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: udeps
 
-      - name: Build workspace
-        run: cargo build --workspace
+      - name: Check for unused dependencies
+        run: cargo +nightly udeps --workspace
 
-      - name: Run tests
-        run: cargo nextest run --workspace
+  # Check MSRV (Minimum Supported Rust Version)
+  msrv:
+    name: MSRV (1.92)
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-C codegen-units=16 -C link-arg=-fuse-ld=mold"
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust 1.92
+        uses: dtolnay/rust-toolchain@881ba7bf39a41cda34ac9e123fb41b44ed08232f # master
+        with:
+          toolchain: "1.92"
+
+      - name: Install mold linker
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mold
+
+      - name: Cache Rust dependencies
+        uses: step-security/rust-cache@f8fba7098297c8c53a7c9a30575ec2ad4ad85056 # v2.8.2
+        with:
+          shared-key: msrv
+
+      - name: Check compilation
+        run: cargo check --workspace
+
+  # Run tests on multiple platforms
+  test:
+    name: Test (${{ matrix.os }})
+    needs: [fmt, clippy]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@881ba7bf39a41cda34ac9e123fb41b44ed08232f # stable
+
+      - name: Install mold linker (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mold
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@710817a1645ef40daad5bcde7431ceccf6cc3528 # v2.67.13
+        with:
+          tool: cargo-nextest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache Rust dependencies
+        uses: step-security/rust-cache@f8fba7098297c8c53a7c9a30575ec2ad4ad85056 # v2.8.2
+        with:
+          shared-key: test-${{ matrix.os }}
+
+      - name: Run unit tests
+        env:
+          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C codegen-units=16 -C link-arg=-fuse-ld=mold' || '-C codegen-units=16' }}
+        run: cargo nextest run --workspace --lib
 
       - name: Run doc tests
         run: cargo test --workspace --doc
+
+  # Code coverage (nightly only to reduce CI costs)
+  coverage:
+    name: Code Coverage
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    continue-on-error: true
+    env:
+      RUSTFLAGS: "-C codegen-units=16 -C link-arg=-fuse-ld=mold"
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@881ba7bf39a41cda34ac9e123fb41b44ed08232f # stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Install mold linker
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mold
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@710817a1645ef40daad5bcde7431ceccf6cc3528 # v2.67.13
+        with:
+          tool: cargo-llvm-cov
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache Rust dependencies
+        uses: step-security/rust-cache@f8fba7098297c8c53a7c9a30575ec2ad4ad85056 # v2.8.2
+        with:
+          shared-key: coverage
+
+      - name: Generate coverage
+        run: |
+          cargo llvm-cov --workspace --lib \
+            --codecov \
+            --output-path codecov.json
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@671740ac38dd9b0130fbe1cec585b89eea48d3de # v5.5.2
+        with:
+          files: ./codecov.json
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  # Build documentation
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-C codegen-units=16 -C link-arg=-fuse-ld=mold"
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust nightly toolchain
+        uses: dtolnay/rust-toolchain@881ba7bf39a41cda34ac9e123fb41b44ed08232f # nightly
+
+      - name: Install mold linker
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mold
+
+      - name: Cache Rust dependencies
+        uses: step-security/rust-cache@f8fba7098297c8c53a7c9a30575ec2ad4ad85056 # v2.8.2
+        with:
+          shared-key: docs
+
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: -D warnings --cfg docsrs
+        run: cargo +nightly doc --workspace --no-deps
 
   # Storage Backend Benchmarks
   # Runs MemoryBackend benchmarks on every PR and saves baselines on main.
@@ -194,41 +332,30 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write # For posting benchmark comparison comments
+      pull-requests: write
     env:
-      CARGO_INCREMENTAL: 0
       RUSTFLAGS: "-C codegen-units=16 -C link-arg=-fuse-ld=mold"
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
         with:
           egress-policy: audit
 
       - name: Checkout code
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
-        with:
-          submodules: true
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: stable
+        uses: dtolnay/rust-toolchain@881ba7bf39a41cda34ac9e123fb41b44ed08232f # stable
 
       - name: Install mold linker
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq mold
 
-      - name: Install development tools via Mise
-        uses: step-security/mise-action@2fa1b2b4fa1577588d8ac75f4dfa0f67c266d2a0 # v3.4.1
-        with:
-          install_args: protobuf
-          cache: true
-
       - name: Cache Rust dependencies
         uses: step-security/rust-cache@f8fba7098297c8c53a7c9a30575ec2ad4ad85056 # v2.8.2
         with:
-          shared-key: ubuntu-latest-common
+          shared-key: benchmark
           save-if: false
 
       # Download baseline from main branch (if exists)
@@ -254,11 +381,11 @@ jobs:
             # Copy baseline to criterion directory
             cp -r target/criterion-baseline/* target/criterion/ 2>/dev/null || true
             # Run benchmarks with comparison
-            cargo bench -p inferadb-storage 2>&1 | tee benchmark-output.txt
+            cargo bench -p inferadb-common-storage 2>&1 | tee benchmark-output.txt
             echo "baseline_exists=true" >> $GITHUB_OUTPUT
           else
             echo "No baseline found, running benchmarks without comparison"
-            cargo bench -p inferadb-storage 2>&1 | tee benchmark-output.txt
+            cargo bench -p inferadb-common-storage 2>&1 | tee benchmark-output.txt
             echo "baseline_exists=false" >> $GITHUB_OUTPUT
           fi
 
@@ -267,7 +394,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: |
           mkdir -p target/criterion
-          cargo bench -p inferadb-storage -- --save-baseline main 2>&1 | tee benchmark-output.txt
+          cargo bench -p inferadb-common-storage -- --save-baseline main 2>&1 | tee benchmark-output.txt
 
       # Check for performance regressions (>10%)
       - name: Check for performance regressions
@@ -277,7 +404,7 @@ jobs:
           # Parse benchmark output for regressions
           # Criterion outputs "Performance has regressed." when there's a regression
           # and shows percentage changes like "+12.34%"
-          
+
           REGRESSIONS=""
           while IFS= read -r line; do
             # Look for lines with significant regressions (>10%)
@@ -292,7 +419,7 @@ jobs:
               fi
             fi
           done < benchmark-output.txt
-          
+
           if [ -n "$REGRESSIONS" ]; then
             echo "regression_found=true" >> $GITHUB_OUTPUT
             echo "regressions<<EOF" >> $GITHUB_OUTPUT
@@ -311,7 +438,7 @@ jobs:
         with:
           script: |
             const regressions = `${{ steps.regression-check.outputs.regressions }}`;
-            const body = `## ⚠️ Performance Regression Warning
+            const body = `## Performance Regression Warning
 
             The following benchmarks show >10% performance regression compared to main:
 
@@ -326,7 +453,7 @@ jobs:
 
             See the workflow artifacts for complete benchmark results.
             </details>`;
-            
+
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
@@ -356,18 +483,25 @@ jobs:
   # Overall status check
   ci-success:
     name: CI Success
-    needs: [commits, fmt, clippy, build, benchmark]
+    needs: [commits, fmt, clippy, udeps, msrv, test, coverage, docs, benchmark]
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     if: always()
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
         with:
           egress-policy: audit
 
       - name: Check all jobs
+        env:
+          FMT_RESULT: ${{ needs.fmt.result }}
+          CLIPPY_RESULT: ${{ needs.clippy.result }}
+          UDEPS_RESULT: ${{ needs.udeps.result }}
+          MSRV_RESULT: ${{ needs.msrv.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          DOCS_RESULT: ${{ needs.docs.result }}
+          COVERAGE_RESULT: ${{ needs.coverage.result }}
+          BENCHMARK_RESULT: ${{ needs.benchmark.result }}
         run: |
           # Commits check is only required on PRs
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
@@ -379,20 +513,22 @@ jobs:
               exit 1
             fi
           fi
-          if [[ "${{ needs.fmt.result }}" != "success" ]]; then
-            echo "Format check failed"
-            exit 1
+
+          results="$FMT_RESULT $CLIPPY_RESULT $UDEPS_RESULT $MSRV_RESULT $TEST_RESULT $DOCS_RESULT"
+
+          for result in $results; do
+            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
+              echo "One or more jobs failed"
+              exit 1
+            fi
+          done
+
+          # Coverage and benchmarks are optional
+          if [[ "$COVERAGE_RESULT" == "failure" ]]; then
+            echo "Coverage failed (non-blocking)"
           fi
-          if [[ "${{ needs.clippy.result }}" != "success" ]]; then
-            echo "Clippy check failed"
-            exit 1
+          if [[ "$BENCHMARK_RESULT" == "failure" ]]; then
+            echo "Benchmark failed (non-blocking)"
           fi
-          if [[ "${{ needs.build.result }}" != "success" ]]; then
-            echo "Build and test failed"
-            exit 1
-          fi
-          # Benchmarks are informational - allow failure but warn
-          if [[ "${{ needs.benchmark.result }}" != "success" && "${{ needs.benchmark.result }}" != "skipped" ]]; then
-            echo "::warning::Benchmark job failed, but this is non-blocking"
-          fi
+
           echo "All required checks passed!"

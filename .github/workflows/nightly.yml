@@ -29,12 +29,12 @@ jobs:
       should_run: ${{ steps.check.outputs.should_run }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
         with:
           egress-policy: audit
 
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -83,12 +83,12 @@ jobs:
       date: ${{ steps.version.outputs.date }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
         with:
           egress-policy: audit
 
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Compute nightly version
         id: version
@@ -114,27 +114,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
         with:
           egress-policy: audit
 
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: stable
-
-      - name: Install cargo-edit
-        run: cargo install cargo-edit
+        uses: dtolnay/rust-toolchain@881ba7bf39a41cda34ac9e123fb41b44ed08232f # stable
 
       - name: Patch crate versions
+        env:
+          NIGHTLY_VERSION: ${{ needs.version.outputs.version }}
         run: |
-          NIGHTLY_VERSION="${{ needs.version.outputs.version }}"
-
-          # Patch inferadb-common-storage version
-          cargo set-version --package inferadb-common-storage "${NIGHTLY_VERSION}"
+          # Patch version in Cargo.toml (sed bypasses cargo-edit's semver downgrade check)
+          sed -i "s/^version = \".*\"/version = \"${NIGHTLY_VERSION}\"/" crates/storage/Cargo.toml
 
           echo "Patched versions:"
           grep -r "^version = " crates/*/Cargo.toml
@@ -164,12 +159,12 @@ jobs:
       contents: write
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@20cf305ff2072d973412fa9b1e3a4f227bda3c76 # v2.14.0
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
         with:
           egress-policy: audit
 
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Create Pre-Release
         uses: step-security/action-gh-release@674f8f866246c6b91bd3f1688ba95e27b2ae8d2e # v2.4.1
@@ -181,7 +176,7 @@ jobs:
           draft: false
           prerelease: true
           body: |
-            🌙 **This is a nightly build for testing purposes.**
+            **This is a nightly build for testing purposes.**
 
             Built from commit: ${{ github.sha }}
             Build date: ${{ needs.version.outputs.date }}
@@ -199,3 +194,39 @@ jobs:
             ```
 
             > **Note:** Pre-release versions require exact version matching (`=`) in Cargo.toml.
+
+      - name: Update nightly tag
+        run: |
+          git tag -f nightly
+          git push -f origin nightly
+
+  # Cleanup old nightly releases (keep last 7)
+  cleanup:
+    name: Cleanup Old Nightlies
+    runs-on: ubuntu-latest
+    needs: [create-release]
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Delete old nightly releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # List all nightly releases, sorted by date (newest first)
+          NIGHTLIES=$(gh release list --limit 100 | grep -E 'nightly\.' | awk '{print $1}')
+
+          # Keep the 7 most recent, delete the rest
+          COUNT=0
+          for TAG in $NIGHTLIES; do
+            COUNT=$((COUNT + 1))
+            if [ $COUNT -gt 7 ]; then
+              echo "Deleting old nightly release: $TAG"
+              gh release delete "$TAG" --yes --cleanup-tag || true
+            fi
+          done
