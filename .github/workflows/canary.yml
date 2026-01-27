@@ -28,7 +28,7 @@ env:
 jobs:
   # Compute canary version from release-please manifest
   version:
-    name: Compute Version
+    name: Version
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -61,7 +61,7 @@ jobs:
 
   # Publish canary versions to crates.io
   publish:
-    name: Publish to crates.io
+    name: Publish
     needs: version
     runs-on: ubuntu-latest
     steps:
@@ -106,7 +106,7 @@ jobs:
 
   # Create GitHub pre-release for tracking
   create-release:
-    name: Create Pre-Release
+    name: Release
     needs: [version, publish]
     runs-on: ubuntu-latest
     permissions:

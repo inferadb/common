@@ -31,7 +31,7 @@ env:
 jobs:
   # Determine version from trigger source
   prepare:
-    name: Prepare Release
+    name: Prepare
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -65,7 +65,7 @@ jobs:
 
   # Create GitHub release (only for workflow_dispatch; release-please creates its own)
   create-release:
-    name: Create Release
+    name: Release
     needs: prepare
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
@@ -93,7 +93,7 @@ jobs:
 
   # Publish to crates.io
   publish:
-    name: Publish to crates.io
+    name: Publish
     needs: prepare
     runs-on: ubuntu-latest
     environment: release
@@ -129,7 +129,7 @@ jobs:
 
   # Build documentation (triggers docs.rs automatically on crates.io publish)
   docs:
-    name: Build Documentation
+    name: Docs
     needs: [prepare, publish]
     runs-on: ubuntu-latest
     permissions:
@@ -147,6 +147,11 @@ jobs:
         uses: dtolnay/rust-toolchain@881ba7bf39a41cda34ac9e123fb41b44ed08232f # stable
         with:
           toolchain: nightly
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq protobuf-compiler
 
       - name: Cache Rust dependencies
         uses: step-security/rust-cache@f8fba7098297c8c53a7c9a30575ec2ad4ad85056 # v2.8.2
