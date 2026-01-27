@@ -12,6 +12,9 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/inferadb/inferadb"
 
 [workspace.dependencies]
+# Internal
+inferadb-ledger-sdk = { git = "https://github.com/inferadb/ledger", tag = "canary" }
+
 # Async
 async-trait = "0.1"
 tokio = { version = "1.43", features = ["time", "sync", "rt"] }
