@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/inferadb-storage",
-    "crates/inferadb-storage-ledger",
+    "crates/storage",
+    "crates/storage-ledger",
 ]
 
 [workspace.package]

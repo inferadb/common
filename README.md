@@ -4,10 +4,10 @@ Shared storage abstractions for InferaDB services.
 
 ## Crates
 
-| Crate | Description |
-|-------|-------------|
-| `inferadb-storage` | Storage backend trait and in-memory implementation |
-| `inferadb-storage-ledger` | Ledger-backed storage implementation |
+| Crate                            | Description                                        |
+| -------------------------------- | -------------------------------------------------- |
+| `inferadb-common-storage`        | Storage backend trait and in-memory implementation |
+| `inferadb-common-storage-ledger` | Ledger-backed storage implementation               |
 
 ## Requirements
 
