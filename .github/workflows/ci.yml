@@ -29,7 +29,7 @@ env:
 jobs:
   # Validate conventional commit messages
   commits:
-    name: Commit Messages
+    name: Commits
     runs-on: ubuntu-latest
     # Only run on pull requests - push to main is already validated
     if: github.event_name == 'pull_request'
@@ -45,7 +45,7 @@ jobs:
           fetch-depth: 0
 
       - name: Validate PR title
-        uses: amannn/action-semantic-pull-request@0723387faaf9b38adef4775cd42cfd5155ed6017 # v5.5.3
+        uses: step-security/action-semantic-pull-request@bc0cf74f5be4ce34accdec1ae908dff38dc5def1 # v6.1.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -60,6 +60,10 @@ jobs:
             build
             ci
             chore
+            revert
+            dx
+            ai
+            imp
           requireScope: false
           subjectPattern: ^[a-z].*$
           subjectPatternError: |
@@ -68,7 +72,7 @@ jobs:
 
   # Check code formatting
   fmt:
-    name: Formatting
+    name: Format
     runs-on: ubuntu-latest
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -122,7 +126,7 @@ jobs:
 
   # Check for unused dependencies
   udeps:
-    name: Unused Dependencies
+    name: Dependencies
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: "-C codegen-units=16 -C link-arg=-fuse-ld=mold"
@@ -240,7 +244,7 @@ jobs:
 
   # Code coverage (nightly only to reduce CI costs)
   coverage:
-    name: Code Coverage
+    name: Coverage
     needs: test
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule'
@@ -293,7 +297,7 @@ jobs:
 
   # Build documentation
   docs:
-    name: Documentation
+    name: Docs
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: "-C codegen-units=16 -C link-arg=-fuse-ld=mold"
@@ -494,6 +498,7 @@ jobs:
 
       - name: Check all jobs
         env:
+          COMMITS_RESULT: ${{ needs.commits.result }}
           FMT_RESULT: ${{ needs.fmt.result }}
           CLIPPY_RESULT: ${{ needs.clippy.result }}
           UDEPS_RESULT: ${{ needs.udeps.result }}
@@ -503,32 +508,62 @@ jobs:
           COVERAGE_RESULT: ${{ needs.coverage.result }}
           BENCHMARK_RESULT: ${{ needs.benchmark.result }}
         run: |
-          # Commits check is only required on PRs
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            if [[ "${{ needs.commits.result }}" != "success" ]]; then
-              echo "Commit message validation failed"
-              echo "PR title must follow Conventional Commits format:"
-              echo "  <type>(<scope>): <description>"
-              echo "  Examples: 'feat: add new feature' or 'fix(api): handle edge case'"
-              exit 1
+          # Track failures and cancellations separately
+          failed_jobs=""
+          cancelled_jobs=""
+
+          check_job() {
+            local name="$1"
+            local result="$2"
+            local required="$3"
+
+            if [[ "$result" == "cancelled" ]]; then
+              cancelled_jobs="$cancelled_jobs $name"
+            elif [[ "$result" == "failure" ]]; then
+              if [[ "$required" == "true" ]]; then
+                failed_jobs="$failed_jobs $name"
+              fi
             fi
+          }
+
+          # Check all jobs (commits is only required on PRs)
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            check_job "commits" "$COMMITS_RESULT" "true"
+          fi
+          check_job "fmt" "$FMT_RESULT" "true"
+          check_job "clippy" "$CLIPPY_RESULT" "true"
+          check_job "udeps" "$UDEPS_RESULT" "true"
+          check_job "msrv" "$MSRV_RESULT" "true"
+          check_job "test" "$TEST_RESULT" "true"
+          check_job "docs" "$DOCS_RESULT" "true"
+          check_job "coverage" "$COVERAGE_RESULT" "false"
+          check_job "benchmark" "$BENCHMARK_RESULT" "false"
+
+          # Report cancelled jobs first (often indicates infrastructure issues)
+          if [[ -n "$cancelled_jobs" ]]; then
+            echo "::error::The following jobs were cancelled:$cancelled_jobs"
+            echo ""
+            echo "Jobs may be cancelled due to:"
+            echo "  - Concurrent workflow runs (check concurrency settings)"
+            echo "  - GitHub infrastructure issues (try re-running the workflow)"
+            echo "  - Manual cancellation"
+            echo ""
+            echo "Re-run the workflow to retry cancelled jobs."
+            exit 1
           fi
 
-          results="$FMT_RESULT $CLIPPY_RESULT $UDEPS_RESULT $MSRV_RESULT $TEST_RESULT $DOCS_RESULT"
+          # Report failed jobs
+          if [[ -n "$failed_jobs" ]]; then
+            echo "::error::The following required jobs failed:$failed_jobs"
+            exit 1
+          fi
 
-          for result in $results; do
-            if [[ "$result" != "success" && "$result" != "skipped" ]]; then
-              echo "One or more jobs failed"
-              exit 1
-            fi
-          done
-
-          # Coverage and benchmarks are optional
+          # Note optional failures
           if [[ "$COVERAGE_RESULT" == "failure" ]]; then
-            echo "Coverage failed (non-blocking)"
+            echo "::warning::Coverage job failed (non-blocking)"
           fi
           if [[ "$BENCHMARK_RESULT" == "failure" ]]; then
-            echo "Benchmark failed (non-blocking)"
+            echo "::warning::Benchmark job failed (non-blocking)"
           fi
 
           echo "All required checks passed!"

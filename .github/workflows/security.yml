@@ -18,7 +18,7 @@ permissions:
 jobs:
   # Detect if security-relevant files changed
   detect-changes:
-    name: Detect Changes
+    name: Changes
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -45,7 +45,7 @@ jobs:
               - '.github/workflows/security.yml'
 
   dependency-review:
-    name: Dependency Review
+    name: Dependencies
     needs: [detect-changes]
     runs-on: ubuntu-latest
     # Only run if Cargo files changed AND not triggered by dependabot
