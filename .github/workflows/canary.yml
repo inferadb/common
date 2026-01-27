@@ -78,15 +78,12 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Install cargo-edit
-        run: cargo install cargo-edit
-
       - name: Patch crate versions
         run: |
           CANARY_VERSION="${{ needs.version.outputs.version }}"
 
-          # Patch inferadb-common-storage version
-          cargo set-version --package inferadb-common-storage "${CANARY_VERSION}"
+          # Patch version in Cargo.toml (sed bypasses cargo-edit's semver downgrade check)
+          sed -i "s/^version = \".*\"/version = \"${CANARY_VERSION}\"/" crates/storage/Cargo.toml
 
           echo "Patched versions:"
           grep -r "^version = " crates/*/Cargo.toml
