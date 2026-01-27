@@ -150,3 +150,14 @@ jobs:
             ```
 
             > **Note:** Pre-release versions require exact version matching (`=`) in Cargo.toml.
+
+      - name: Update floating canary tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Delete existing canary tag if it exists
+          git push origin :refs/tags/canary 2>/dev/null || true
+
+          # Create new canary tag pointing to current commit
+          git tag -f canary
+          git push origin canary

@@ -303,7 +303,7 @@ jobs:
       # Post regression warning comment on PR
       - name: Comment on PR with regression warning
         if: github.event_name == 'pull_request' && steps.regression-check.outputs.regression_found == 'true'
-        uses: actions/github-script@e69ef5462fd455e02edcaf4dd7708eda96b9ead0 # v7.0.0
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
         with:
           script: |
             const regressions = `${{ steps.regression-check.outputs.regressions }}`;
