@@ -128,27 +128,37 @@ jobs:
         env:
           NIGHTLY_VERSION: ${{ needs.version.outputs.version }}
         run: |
-          # Patch version in Cargo.toml (sed bypasses cargo-edit's semver downgrade check)
+          # Patch versions in Cargo.toml files
           sed -i "s/^version = \".*\"/version = \"${NIGHTLY_VERSION}\"/" crates/storage/Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"${NIGHTLY_VERSION}\"/" crates/storage-ledger/Cargo.toml
+
+          # Update storage-ledger's dependency on storage to use exact nightly version
+          sed -i "s/^inferadb-common-storage = .*/inferadb-common-storage = \"=${NIGHTLY_VERSION}\"/" crates/storage-ledger/Cargo.toml
 
           echo "Patched versions:"
           grep -r "^version = " crates/*/Cargo.toml
+          grep "inferadb-common-storage" crates/storage-ledger/Cargo.toml
 
       # Use OIDC-based trusted publishing
       - name: Authenticate with crates.io
         uses: rust-lang/crates-io-auth-action@b7e9a28eded4986ec6b1fa40eeee8f8f165559ec # v1.0.3
         id: auth
 
-      - name: Publish inferadb-common-storage
+      - name: Publish crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
-          # Publish storage crate (base crate with no external path dependencies)
+          # Publish storage crate first (base crate)
+          echo "Publishing inferadb-common-storage..."
           cargo publish --package inferadb-common-storage --token "$CARGO_REGISTRY_TOKEN" --allow-dirty
 
-          # Note: inferadb-common-storage-ledger is NOT published because it has
-          # a path dependency on inferadb-ledger-sdk which is in a different repo.
-          # That crate will be publishable once the full release pipeline is in place.
+          # Wait for crates.io to index
+          echo "Waiting for crates.io to index..."
+          sleep 45
+
+          # Publish storage-ledger (depends on storage)
+          echo "Publishing inferadb-common-storage-ledger..."
+          cargo publish --package inferadb-common-storage-ledger --token "$CARGO_REGISTRY_TOKEN" --allow-dirty
 
   # Create GitHub pre-release for tracking
   create-release:
@@ -186,11 +196,13 @@ jobs:
             | Crate | Version |
             |-------|---------|
             | `inferadb-common-storage` | `${{ needs.version.outputs.version }}` |
+            | `inferadb-common-storage-ledger` | `${{ needs.version.outputs.version }}` |
 
             Install with Cargo:
             ```toml
             [dependencies]
             inferadb-common-storage = "=${{ needs.version.outputs.version }}"
+            inferadb-common-storage-ledger = "=${{ needs.version.outputs.version }}"
             ```
 
             > **Note:** Pre-release versions require exact version matching (`=`) in Cargo.toml.
