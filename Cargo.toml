@@ -47,7 +47,6 @@ tonic = "0.14"
 thiserror = "1.0"
 
 # Testing
-criterion = { version = "0.5", features = ["async_tokio"] }
 rand = "0.8"
 snafu = "0.8"
 
