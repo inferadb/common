@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   changes:
-    name: Detect Changes
+    name: Changes
     runs-on: ubuntu-latest
     if: github.actor != 'dependabot[bot]'
     permissions:
@@ -49,7 +49,7 @@ jobs:
             actions:
               - '.github/workflows/**'
 
-  analyze-rust:
+  rust:
     name: Rust
     needs: changes
     if: needs.changes.outputs.rust == 'true'
@@ -77,7 +77,7 @@ jobs:
         with:
           category: "/language:rust"
 
-  analyze-actions:
+  actions:
     name: Actions
     needs: changes
     if: needs.changes.outputs.actions == 'true'
