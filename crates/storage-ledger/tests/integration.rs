@@ -26,9 +26,7 @@ async fn create_test_backend(server: &MockLedgerServer) -> LedgerBackend {
         .build()
         .expect("valid config");
 
-    LedgerBackend::new(config)
-        .await
-        .expect("backend creation should succeed")
+    LedgerBackend::new(config).await.expect("backend creation should succeed")
 }
 
 // ============================================================================
@@ -51,10 +49,7 @@ async fn test_set_and_get_roundtrip() {
     let backend = create_test_backend(&server).await;
 
     // Set a value
-    backend
-        .set(b"key1".to_vec(), b"value1".to_vec())
-        .await
-        .expect("set should succeed");
+    backend.set(b"key1".to_vec(), b"value1".to_vec()).await.expect("set should succeed");
 
     // Get it back
     let result = backend.get(b"key1").await.expect("get should succeed");
@@ -67,16 +62,10 @@ async fn test_set_overwrites_existing_value() {
     let backend = create_test_backend(&server).await;
 
     // Set initial value
-    backend
-        .set(b"key".to_vec(), b"initial".to_vec())
-        .await
-        .expect("set should succeed");
+    backend.set(b"key".to_vec(), b"initial".to_vec()).await.expect("set should succeed");
 
     // Overwrite
-    backend
-        .set(b"key".to_vec(), b"updated".to_vec())
-        .await
-        .expect("set should succeed");
+    backend.set(b"key".to_vec(), b"updated".to_vec()).await.expect("set should succeed");
 
     // Verify updated value
     let result = backend.get(b"key").await.expect("get should succeed");
@@ -89,10 +78,7 @@ async fn test_delete_removes_key() {
     let backend = create_test_backend(&server).await;
 
     // Set then delete
-    backend
-        .set(b"key".to_vec(), b"value".to_vec())
-        .await
-        .expect("set should succeed");
+    backend.set(b"key".to_vec(), b"value".to_vec()).await.expect("set should succeed");
     backend.delete(b"key").await.expect("delete should succeed");
 
     // Verify key is gone
@@ -123,10 +109,7 @@ async fn test_binary_keys_with_null_bytes() {
     let key = [0x00, 0x01, 0xFF, 0x00, 0xAB];
     let value = b"binary key works";
 
-    backend
-        .set(key.to_vec(), value.to_vec())
-        .await
-        .expect("set should succeed");
+    backend.set(key.to_vec(), value.to_vec()).await.expect("set should succeed");
     let result = backend.get(&key).await.expect("get should succeed");
 
     assert_eq!(result, Some(Bytes::from_static(value)));
@@ -141,10 +124,7 @@ async fn test_binary_values() {
     let key = b"binary-value-key";
     let value: Vec<u8> = (0..=255).collect();
 
-    backend
-        .set(key.to_vec(), value.clone())
-        .await
-        .expect("set should succeed");
+    backend.set(key.to_vec(), value.clone()).await.expect("set should succeed");
     let result = backend.get(key).await.expect("get should succeed");
 
     assert_eq!(result, Some(Bytes::from(value)));
@@ -156,10 +136,7 @@ async fn test_empty_key() {
     let backend = create_test_backend(&server).await;
 
     // Empty key should work
-    backend
-        .set(vec![], b"empty key value".to_vec())
-        .await
-        .expect("set should succeed");
+    backend.set(vec![], b"empty key value".to_vec()).await.expect("set should succeed");
     let result = backend.get(&[]).await.expect("get should succeed");
 
     assert_eq!(result, Some(Bytes::from("empty key value")));
@@ -171,10 +148,7 @@ async fn test_empty_value() {
     let backend = create_test_backend(&server).await;
 
     // Empty value should work
-    backend
-        .set(b"key".to_vec(), vec![])
-        .await
-        .expect("set should succeed");
+    backend.set(b"key".to_vec(), vec![]).await.expect("set should succeed");
     let result = backend.get(b"key").await.expect("get should succeed");
 
     assert_eq!(result, Some(Bytes::new()));
@@ -190,10 +164,8 @@ async fn test_get_range_empty() {
     let backend = create_test_backend(&server).await;
 
     // No keys set, range should return empty
-    let result = backend
-        .get_range(b"a".to_vec()..b"z".to_vec())
-        .await
-        .expect("range should succeed");
+    let result =
+        backend.get_range(b"a".to_vec()..b"z".to_vec()).await.expect("range should succeed");
     assert!(result.is_empty());
 }
 
@@ -203,28 +175,14 @@ async fn test_get_range_with_data() {
     let backend = create_test_backend(&server).await;
 
     // Insert some keys
-    backend
-        .set(b"key:1".to_vec(), b"v1".to_vec())
-        .await
-        .unwrap();
-    backend
-        .set(b"key:2".to_vec(), b"v2".to_vec())
-        .await
-        .unwrap();
-    backend
-        .set(b"key:3".to_vec(), b"v3".to_vec())
-        .await
-        .unwrap();
-    backend
-        .set(b"other:1".to_vec(), b"other".to_vec())
-        .await
-        .unwrap();
+    backend.set(b"key:1".to_vec(), b"v1".to_vec()).await.unwrap();
+    backend.set(b"key:2".to_vec(), b"v2".to_vec()).await.unwrap();
+    backend.set(b"key:3".to_vec(), b"v3".to_vec()).await.unwrap();
+    backend.set(b"other:1".to_vec(), b"other".to_vec()).await.unwrap();
 
     // Range should include key:1, key:2, key:3
-    let result = backend
-        .get_range(b"key:".to_vec()..b"key:~".to_vec())
-        .await
-        .expect("range should succeed");
+    let result =
+        backend.get_range(b"key:".to_vec()..b"key:~".to_vec()).await.expect("range should succeed");
 
     assert_eq!(result.len(), 3);
 }
@@ -240,10 +198,7 @@ async fn test_get_range_inclusive_bounds() {
 
     // Using RangeInclusive via the tuple bounds
     let result = backend
-        .get_range((
-            Bound::Included(b"a".to_vec()),
-            Bound::Included(b"b".to_vec()),
-        ))
+        .get_range((Bound::Included(b"a".to_vec()), Bound::Included(b"b".to_vec())))
         .await
         .expect("range should succeed");
 
@@ -261,34 +216,19 @@ async fn test_clear_range() {
     let backend = create_test_backend(&server).await;
 
     // Insert keys
-    backend
-        .set(b"del:1".to_vec(), b"v1".to_vec())
-        .await
-        .unwrap();
-    backend
-        .set(b"del:2".to_vec(), b"v2".to_vec())
-        .await
-        .unwrap();
-    backend
-        .set(b"keep:1".to_vec(), b"keep".to_vec())
-        .await
-        .unwrap();
+    backend.set(b"del:1".to_vec(), b"v1".to_vec()).await.unwrap();
+    backend.set(b"del:2".to_vec(), b"v2".to_vec()).await.unwrap();
+    backend.set(b"keep:1".to_vec(), b"keep".to_vec()).await.unwrap();
 
     // Clear the del: prefix
-    backend
-        .clear_range(b"del:".to_vec()..b"del:~".to_vec())
-        .await
-        .expect("clear should succeed");
+    backend.clear_range(b"del:".to_vec()..b"del:~".to_vec()).await.expect("clear should succeed");
 
     // del: keys should be gone
     assert_eq!(backend.get(b"del:1").await.unwrap(), None);
     assert_eq!(backend.get(b"del:2").await.unwrap(), None);
 
     // keep: key should remain
-    assert_eq!(
-        backend.get(b"keep:1").await.unwrap(),
-        Some(Bytes::from("keep"))
-    );
+    assert_eq!(backend.get(b"keep:1").await.unwrap(), Some(Bytes::from("keep")));
 }
 
 #[tokio::test]
@@ -297,9 +237,7 @@ async fn test_clear_range_empty() {
     let backend = create_test_backend(&server).await;
 
     // Clearing an empty range should succeed
-    let result = backend
-        .clear_range(b"nothing:".to_vec()..b"nothing:~".to_vec())
-        .await;
+    let result = backend.clear_range(b"nothing:".to_vec()..b"nothing:~".to_vec()).await;
     assert!(result.is_ok());
 }
 
@@ -333,10 +271,7 @@ async fn test_transaction_basic() {
     let backend = create_test_backend(&server).await;
 
     // Start a transaction
-    let mut txn = backend
-        .transaction()
-        .await
-        .expect("transaction creation should succeed");
+    let mut txn = backend.transaction().await.expect("transaction creation should succeed");
 
     // Buffer some writes
     txn.set(b"txn:1".to_vec(), b"value1".to_vec());
@@ -350,14 +285,8 @@ async fn test_transaction_basic() {
     txn.commit().await.expect("commit should succeed");
 
     // Values should be visible after commit
-    assert_eq!(
-        backend.get(b"txn:1").await.unwrap(),
-        Some(Bytes::from("value1"))
-    );
-    assert_eq!(
-        backend.get(b"txn:2").await.unwrap(),
-        Some(Bytes::from("value2"))
-    );
+    assert_eq!(backend.get(b"txn:1").await.unwrap(), Some(Bytes::from("value1")));
+    assert_eq!(backend.get(b"txn:2").await.unwrap(), Some(Bytes::from("value2")));
 }
 
 #[tokio::test]
@@ -366,10 +295,7 @@ async fn test_transaction_delete() {
     let backend = create_test_backend(&server).await;
 
     // Pre-populate a key
-    backend
-        .set(b"to-delete".to_vec(), b"will be deleted".to_vec())
-        .await
-        .unwrap();
+    backend.set(b"to-delete".to_vec(), b"will be deleted".to_vec()).await.unwrap();
 
     // Start transaction and delete
     let mut txn = backend.transaction().await.unwrap();
@@ -416,10 +342,7 @@ async fn test_transaction_delete_then_set() {
     assert_eq!(val, Some(Bytes::from("final")));
 
     txn.commit().await.unwrap();
-    assert_eq!(
-        backend.get(b"key").await.unwrap(),
-        Some(Bytes::from("final"))
-    );
+    assert_eq!(backend.get(b"key").await.unwrap(), Some(Bytes::from("final")));
 }
 
 #[tokio::test]
@@ -494,30 +417,18 @@ async fn test_vault_isolation() {
     let backend2 = LedgerBackend::new(config2).await.unwrap();
 
     // Set in vault 100
-    backend1
-        .set(b"shared-key".to_vec(), b"vault-100-value".to_vec())
-        .await
-        .unwrap();
+    backend1.set(b"shared-key".to_vec(), b"vault-100-value".to_vec()).await.unwrap();
 
     // Should not be visible in vault 200
     let result = backend2.get(b"shared-key").await.unwrap();
     assert_eq!(result, None);
 
     // Set in vault 200
-    backend2
-        .set(b"shared-key".to_vec(), b"vault-200-value".to_vec())
-        .await
-        .unwrap();
+    backend2.set(b"shared-key".to_vec(), b"vault-200-value".to_vec()).await.unwrap();
 
     // Each vault has its own value
-    assert_eq!(
-        backend1.get(b"shared-key").await.unwrap(),
-        Some(Bytes::from("vault-100-value"))
-    );
-    assert_eq!(
-        backend2.get(b"shared-key").await.unwrap(),
-        Some(Bytes::from("vault-200-value"))
-    );
+    assert_eq!(backend1.get(b"shared-key").await.unwrap(), Some(Bytes::from("vault-100-value")));
+    assert_eq!(backend2.get(b"shared-key").await.unwrap(), Some(Bytes::from("vault-200-value")));
 }
 
 // ============================================================================
@@ -556,10 +467,7 @@ async fn test_key_ordering_preserved() {
     backend.set(b"bbb".to_vec(), b"3".to_vec()).await.unwrap();
 
     // Range query should respect ordering
-    let results = backend
-        .get_range(b"aa".to_vec()..b"ab".to_vec())
-        .await
-        .unwrap();
+    let results = backend.get_range(b"aa".to_vec()..b"ab".to_vec()).await.unwrap();
 
     // Should only include aaa and aab (not bbb)
     assert_eq!(results.len(), 2);

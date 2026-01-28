@@ -4,25 +4,25 @@
 //! [`StorageBackend`](inferadb_common_storage::StorageBackend) trait using
 //! the InferaDB Ledger SDK.
 
-use std::ops::{Bound, RangeBounds};
-use std::sync::Arc;
+use std::{
+    ops::{Bound, RangeBounds},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use inferadb_common_storage::{KeyValue, StorageBackend, StorageError, StorageResult, Transaction};
 use inferadb_ledger_sdk::{LedgerClient, ListEntitiesOpts, Operation, ReadConsistency};
 
-use crate::config::LedgerBackendConfig;
-use crate::error::{LedgerStorageError, Result};
-use crate::transaction::LedgerTransaction;
+use crate::{
+    config::LedgerBackendConfig,
+    error::{LedgerStorageError, Result},
+    transaction::LedgerTransaction,
+};
 
 /// Returns the longest common prefix of two strings.
 fn common_prefix(a: &str, b: &str) -> String {
-    a.chars()
-        .zip(b.chars())
-        .take_while(|(ca, cb)| ca == cb)
-        .map(|(c, _)| c)
-        .collect()
+    a.chars().zip(b.chars()).take_while(|(ca, cb)| ca == cb).map(|(c, _)| c).collect()
 }
 
 /// Ledger-backed implementation of [`StorageBackend`].
@@ -122,9 +122,7 @@ impl LedgerBackend {
     /// ```
     pub async fn new(config: LedgerBackendConfig) -> Result<Self> {
         let client_config = config.build_client_config()?;
-        let client = LedgerClient::new(client_config)
-            .await
-            .map_err(LedgerStorageError::from)?;
+        let client = LedgerClient::new(client_config).await.map_err(LedgerStorageError::from)?;
 
         Ok(Self {
             client: Arc::new(client),
@@ -145,12 +143,7 @@ impl LedgerBackend {
         vault_id: Option<i64>,
         read_consistency: ReadConsistency,
     ) -> Self {
-        Self {
-            client,
-            namespace_id,
-            vault_id,
-            read_consistency,
-        }
+        Self { client, namespace_id, vault_id, read_consistency }
     }
 
     /// Returns the namespace ID.
@@ -197,15 +190,11 @@ impl LedgerBackend {
     async fn do_read(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, LedgerStorageError> {
         let result = match self.read_consistency {
             ReadConsistency::Linearizable => {
-                self.client
-                    .read_consistent(self.namespace_id, self.vault_id, key)
-                    .await
-            }
+                self.client.read_consistent(self.namespace_id, self.vault_id, key).await
+            },
             ReadConsistency::Eventual => {
-                self.client
-                    .read(self.namespace_id, self.vault_id, key)
-                    .await
-            }
+                self.client.read(self.namespace_id, self.vault_id, key).await
+            },
         };
 
         result.map_err(LedgerStorageError::from)
@@ -243,11 +232,7 @@ impl StorageBackend for LedgerBackend {
         let encoded_key = Self::encode_key(key);
 
         self.client
-            .write(
-                self.namespace_id,
-                self.vault_id,
-                vec![Operation::delete_entity(encoded_key)],
-            )
+            .write(self.namespace_id, self.vault_id, vec![Operation::delete_entity(encoded_key)])
             .await
             .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
@@ -320,11 +305,11 @@ impl StorageBackend for LedgerBackend {
                             key: Bytes::from(key),
                             value: Bytes::from(entity.value),
                         });
-                    }
+                    },
                     Err(e) => {
                         tracing::warn!(key = entity.key, "Failed to decode key: {}", e);
                         // Skip malformed keys
-                    }
+                    },
                 }
             }
         }
@@ -379,11 +364,7 @@ impl StorageBackend for LedgerBackend {
             .write(
                 self.namespace_id,
                 self.vault_id,
-                vec![Operation::set_entity_with_expiry(
-                    encoded_key,
-                    value,
-                    expires_at,
-                )],
+                vec![Operation::set_entity_with_expiry(encoded_key, value, expires_at)],
             )
             .await
             .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;

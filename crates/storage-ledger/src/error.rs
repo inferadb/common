@@ -40,11 +40,11 @@ impl From<LedgerStorageError> for StorageError {
             LedgerStorageError::Sdk(source) => sdk_error_to_storage_error(source),
             LedgerStorageError::Config(message) => {
                 StorageError::internal(format!("Config: {message}"))
-            }
+            },
             LedgerStorageError::KeyEncoding(message) => StorageError::serialization(message),
             LedgerStorageError::Transaction(message) => {
                 StorageError::internal(format!("Transaction: {message}"))
-            }
+            },
         }
     }
 }
@@ -66,7 +66,7 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
             // Log the timeout duration for debugging
             tracing::warn!(duration_ms = duration_ms, "Ledger operation timed out");
             StorageError::timeout()
-        }
+        },
 
         // RPC errors - map based on gRPC status code
         SdkError::Rpc { code, message } => match code {
@@ -81,30 +81,24 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
                 } else {
                     StorageError::internal(message.clone())
                 }
-            }
+            },
             Code::PermissionDenied | Code::Unauthenticated => {
                 StorageError::internal(format!("Auth error: {message}"))
-            }
+            },
             Code::DataLoss => StorageError::internal(format!("Data loss: {message}")),
             _ => StorageError::internal(format!("gRPC error ({code:?}): {message}")),
         },
 
         // Retry exhausted
-        SdkError::RetryExhausted {
-            attempts,
-            last_error,
-        } => {
+        SdkError::RetryExhausted { attempts, last_error } => {
             tracing::error!(attempts = attempts, "Retry exhausted: {}", last_error);
             StorageError::connection(format!(
                 "Retry exhausted after {attempts} attempts: {last_error}"
             ))
-        }
+        },
 
         // Idempotency errors - these shouldn't normally surface to the storage layer
-        SdkError::AlreadyCommitted {
-            tx_id,
-            block_height,
-        } => {
+        SdkError::AlreadyCommitted { tx_id, block_height } => {
             // This is actually success - the operation was already applied
             tracing::debug!(
                 tx_id = tx_id,
@@ -113,24 +107,21 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
             );
             // Return internal error as this shouldn't happen in normal flow
             StorageError::internal(format!("Unexpected: already committed tx={tx_id}"))
-        }
+        },
 
-        SdkError::SequenceGap {
-            expected,
-            server_has,
-        } => StorageError::internal(format!(
+        SdkError::SequenceGap { expected, server_has } => StorageError::internal(format!(
             "Sequence gap: expected {expected}, server has {server_has}"
         )),
 
         SdkError::Idempotency { message } => {
             StorageError::internal(format!("Idempotency error: {message}"))
-        }
+        },
 
         // Configuration and validation errors
         SdkError::Config { message } => StorageError::internal(format!("Config: {message}")),
         SdkError::InvalidUrl { url, message } => {
             StorageError::internal(format!("Invalid URL '{url}': {message}"))
-        }
+        },
 
         // Client shutdown
         SdkError::Shutdown => StorageError::connection("Client shutting down"),
@@ -139,15 +130,16 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
         SdkError::ProofVerification { reason } => {
             tracing::error!("Proof verification failed: {}", reason);
             StorageError::internal(format!("Proof verification failed: {reason}"))
-        }
+        },
     }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::*;
     use snafu::Location;
+
+    use super::*;
 
     #[test]
     fn test_connection_error_mapping() {
@@ -170,10 +162,7 @@ mod tests {
 
     #[test]
     fn test_not_found_rpc_mapping() {
-        let sdk_err = SdkError::Rpc {
-            code: Code::NotFound,
-            message: "key not found".into(),
-        };
+        let sdk_err = SdkError::Rpc { code: Code::NotFound, message: "key not found".into() };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::NotFound { .. }));
@@ -181,10 +170,7 @@ mod tests {
 
     #[test]
     fn test_conflict_rpc_mapping() {
-        let sdk_err = SdkError::Rpc {
-            code: Code::Aborted,
-            message: "transaction conflict".into(),
-        };
+        let sdk_err = SdkError::Rpc { code: Code::Aborted, message: "transaction conflict".into() };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Conflict));
@@ -192,10 +178,7 @@ mod tests {
 
     #[test]
     fn test_already_exists_rpc_mapping() {
-        let sdk_err = SdkError::Rpc {
-            code: Code::AlreadyExists,
-            message: "key exists".into(),
-        };
+        let sdk_err = SdkError::Rpc { code: Code::AlreadyExists, message: "key exists".into() };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Conflict));
@@ -203,10 +186,8 @@ mod tests {
 
     #[test]
     fn test_invalid_argument_rpc_mapping() {
-        let sdk_err = SdkError::Rpc {
-            code: Code::InvalidArgument,
-            message: "invalid key format".into(),
-        };
+        let sdk_err =
+            SdkError::Rpc { code: Code::InvalidArgument, message: "invalid key format".into() };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Serialization { .. }));

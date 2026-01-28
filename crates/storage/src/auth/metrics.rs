@@ -23,9 +23,13 @@
 //! println!("Get operations: {}", snapshot.get_count);
 //! ```
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 /// Error categories for signing key operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,21 +146,13 @@ impl SigningKeyMetricsSnapshot {
     #[must_use]
     pub fn error_rate(&self) -> f64 {
         let total = self.total_operations();
-        if total == 0 {
-            0.0
-        } else {
-            self.total_errors() as f64 / total as f64
-        }
+        if total == 0 { 0.0 } else { self.total_errors() as f64 / total as f64 }
     }
 
     /// Returns the average get latency in microseconds.
     #[must_use]
     pub fn avg_get_latency_us(&self) -> f64 {
-        if self.get_count == 0 {
-            0.0
-        } else {
-            self.get_latency_us as f64 / self.get_count as f64
-        }
+        if self.get_count == 0 { 0.0 } else { self.get_latency_us as f64 / self.get_count as f64 }
     }
 
     /// Returns the average create latency in microseconds.
@@ -271,57 +267,43 @@ impl SigningKeyMetrics {
     /// Records a create_key operation.
     pub fn record_create(&self, duration: Duration) {
         self.inner.create_count.fetch_add(1, Ordering::Relaxed);
-        self.inner
-            .create_latency_us
-            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.create_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 
     /// Records a get_key operation.
     pub fn record_get(&self, duration: Duration) {
         self.inner.get_count.fetch_add(1, Ordering::Relaxed);
-        self.inner
-            .get_latency_us
-            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.get_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 
     /// Records a list_active_keys operation.
     pub fn record_list(&self, duration: Duration) {
         self.inner.list_count.fetch_add(1, Ordering::Relaxed);
-        self.inner
-            .list_latency_us
-            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.list_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 
     /// Records a deactivate_key operation.
     pub fn record_deactivate(&self, duration: Duration) {
         self.inner.deactivate_count.fetch_add(1, Ordering::Relaxed);
-        self.inner
-            .deactivate_latency_us
-            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.deactivate_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 
     /// Records a revoke_key operation.
     pub fn record_revoke(&self, duration: Duration) {
         self.inner.revoke_count.fetch_add(1, Ordering::Relaxed);
-        self.inner
-            .revoke_latency_us
-            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.revoke_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 
     /// Records an activate_key operation.
     pub fn record_activate(&self, duration: Duration) {
         self.inner.activate_count.fetch_add(1, Ordering::Relaxed);
-        self.inner
-            .activate_latency_us
-            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.activate_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 
     /// Records a delete_key operation.
     pub fn record_delete(&self, duration: Duration) {
         self.inner.delete_count.fetch_add(1, Ordering::Relaxed);
-        self.inner
-            .delete_latency_us
-            .fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.delete_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
     }
 
     /// Records an error by category.
@@ -329,26 +311,22 @@ impl SigningKeyMetrics {
         match kind {
             SigningKeyErrorKind::NotFound => {
                 self.inner.error_not_found.fetch_add(1, Ordering::Relaxed);
-            }
+            },
             SigningKeyErrorKind::Conflict => {
                 self.inner.error_conflict.fetch_add(1, Ordering::Relaxed);
-            }
+            },
             SigningKeyErrorKind::Connection => {
                 self.inner.error_connection.fetch_add(1, Ordering::Relaxed);
-            }
+            },
             SigningKeyErrorKind::Serialization => {
-                self.inner
-                    .error_serialization
-                    .fetch_add(1, Ordering::Relaxed);
-            }
+                self.inner.error_serialization.fetch_add(1, Ordering::Relaxed);
+            },
             SigningKeyErrorKind::InvalidState => {
-                self.inner
-                    .error_invalid_state
-                    .fetch_add(1, Ordering::Relaxed);
-            }
+                self.inner.error_invalid_state.fetch_add(1, Ordering::Relaxed);
+            },
             SigningKeyErrorKind::Other => {
                 self.inner.error_other.fetch_add(1, Ordering::Relaxed);
-            }
+            },
         }
     }
 
@@ -432,9 +410,7 @@ impl Default for SigningKeyMetrics {
 
 impl std::fmt::Debug for SigningKeyMetrics {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SigningKeyMetrics")
-            .field("snapshot", &self.snapshot())
-            .finish()
+        f.debug_struct("SigningKeyMetrics").field("snapshot", &self.snapshot()).finish()
     }
 }
 
@@ -610,10 +586,7 @@ mod tests {
     #[test]
     fn test_metrics_snapshot_builder_partial() {
         // Builder should allow setting only some fields
-        let snapshot = SigningKeyMetricsSnapshot::builder()
-            .get_count(5)
-            .error_not_found(1)
-            .build();
+        let snapshot = SigningKeyMetricsSnapshot::builder().get_count(5).error_not_found(1).build();
 
         assert_eq!(snapshot.get_count, 5);
         assert_eq!(snapshot.error_not_found, 1);

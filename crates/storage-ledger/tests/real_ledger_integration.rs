@@ -26,10 +26,12 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::env;
-use std::ops::Bound;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::{
+    env,
+    ops::Bound,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 use bytes::Bytes;
 use inferadb_common_storage::StorageBackend;
@@ -56,10 +58,7 @@ fn ledger_endpoint() -> String {
 
 /// Get the namespace ID from environment, or default.
 fn ledger_namespace_id() -> i64 {
-    env::var("LEDGER_NAMESPACE_ID")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1)
+    env::var("LEDGER_NAMESPACE_ID").ok().and_then(|s| s.parse().ok()).unwrap_or(1)
 }
 
 /// Get a unique vault ID for test isolation.
@@ -77,9 +76,7 @@ async fn create_test_backend() -> LedgerBackend {
         .build()
         .expect("valid config");
 
-    LedgerBackend::new(config)
-        .await
-        .expect("backend creation should succeed")
+    LedgerBackend::new(config).await.expect("backend creation should succeed")
 }
 
 /// Creates a LedgerBackend with a specific vault ID (for isolation tests).
@@ -92,9 +89,7 @@ async fn create_backend_with_vault(vault_id: i64) -> LedgerBackend {
         .build()
         .expect("valid config");
 
-    LedgerBackend::new(config)
-        .await
-        .expect("backend creation should succeed")
+    LedgerBackend::new(config).await.expect("backend creation should succeed")
 }
 
 // ============================================================================
@@ -125,10 +120,7 @@ async fn test_real_ledger_set_and_get() {
     let backend = create_test_backend().await;
 
     // Set a value
-    backend
-        .set(b"test-key".to_vec(), b"test-value".to_vec())
-        .await
-        .expect("set should succeed");
+    backend.set(b"test-key".to_vec(), b"test-value".to_vec()).await.expect("set should succeed");
 
     // Get it back
     let result = backend.get(b"test-key").await.expect("get should succeed");
@@ -145,22 +137,13 @@ async fn test_real_ledger_overwrite() {
     let backend = create_test_backend().await;
 
     // Set initial value
-    backend
-        .set(b"overwrite-key".to_vec(), b"initial".to_vec())
-        .await
-        .expect("set should succeed");
+    backend.set(b"overwrite-key".to_vec(), b"initial".to_vec()).await.expect("set should succeed");
 
     // Overwrite
-    backend
-        .set(b"overwrite-key".to_vec(), b"updated".to_vec())
-        .await
-        .expect("set should succeed");
+    backend.set(b"overwrite-key".to_vec(), b"updated".to_vec()).await.expect("set should succeed");
 
     // Verify
-    let result = backend
-        .get(b"overwrite-key")
-        .await
-        .expect("get should succeed");
+    let result = backend.get(b"overwrite-key").await.expect("get should succeed");
     assert_eq!(result, Some(Bytes::from("updated")));
 }
 
@@ -174,20 +157,11 @@ async fn test_real_ledger_delete() {
     let backend = create_test_backend().await;
 
     // Set then delete
-    backend
-        .set(b"delete-key".to_vec(), b"value".to_vec())
-        .await
-        .expect("set should succeed");
-    backend
-        .delete(b"delete-key")
-        .await
-        .expect("delete should succeed");
+    backend.set(b"delete-key".to_vec(), b"value".to_vec()).await.expect("set should succeed");
+    backend.delete(b"delete-key").await.expect("delete should succeed");
 
     // Verify
-    let result = backend
-        .get(b"delete-key")
-        .await
-        .expect("get should succeed");
+    let result = backend.get(b"delete-key").await.expect("get should succeed");
     assert_eq!(result, None);
 }
 
@@ -222,10 +196,7 @@ async fn test_real_ledger_binary_keys() {
     let key = [0x00, 0x01, 0xFF, 0xFE, 0x00, 0xAB];
     let value = b"binary key works";
 
-    backend
-        .set(key.to_vec(), value.to_vec())
-        .await
-        .expect("set should succeed");
+    backend.set(key.to_vec(), value.to_vec()).await.expect("set should succeed");
 
     let result = backend.get(&key).await.expect("get should succeed");
     assert_eq!(result, Some(Bytes::from_static(value)));
@@ -244,10 +215,7 @@ async fn test_real_ledger_large_value() {
     let key = b"large-value-key";
     let value: Vec<u8> = (0..1_000_000).map(|i| (i % 256) as u8).collect();
 
-    backend
-        .set(key.to_vec(), value.clone())
-        .await
-        .expect("set should succeed");
+    backend.set(key.to_vec(), value.clone()).await.expect("set should succeed");
 
     let result = backend.get(key).await.expect("get should succeed");
     assert_eq!(result.map(|b| b.len()), Some(1_000_000));
@@ -269,19 +237,13 @@ async fn test_real_ledger_range_query() {
     // Insert keys with common prefix
     for i in 1..=5 {
         backend
-            .set(
-                format!("range:item:{}", i).into_bytes(),
-                format!("v{}", i).into_bytes(),
-            )
+            .set(format!("range:item:{}", i).into_bytes(), format!("v{}", i).into_bytes())
             .await
             .expect("set should succeed");
     }
 
     // Insert a key outside the range
-    backend
-        .set(b"other:item:1".to_vec(), b"other".to_vec())
-        .await
-        .expect("set should succeed");
+    backend.set(b"other:item:1".to_vec(), b"other".to_vec()).await.expect("set should succeed");
 
     // Range query
     let results = backend
@@ -301,25 +263,13 @@ async fn test_real_ledger_range_query_inclusive_bounds() {
 
     let backend = create_test_backend().await;
 
-    backend
-        .set(b"bound:a".to_vec(), b"va".to_vec())
-        .await
-        .unwrap();
-    backend
-        .set(b"bound:b".to_vec(), b"vb".to_vec())
-        .await
-        .unwrap();
-    backend
-        .set(b"bound:c".to_vec(), b"vc".to_vec())
-        .await
-        .unwrap();
+    backend.set(b"bound:a".to_vec(), b"va".to_vec()).await.unwrap();
+    backend.set(b"bound:b".to_vec(), b"vb".to_vec()).await.unwrap();
+    backend.set(b"bound:c".to_vec(), b"vc".to_vec()).await.unwrap();
 
     // Inclusive bounds
     let results = backend
-        .get_range((
-            Bound::Included(b"bound:a".to_vec()),
-            Bound::Included(b"bound:b".to_vec()),
-        ))
+        .get_range((Bound::Included(b"bound:a".to_vec()), Bound::Included(b"bound:b".to_vec())))
         .await
         .expect("range should succeed");
 
@@ -336,18 +286,9 @@ async fn test_real_ledger_clear_range() {
     let backend = create_test_backend().await;
 
     // Insert keys
-    backend
-        .set(b"clear:1".to_vec(), b"v1".to_vec())
-        .await
-        .unwrap();
-    backend
-        .set(b"clear:2".to_vec(), b"v2".to_vec())
-        .await
-        .unwrap();
-    backend
-        .set(b"keep:1".to_vec(), b"keep".to_vec())
-        .await
-        .unwrap();
+    backend.set(b"clear:1".to_vec(), b"v1".to_vec()).await.unwrap();
+    backend.set(b"clear:2".to_vec(), b"v2".to_vec()).await.unwrap();
+    backend.set(b"keep:1".to_vec(), b"keep".to_vec()).await.unwrap();
 
     // Clear the clear: prefix
     backend
@@ -360,10 +301,7 @@ async fn test_real_ledger_clear_range() {
     assert_eq!(backend.get(b"clear:2").await.unwrap(), None);
 
     // keep: should remain
-    assert_eq!(
-        backend.get(b"keep:1").await.unwrap(),
-        Some(Bytes::from("keep"))
-    );
+    assert_eq!(backend.get(b"keep:1").await.unwrap(), Some(Bytes::from("keep")));
 }
 
 // ============================================================================
@@ -411,10 +349,7 @@ async fn test_real_ledger_transaction_commit() {
     let backend = create_test_backend().await;
 
     // Start transaction
-    let mut txn = backend
-        .transaction()
-        .await
-        .expect("transaction should succeed");
+    let mut txn = backend.transaction().await.expect("transaction should succeed");
 
     // Buffer writes
     txn.set(b"txn:key1".to_vec(), b"value1".to_vec());
@@ -428,14 +363,8 @@ async fn test_real_ledger_transaction_commit() {
     txn.commit().await.expect("commit should succeed");
 
     // Verify after commit
-    assert_eq!(
-        backend.get(b"txn:key1").await.unwrap(),
-        Some(Bytes::from("value1"))
-    );
-    assert_eq!(
-        backend.get(b"txn:key2").await.unwrap(),
-        Some(Bytes::from("value2"))
-    );
+    assert_eq!(backend.get(b"txn:key1").await.unwrap(), Some(Bytes::from("value1")));
+    assert_eq!(backend.get(b"txn:key2").await.unwrap(), Some(Bytes::from("value2")));
 }
 
 #[tokio::test]
@@ -448,10 +377,7 @@ async fn test_real_ledger_transaction_delete() {
     let backend = create_test_backend().await;
 
     // Pre-populate
-    backend
-        .set(b"txn-delete".to_vec(), b"will-delete".to_vec())
-        .await
-        .unwrap();
+    backend.set(b"txn-delete".to_vec(), b"will-delete".to_vec()).await.unwrap();
 
     // Delete in transaction
     let mut txn = backend.transaction().await.unwrap();
@@ -482,17 +408,11 @@ async fn test_real_ledger_transaction_set_delete_set() {
     txn.delete(b"sds-key".to_vec());
     txn.set(b"sds-key".to_vec(), b"final".to_vec());
 
-    assert_eq!(
-        txn.get(b"sds-key").await.unwrap(),
-        Some(Bytes::from("final"))
-    );
+    assert_eq!(txn.get(b"sds-key").await.unwrap(), Some(Bytes::from("final")));
 
     txn.commit().await.unwrap();
 
-    assert_eq!(
-        backend.get(b"sds-key").await.unwrap(),
-        Some(Bytes::from("final"))
-    );
+    assert_eq!(backend.get(b"sds-key").await.unwrap(), Some(Bytes::from("final")));
 }
 
 #[tokio::test]
@@ -528,29 +448,17 @@ async fn test_real_ledger_vault_isolation() {
     let backend_b = create_backend_with_vault(vault_b).await;
 
     // Write to vault A
-    backend_a
-        .set(b"shared-key".to_vec(), b"vault-a-value".to_vec())
-        .await
-        .unwrap();
+    backend_a.set(b"shared-key".to_vec(), b"vault-a-value".to_vec()).await.unwrap();
 
     // Should NOT be visible in vault B
     assert_eq!(backend_b.get(b"shared-key").await.unwrap(), None);
 
     // Write to vault B
-    backend_b
-        .set(b"shared-key".to_vec(), b"vault-b-value".to_vec())
-        .await
-        .unwrap();
+    backend_b.set(b"shared-key".to_vec(), b"vault-b-value".to_vec()).await.unwrap();
 
     // Each vault sees its own value
-    assert_eq!(
-        backend_a.get(b"shared-key").await.unwrap(),
-        Some(Bytes::from("vault-a-value"))
-    );
-    assert_eq!(
-        backend_b.get(b"shared-key").await.unwrap(),
-        Some(Bytes::from("vault-b-value"))
-    );
+    assert_eq!(backend_a.get(b"shared-key").await.unwrap(), Some(Bytes::from("vault-a-value")));
+    assert_eq!(backend_b.get(b"shared-key").await.unwrap(), Some(Bytes::from("vault-b-value")));
 }
 
 // ============================================================================
@@ -573,18 +481,13 @@ async fn test_real_ledger_concurrent_writes() {
         let value = format!("value:{}", i);
 
         handles.push(tokio::spawn(async move {
-            backend_clone
-                .set(key.into_bytes(), value.into_bytes())
-                .await
+            backend_clone.set(key.into_bytes(), value.into_bytes()).await
         }));
     }
 
     // Wait for all writers
     for handle in handles {
-        handle
-            .await
-            .expect("task should succeed")
-            .expect("write should succeed");
+        handle.await.expect("task should succeed").expect("write should succeed");
     }
 
     // All writes should have succeeded (each backend has its own vault)
@@ -606,18 +509,13 @@ async fn test_real_ledger_concurrent_writes_same_key() {
         let value = format!("writer-{}", i);
 
         handles.push(tokio::spawn(async move {
-            backend
-                .set(b"contested-key".to_vec(), value.into_bytes())
-                .await
+            backend.set(b"contested-key".to_vec(), value.into_bytes()).await
         }));
     }
 
     // All writes should succeed (last writer wins)
     for handle in handles {
-        handle
-            .await
-            .expect("task should succeed")
-            .expect("write should succeed");
+        handle.await.expect("task should succeed").expect("write should succeed");
     }
 
     // Verify the key has some value
@@ -649,10 +547,7 @@ async fn test_real_ledger_reconnection_after_idle() {
     sleep(Duration::from_secs(5)).await;
 
     // Should reconnect automatically
-    let result = backend
-        .get(b"reconnect:key")
-        .await
-        .expect("get after idle should succeed");
+    let result = backend.get(b"reconnect:key").await.expect("get after idle should succeed");
 
     assert_eq!(result, Some(Bytes::from("value1")));
 
@@ -700,10 +595,7 @@ async fn test_real_ledger_many_keys() {
     let count = 100;
     for i in 0..count {
         backend
-            .set(
-                format!("many:key:{:05}", i).into_bytes(),
-                format!("value:{}", i).into_bytes(),
-            )
+            .set(format!("many:key:{:05}", i).into_bytes(), format!("value:{}", i).into_bytes())
             .await
             .expect("set should succeed");
     }

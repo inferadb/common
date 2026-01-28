@@ -1,0 +1,4 @@
+[tools]
+rust = "1.92"
+protobuf = "29"
+buf = "1"

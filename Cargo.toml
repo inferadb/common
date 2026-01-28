@@ -12,8 +12,8 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/inferadb/inferadb"
 
 [workspace.dependencies]
-# Internal
-inferadb-ledger-sdk = { git = "https://github.com/inferadb/ledger", tag = "canary" }
+# Internal (uses latest from crates.io; consider using .cargo/config.toml override for local development)
+inferadb-ledger-sdk = ">=0.1.0-0"
 
 # Async
 async-trait = "0.1"
