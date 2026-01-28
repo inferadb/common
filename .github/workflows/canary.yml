@@ -78,30 +78,18 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Patch crate versions
-        env:
-          CANARY_VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          # Patch versions in Cargo.toml files
-          sed -i "s/^version = \".*\"/version = \"${CANARY_VERSION}\"/" crates/storage/Cargo.toml
-          sed -i "s/^version = \".*\"/version = \"${CANARY_VERSION}\"/" crates/storage-ledger/Cargo.toml
-
-          # Update storage-ledger's dependency on storage to use exact canary version
-          sed -i "s/^inferadb-common-storage = .*/inferadb-common-storage = \"=${CANARY_VERSION}\"/" crates/storage-ledger/Cargo.toml
-
-          echo "Patched versions:"
-          grep -r "^version = " crates/*/Cargo.toml
-          grep "inferadb-common-storage" crates/storage-ledger/Cargo.toml
-
       # Use OIDC-based trusted publishing
       - name: Authenticate with crates.io
         uses: rust-lang/crates-io-auth-action@b7e9a28eded4986ec6b1fa40eeee8f8f165559ec # v1.0.3
         id: auth
 
+      # Publish storage first (only patch its version, not storage-ledger's dependency)
       - name: Publish inferadb-common-storage
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          CANARY_VERSION: ${{ needs.version.outputs.version }}
         run: |
+          sed -i "s/^version = \".*\"/version = \"${CANARY_VERSION}\"/" crates/storage/Cargo.toml
           cargo publish --package inferadb-common-storage --token "$CARGO_REGISTRY_TOKEN" --allow-dirty
 
       - name: Wait for crates.io to index
@@ -119,10 +107,14 @@ jobs:
           done
           echo "Warning: Timed out waiting for index, proceeding anyway..."
 
+      # Now patch storage-ledger's version AND dependency, then publish
       - name: Publish inferadb-common-storage-ledger
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          CANARY_VERSION: ${{ needs.version.outputs.version }}
         run: |
+          sed -i "s/^version = \".*\"/version = \"${CANARY_VERSION}\"/" crates/storage-ledger/Cargo.toml
+          sed -i "s/^inferadb-common-storage = .*/inferadb-common-storage = \"=${CANARY_VERSION}\"/" crates/storage-ledger/Cargo.toml
           cargo publish --package inferadb-common-storage-ledger --token "$CARGO_REGISTRY_TOKEN" --allow-dirty
 
   # Create GitHub pre-release for tracking
