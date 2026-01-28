@@ -137,20 +137,31 @@ jobs:
         uses: rust-lang/crates-io-auth-action@b7e9a28eded4986ec6b1fa40eeee8f8f165559ec # v1.0.3
         id: auth
 
-      - name: Publish crates
+      - name: Publish inferadb-common-storage
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
-          # Publish storage crate first (base crate)
-          echo "Publishing inferadb-common-storage..."
           cargo publish --package inferadb-common-storage --token "$CARGO_REGISTRY_TOKEN"
 
-          # Wait for crates.io to index
-          echo "Waiting for crates.io to index..."
-          sleep 45
+      - name: Wait for crates.io to index
+        env:
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          # Poll crates.io until the version appears (max 5 minutes)
+          for i in {1..30}; do
+            if cargo search inferadb-common-storage 2>/dev/null | grep -q "${EXPECTED_VERSION}"; then
+              echo "Version ${EXPECTED_VERSION} is now available on crates.io"
+              exit 0
+            fi
+            echo "Waiting for crates.io to index (attempt $i/30)..."
+            sleep 10
+          done
+          echo "Warning: Timed out waiting for index, proceeding anyway..."
 
-          # Publish storage-ledger (depends on storage)
-          echo "Publishing inferadb-common-storage-ledger..."
+      - name: Publish inferadb-common-storage-ledger
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
           cargo publish --package inferadb-common-storage-ledger --token "$CARGO_REGISTRY_TOKEN"
 
   # Build documentation (triggers docs.rs automatically on crates.io publish)
