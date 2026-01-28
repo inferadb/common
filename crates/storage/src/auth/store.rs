@@ -36,14 +36,16 @@
 //! }
 //! ```
 
+use std::{collections::HashMap, sync::Arc};
+
 use async_trait::async_trait;
 use chrono::Utc;
 use parking_lot::RwLock;
-use std::collections::HashMap;
-use std::sync::Arc;
 
-use crate::auth::PublicSigningKey;
-use crate::error::{StorageError, StorageResult};
+use crate::{
+    auth::PublicSigningKey,
+    error::{StorageError, StorageResult},
+};
 
 /// Storage key prefix for signing keys within a namespace.
 pub const SIGNING_KEY_PREFIX: &str = "signing-keys/";
@@ -262,10 +264,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         let mut keys = self.keys.write();
 
         if keys.contains_key(&map_key) {
-            return Err(StorageError::internal(format!(
-                "Key already exists: {}",
-                key.kid
-            )));
+            return Err(StorageError::internal(format!("Key already exists: {}", key.kid)));
         }
 
         keys.insert(map_key, key.clone());
@@ -306,9 +305,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         let map_key = Self::make_key(namespace_id, kid);
         let mut keys = self.keys.write();
 
-        let key = keys
-            .get_mut(&map_key)
-            .ok_or_else(|| StorageError::not_found(kid))?;
+        let key = keys.get_mut(&map_key).ok_or_else(|| StorageError::not_found(kid))?;
 
         key.active = false;
         Ok(())
@@ -323,9 +320,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         let map_key = Self::make_key(namespace_id, kid);
         let mut keys = self.keys.write();
 
-        let key = keys
-            .get_mut(&map_key)
-            .ok_or_else(|| StorageError::not_found(kid))?;
+        let key = keys.get_mut(&map_key).ok_or_else(|| StorageError::not_found(kid))?;
 
         // Idempotent: only set revoked_at if not already revoked
         if key.revoked_at.is_none() {
@@ -339,9 +334,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         let map_key = Self::make_key(namespace_id, kid);
         let mut keys = self.keys.write();
 
-        let key = keys
-            .get_mut(&map_key)
-            .ok_or_else(|| StorageError::not_found(kid))?;
+        let key = keys.get_mut(&map_key).ok_or_else(|| StorageError::not_found(kid))?;
 
         if key.revoked_at.is_some() {
             return Err(StorageError::internal(format!(
@@ -368,8 +361,9 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::*;
     use chrono::Duration;
+
+    use super::*;
 
     /// Creates a test key with the given kid.
     fn make_test_key(kid: &str) -> PublicSigningKey {
@@ -404,16 +398,10 @@ mod tests {
         let namespace_id = 100;
 
         // Create the key
-        store
-            .create_key(namespace_id, &key)
-            .await
-            .expect("create_key should succeed");
+        store.create_key(namespace_id, &key).await.expect("create_key should succeed");
 
         // Retrieve it
-        let retrieved = store
-            .get_key(namespace_id, "key-1")
-            .await
-            .expect("get_key should succeed");
+        let retrieved = store.get_key(namespace_id, "key-1").await.expect("get_key should succeed");
 
         assert!(retrieved.is_some());
         let retrieved = retrieved.expect("key should exist");
@@ -437,10 +425,7 @@ mod tests {
         let key = make_test_key("dup-key");
         let namespace_id = 100;
 
-        store
-            .create_key(namespace_id, &key)
-            .await
-            .expect("first create should succeed");
+        store.create_key(namespace_id, &key).await.expect("first create should succeed");
 
         let result = store.create_key(namespace_id, &key).await;
 
@@ -456,14 +441,8 @@ mod tests {
         let key2 = make_test_key("shared-kid");
 
         // Same kid in different namespaces should work
-        store
-            .create_key(100, &key1)
-            .await
-            .expect("create in ns 100");
-        store
-            .create_key(200, &key2)
-            .await
-            .expect("create in ns 200");
+        store.create_key(100, &key1).await.expect("create in ns 100");
+        store.create_key(200, &key2).await.expect("create in ns 200");
 
         let r1 = store.get_key(100, "shared-kid").await.expect("get ns 100");
         let r2 = store.get_key(200, "shared-kid").await.expect("get ns 200");
@@ -492,28 +471,13 @@ mod tests {
             Some(Utc::now() - Duration::hours(1)),
         );
 
-        store
-            .create_key(namespace_id, &active_key)
-            .await
-            .expect("create active");
-        store
-            .create_key(namespace_id, &inactive_key)
-            .await
-            .expect("create inactive");
-        store
-            .create_key(namespace_id, &future_key)
-            .await
-            .expect("create future");
-        store
-            .create_key(namespace_id, &expired_key)
-            .await
-            .expect("create expired");
+        store.create_key(namespace_id, &active_key).await.expect("create active");
+        store.create_key(namespace_id, &inactive_key).await.expect("create inactive");
+        store.create_key(namespace_id, &future_key).await.expect("create future");
+        store.create_key(namespace_id, &expired_key).await.expect("create expired");
 
         // Only the active key should be listed
-        let active_keys = store
-            .list_active_keys(namespace_id)
-            .await
-            .expect("list_active_keys");
+        let active_keys = store.list_active_keys(namespace_id).await.expect("list_active_keys");
 
         assert_eq!(active_keys.len(), 1);
         assert_eq!(active_keys[0].kid, "active");
@@ -537,15 +501,9 @@ mod tests {
 
         store.create_key(namespace_id, &key).await.expect("create");
 
-        store
-            .deactivate_key(namespace_id, "to-deactivate")
-            .await
-            .expect("deactivate");
+        store.deactivate_key(namespace_id, "to-deactivate").await.expect("deactivate");
 
-        let retrieved = store
-            .get_key(namespace_id, "to-deactivate")
-            .await
-            .expect("get");
+        let retrieved = store.get_key(namespace_id, "to-deactivate").await.expect("get");
         assert!(!retrieved.expect("exists").active);
     }
 
@@ -556,10 +514,7 @@ mod tests {
         let result = store.deactivate_key(100, "nonexistent").await;
 
         assert!(result.is_err());
-        assert!(matches!(
-            result.expect_err("should be NotFound"),
-            StorageError::NotFound { .. }
-        ));
+        assert!(matches!(result.expect_err("should be NotFound"), StorageError::NotFound { .. }));
     }
 
     #[tokio::test]
@@ -570,10 +525,7 @@ mod tests {
 
         store.create_key(namespace_id, &key).await.expect("create");
 
-        store
-            .revoke_key(namespace_id, "to-revoke", Some("compromised"))
-            .await
-            .expect("revoke");
+        store.revoke_key(namespace_id, "to-revoke", Some("compromised")).await.expect("revoke");
 
         let retrieved = store.get_key(namespace_id, "to-revoke").await.expect("get");
         let retrieved = retrieved.expect("exists");
@@ -590,28 +542,16 @@ mod tests {
 
         store.create_key(namespace_id, &key).await.expect("create");
 
-        store
-            .revoke_key(namespace_id, "revoke-twice", None)
-            .await
-            .expect("first revoke");
+        store.revoke_key(namespace_id, "revoke-twice", None).await.expect("first revoke");
 
         // Get the timestamp from first revocation
-        let first = store
-            .get_key(namespace_id, "revoke-twice")
-            .await
-            .expect("get");
+        let first = store.get_key(namespace_id, "revoke-twice").await.expect("get");
         let first_revoked_at = first.expect("exists").revoked_at;
 
         // Second revocation should succeed and not change timestamp
-        store
-            .revoke_key(namespace_id, "revoke-twice", None)
-            .await
-            .expect("second revoke");
+        store.revoke_key(namespace_id, "revoke-twice", None).await.expect("second revoke");
 
-        let second = store
-            .get_key(namespace_id, "revoke-twice")
-            .await
-            .expect("get");
+        let second = store.get_key(namespace_id, "revoke-twice").await.expect("get");
         let second_revoked_at = second.expect("exists").revoked_at;
 
         assert_eq!(first_revoked_at, second_revoked_at);
@@ -624,10 +564,7 @@ mod tests {
         let result = store.revoke_key(100, "nonexistent", None).await;
 
         assert!(result.is_err());
-        assert!(matches!(
-            result.expect_err("should be NotFound"),
-            StorageError::NotFound { .. }
-        ));
+        assert!(matches!(result.expect_err("should be NotFound"), StorageError::NotFound { .. }));
     }
 
     #[tokio::test]
@@ -637,28 +574,16 @@ mod tests {
         let namespace_id = 100;
 
         store.create_key(namespace_id, &key).await.expect("create");
-        store
-            .deactivate_key(namespace_id, "to-reactivate")
-            .await
-            .expect("deactivate");
+        store.deactivate_key(namespace_id, "to-reactivate").await.expect("deactivate");
 
         // Verify it's inactive
-        let inactive = store
-            .get_key(namespace_id, "to-reactivate")
-            .await
-            .expect("get");
+        let inactive = store.get_key(namespace_id, "to-reactivate").await.expect("get");
         assert!(!inactive.expect("exists").active);
 
         // Reactivate
-        store
-            .activate_key(namespace_id, "to-reactivate")
-            .await
-            .expect("activate");
+        store.activate_key(namespace_id, "to-reactivate").await.expect("activate");
 
-        let reactivated = store
-            .get_key(namespace_id, "to-reactivate")
-            .await
-            .expect("get");
+        let reactivated = store.get_key(namespace_id, "to-reactivate").await.expect("get");
         assert!(reactivated.expect("exists").active);
     }
 
@@ -669,20 +594,12 @@ mod tests {
         let namespace_id = 100;
 
         store.create_key(namespace_id, &key).await.expect("create");
-        store
-            .revoke_key(namespace_id, "permanently-revoked", None)
-            .await
-            .expect("revoke");
+        store.revoke_key(namespace_id, "permanently-revoked", None).await.expect("revoke");
 
-        let result = store
-            .activate_key(namespace_id, "permanently-revoked")
-            .await;
+        let result = store.activate_key(namespace_id, "permanently-revoked").await;
 
         assert!(result.is_err());
-        assert!(matches!(
-            result.expect_err("should be Internal"),
-            StorageError::Internal { .. }
-        ));
+        assert!(matches!(result.expect_err("should be Internal"), StorageError::Internal { .. }));
     }
 
     #[tokio::test]
@@ -693,10 +610,7 @@ mod tests {
 
         store.create_key(namespace_id, &key).await.expect("create");
 
-        store
-            .delete_key(namespace_id, "to-delete")
-            .await
-            .expect("delete");
+        store.delete_key(namespace_id, "to-delete").await.expect("delete");
 
         let result = store.get_key(namespace_id, "to-delete").await.expect("get");
         assert!(result.is_none());
@@ -709,10 +623,7 @@ mod tests {
         let result = store.delete_key(100, "nonexistent").await;
 
         assert!(result.is_err());
-        assert!(matches!(
-            result.expect_err("should be NotFound"),
-            StorageError::NotFound { .. }
-        ));
+        assert!(matches!(result.expect_err("should be NotFound"), StorageError::NotFound { .. }));
     }
 
     #[tokio::test]
@@ -721,10 +632,7 @@ mod tests {
         let cloned = store.clone();
         let key = make_test_key("shared");
 
-        store
-            .create_key(100, &key)
-            .await
-            .expect("create via original");
+        store.create_key(100, &key).await.expect("create via original");
 
         let result = cloned.get_key(100, "shared").await.expect("get via clone");
 

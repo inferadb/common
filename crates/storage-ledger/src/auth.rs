@@ -1,8 +1,9 @@
 //! Ledger-backed implementation of public signing key storage.
 //!
 //! This module provides [`LedgerSigningKeyStore`](crate::auth::LedgerSigningKeyStore),
-//! which implements the [`PublicSigningKeyStore`](inferadb_common_storage::auth::PublicSigningKeyStore)
-//! trait using the InferaDB Ledger as the backing store.
+//! which implements the
+//! [`PublicSigningKeyStore`](inferadb_common_storage::auth::PublicSigningKeyStore) trait using the
+//! InferaDB Ledger as the backing store.
 //!
 //! # Architecture
 //!
@@ -55,8 +56,7 @@
 //! # }
 //! ```
 
-use std::sync::Arc;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -124,11 +124,7 @@ impl LedgerSigningKeyStore {
     /// Engine always sees the latest key state.
     #[must_use]
     pub fn new(client: Arc<LedgerClient>) -> Self {
-        Self {
-            client,
-            read_consistency: ReadConsistency::Linearizable,
-            metrics: None,
-        }
+        Self { client, read_consistency: ReadConsistency::Linearizable, metrics: None }
     }
 
     /// Creates a store with the specified read consistency level.
@@ -138,11 +134,7 @@ impl LedgerSigningKeyStore {
     /// may delay key revocation propagation.
     #[must_use]
     pub fn with_read_consistency(client: Arc<LedgerClient>, consistency: ReadConsistency) -> Self {
-        Self {
-            client,
-            read_consistency: consistency,
-            metrics: None,
-        }
+        Self { client, read_consistency: consistency, metrics: None }
     }
 
     /// Enables metrics collection for this store.
@@ -202,7 +194,7 @@ impl LedgerSigningKeyStore {
         let result = match self.read_consistency {
             ReadConsistency::Linearizable => {
                 self.client.read_consistent(namespace_id, None, key).await
-            }
+            },
             ReadConsistency::Eventual => self.client.read(namespace_id, None, key).await,
         };
 
@@ -341,23 +333,23 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
                             if is_active {
                                 active_keys.push(key);
                             }
-                        }
+                        },
                         Err(e) => {
                             tracing::warn!(
                                 key = entity.key,
                                 error = %e,
                                 "Failed to deserialize signing key, skipping"
                             );
-                        }
+                        },
                     }
                 }
 
                 Ok(active_keys)
-            }
+            },
             Err(e) => {
                 self.record_error(Self::error_to_kind(&e));
                 Err(e)
-            }
+            },
         };
 
         if let Some(metrics) = &self.metrics {
@@ -383,11 +375,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
             let value = Self::serialize_key(&key)?;
 
             self.client
-                .write(
-                    namespace_id,
-                    None,
-                    vec![Operation::set_entity(storage_key, value)],
-                )
+                .write(namespace_id, None, vec![Operation::set_entity(storage_key, value)])
                 .await
                 .map(|_| ())
                 .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
@@ -431,11 +419,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
             let value = Self::serialize_key(&key)?;
 
             self.client
-                .write(
-                    namespace_id,
-                    None,
-                    vec![Operation::set_entity(storage_key, value)],
-                )
+                .write(namespace_id, None, vec![Operation::set_entity(storage_key, value)])
                 .await
                 .map(|_| ())
                 .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
@@ -477,11 +461,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
             let value = Self::serialize_key(&key)?;
 
             self.client
-                .write(
-                    namespace_id,
-                    None,
-                    vec![Operation::set_entity(storage_key, value)],
-                )
+                .write(namespace_id, None, vec![Operation::set_entity(storage_key, value)])
                 .await
                 .map(|_| ())
                 .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
@@ -510,11 +490,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
             }
 
             self.client
-                .write(
-                    namespace_id,
-                    None,
-                    vec![Operation::delete_entity(storage_key)],
-                )
+                .write(namespace_id, None, vec![Operation::delete_entity(storage_key)])
                 .await
                 .map(|_| ())
                 .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
@@ -540,10 +516,7 @@ mod tests {
 
     #[test]
     fn test_storage_key_format() {
-        assert_eq!(
-            LedgerSigningKeyStore::storage_key("key-abc123"),
-            "signing-keys/key-abc123"
-        );
+        assert_eq!(LedgerSigningKeyStore::storage_key("key-abc123"), "signing-keys/key-abc123");
     }
 
     #[test]

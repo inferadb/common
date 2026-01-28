@@ -4,8 +4,10 @@
 //! [`Transaction`](inferadb_common_storage::Transaction) trait for atomic
 //! multi-operation commits to Ledger.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -111,15 +113,11 @@ impl LedgerTransaction {
     async fn do_read(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, LedgerStorageError> {
         let result = match self.read_consistency {
             ReadConsistency::Linearizable => {
-                self.client
-                    .read_consistent(self.namespace_id, self.vault_id, key)
-                    .await
-            }
+                self.client.read_consistent(self.namespace_id, self.vault_id, key).await
+            },
             ReadConsistency::Eventual => {
-                self.client
-                    .read(self.namespace_id, self.vault_id, key)
-                    .await
-            }
+                self.client.read(self.namespace_id, self.vault_id, key).await
+            },
         };
 
         result.map_err(LedgerStorageError::from)

@@ -1404,7 +1404,7 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-raft"
-version = "0.1.0-pre.1"
+version = "0.1.0"
 dependencies = [
  "base64",
  "bon",
@@ -1443,7 +1443,7 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-sdk"
-version = "0.1.0-pre.1"
+version = "0.1.0"
 dependencies = [
  "backon",
  "bon",
@@ -1469,7 +1469,7 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-state"
-version = "0.1.0-pre.1"
+version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1494,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-store"
-version = "0.1.0-pre.1"
+version = "0.1.0"
 dependencies = [
  "arc-swap",
  "bon",
@@ -1507,7 +1507,7 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-types"
-version = "0.1.0-pre.1"
+version = "0.1.0"
 dependencies = [
  "bon",
  "chrono",

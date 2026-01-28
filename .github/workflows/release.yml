@@ -31,7 +31,7 @@ env:
 jobs:
   # Determine version from trigger source
   prepare:
-    name: Prepare Release
+    name: Prepare
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -65,7 +65,7 @@ jobs:
 
   # Create GitHub release (only for workflow_dispatch; release-please creates its own)
   create-release:
-    name: Create Release
+    name: Release
     needs: prepare
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
@@ -91,9 +91,30 @@ jobs:
           prerelease: false
           generate_release_notes: true
 
+  # Update rolling latest tag
+  update-latest-tag:
+    name: Latest Tag
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Update latest tag
+        run: |
+          git tag -f latest
+          git push -f origin latest
+
   # Publish to crates.io
   publish:
-    name: Publish to crates.io
+    name: Publish
     needs: prepare
     runs-on: ubuntu-latest
     environment: release
@@ -107,7 +128,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@881ba7bf39a41cda34ac9e123fb41b44ed08232f # stable
         with:
           toolchain: stable
 
@@ -116,20 +137,36 @@ jobs:
         uses: rust-lang/crates-io-auth-action@b7e9a28eded4986ec6b1fa40eeee8f8f165559ec # v1.0.3
         id: auth
 
-      # Publish inferadb-common-storage (base crate with no external path dependencies)
       - name: Publish inferadb-common-storage
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
           cargo publish --package inferadb-common-storage --token "$CARGO_REGISTRY_TOKEN"
 
-          # Note: inferadb-common-storage-ledger is NOT published because it has
-          # a path dependency on inferadb-ledger-sdk which is in a different repo.
-          # That crate will be publishable once cross-repo dependencies are resolved.
+      - name: Wait for crates.io to index
+        env:
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          # Poll crates.io until the version appears (max 5 minutes)
+          for i in {1..30}; do
+            if cargo search inferadb-common-storage 2>/dev/null | grep -q "${EXPECTED_VERSION}"; then
+              echo "Version ${EXPECTED_VERSION} is now available on crates.io"
+              exit 0
+            fi
+            echo "Waiting for crates.io to index (attempt $i/30)..."
+            sleep 10
+          done
+          echo "Warning: Timed out waiting for index, proceeding anyway..."
+
+      - name: Publish inferadb-common-storage-ledger
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          cargo publish --package inferadb-common-storage-ledger --token "$CARGO_REGISTRY_TOKEN"
 
   # Build documentation (triggers docs.rs automatically on crates.io publish)
   docs:
-    name: Build Documentation
+    name: Docs
     needs: [prepare, publish]
     runs-on: ubuntu-latest
     permissions:
@@ -144,9 +181,14 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
+        uses: dtolnay/rust-toolchain@881ba7bf39a41cda34ac9e123fb41b44ed08232f # stable
         with:
           toolchain: nightly
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq protobuf-compiler
 
       - name: Cache Rust dependencies
         uses: step-security/rust-cache@f8fba7098297c8c53a7c9a30575ec2ad4ad85056 # v2.8.2
@@ -157,7 +199,7 @@ jobs:
         run: cargo +nightly doc --workspace --no-deps --all-features
 
       - name: Upload documentation artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: documentation
           path: target/doc

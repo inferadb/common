@@ -206,15 +206,11 @@ impl LedgerBackendConfig {
         tls: Option<TlsConfig>,
     ) -> Result<Self> {
         if endpoints.is_empty() {
-            return Err(LedgerStorageError::Config(
-                "at least one endpoint is required".into(),
-            ));
+            return Err(LedgerStorageError::Config("at least one endpoint is required".into()));
         }
 
         if client_id.is_empty() {
-            return Err(LedgerStorageError::Config(
-                "client_id cannot be empty".into(),
-            ));
+            return Err(LedgerStorageError::Config("client_id cannot be empty".into()));
         }
 
         Ok(Self {
@@ -374,10 +370,7 @@ mod tests {
             .build()
             .unwrap();
 
-        assert!(matches!(
-            config.read_consistency(),
-            ReadConsistency::Linearizable
-        ));
+        assert!(matches!(config.read_consistency(), ReadConsistency::Linearizable));
     }
 
     #[test]
@@ -390,10 +383,7 @@ mod tests {
             .build()
             .unwrap();
 
-        assert!(matches!(
-            config.read_consistency(),
-            ReadConsistency::Eventual
-        ));
+        assert!(matches!(config.read_consistency(), ReadConsistency::Eventual));
     }
 
     #[test]

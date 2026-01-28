@@ -109,25 +109,19 @@ impl StorageError {
     /// Creates a new `Connection` error with the given message.
     #[must_use]
     pub fn connection(message: impl Into<String>) -> Self {
-        Self::Connection {
-            message: message.into(),
-        }
+        Self::Connection { message: message.into() }
     }
 
     /// Creates a new `Serialization` error with the given message.
     #[must_use]
     pub fn serialization(message: impl Into<String>) -> Self {
-        Self::Serialization {
-            message: message.into(),
-        }
+        Self::Serialization { message: message.into() }
     }
 
     /// Creates a new `Internal` error with the given message.
     #[must_use]
     pub fn internal(message: impl Into<String>) -> Self {
-        Self::Internal {
-            message: message.into(),
-        }
+        Self::Internal { message: message.into() }
     }
 
     /// Creates a new `Timeout` error.

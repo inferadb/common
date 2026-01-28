@@ -31,13 +31,14 @@
 //! - `transaction_operations`: Transaction commit with multiple operations
 //! - `concurrent_operations`: Parallel read/write workloads
 
-use std::hint::black_box;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    hint::black_box,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use inferadb_common_storage::{MemoryBackend, StorageBackend};
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 /// Generate a deterministic key for benchmarking.
 fn make_key(prefix: &str, index: usize) -> Vec<u8> {

@@ -23,7 +23,7 @@ env:
 jobs:
   # Check if there are changes since the last nightly
   check-changes:
-    name: Check for Changes
+    name: Changes
     runs-on: ubuntu-latest
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
@@ -74,7 +74,7 @@ jobs:
 
   # Compute nightly version from release-please manifest
   version:
-    name: Compute Version
+    name: Version
     needs: check-changes
     if: needs.check-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
@@ -109,7 +109,7 @@ jobs:
 
   # Publish nightly version to crates.io
   publish:
-    name: Publish to crates.io
+    name: Publish
     needs: version
     runs-on: ubuntu-latest
     steps:
@@ -122,42 +122,50 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: stable
-
-      - name: Install cargo-edit
-        run: cargo install cargo-edit
-
-      - name: Patch crate versions
-        run: |
-          NIGHTLY_VERSION="${{ needs.version.outputs.version }}"
-
-          # Patch inferadb-common-storage version
-          cargo set-version --package inferadb-common-storage "${NIGHTLY_VERSION}"
-
-          echo "Patched versions:"
-          grep -r "^version = " crates/*/Cargo.toml
+        uses: dtolnay/rust-toolchain@881ba7bf39a41cda34ac9e123fb41b44ed08232f # stable
 
       # Use OIDC-based trusted publishing
       - name: Authenticate with crates.io
         uses: rust-lang/crates-io-auth-action@b7e9a28eded4986ec6b1fa40eeee8f8f165559ec # v1.0.3
         id: auth
 
+      # Publish storage first (only patch its version, not storage-ledger's dependency)
       - name: Publish inferadb-common-storage
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          NIGHTLY_VERSION: ${{ needs.version.outputs.version }}
         run: |
-          # Publish storage crate (base crate with no external path dependencies)
+          sed -i "s/^version = \".*\"/version = \"${NIGHTLY_VERSION}\"/" crates/storage/Cargo.toml
           cargo publish --package inferadb-common-storage --token "$CARGO_REGISTRY_TOKEN" --allow-dirty
 
-          # Note: inferadb-common-storage-ledger is NOT published because it has
-          # a path dependency on inferadb-ledger-sdk which is in a different repo.
-          # That crate will be publishable once the full release pipeline is in place.
+      - name: Wait for crates.io to index
+        env:
+          EXPECTED_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          # Poll crates.io until the version appears (max 5 minutes)
+          for i in {1..30}; do
+            if cargo search inferadb-common-storage 2>/dev/null | grep -q "${EXPECTED_VERSION%+*}"; then
+              echo "Version ${EXPECTED_VERSION} is now available on crates.io"
+              exit 0
+            fi
+            echo "Waiting for crates.io to index (attempt $i/30)..."
+            sleep 10
+          done
+          echo "Warning: Timed out waiting for index, proceeding anyway..."
+
+      # Now patch storage-ledger's version AND dependency, then publish
+      - name: Publish inferadb-common-storage-ledger
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          NIGHTLY_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          sed -i "s/^version = \".*\"/version = \"${NIGHTLY_VERSION}\"/" crates/storage-ledger/Cargo.toml
+          sed -i "s/^inferadb-common-storage = .*/inferadb-common-storage = \"=${NIGHTLY_VERSION}\"/" crates/storage-ledger/Cargo.toml
+          cargo publish --package inferadb-common-storage-ledger --token "$CARGO_REGISTRY_TOKEN" --allow-dirty
 
   # Create GitHub pre-release for tracking
   create-release:
-    name: Create Pre-Release
+    name: Release
     needs: [version, publish]
     runs-on: ubuntu-latest
     permissions:
@@ -181,7 +189,7 @@ jobs:
           draft: false
           prerelease: true
           body: |
-            🌙 **This is a nightly build for testing purposes.**
+            **This is a nightly build for testing purposes.**
 
             Built from commit: ${{ github.sha }}
             Build date: ${{ needs.version.outputs.date }}
@@ -191,11 +199,49 @@ jobs:
             | Crate | Version |
             |-------|---------|
             | `inferadb-common-storage` | `${{ needs.version.outputs.version }}` |
+            | `inferadb-common-storage-ledger` | `${{ needs.version.outputs.version }}` |
 
             Install with Cargo:
             ```toml
             [dependencies]
             inferadb-common-storage = "=${{ needs.version.outputs.version }}"
+            inferadb-common-storage-ledger = "=${{ needs.version.outputs.version }}"
             ```
 
             > **Note:** Pre-release versions require exact version matching (`=`) in Cargo.toml.
+
+      - name: Update nightly tag
+        run: |
+          git tag -f nightly
+          git push -f origin nightly
+
+  # Cleanup old nightly releases (keep last 7)
+  cleanup:
+    name: Cleanup
+    runs-on: ubuntu-latest
+    needs: [create-release]
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@e3f713f2d8f53843e71c69a996d56f51aa9adfb9 # v2.14.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Delete old nightly releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # List all nightly releases, sorted by date (newest first)
+          NIGHTLIES=$(gh release list --limit 100 | grep -E 'nightly\.' | awk '{print $1}')
+
+          # Keep the 7 most recent, delete the rest
+          COUNT=0
+          for TAG in $NIGHTLIES; do
+            COUNT=$((COUNT + 1))
+            if [ $COUNT -gt 7 ]; then
+              echo "Deleting old nightly release: $TAG"
+              gh release delete "$TAG" --yes --cleanup-tag || true
+            fi
+          done

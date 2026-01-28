@@ -81,18 +81,13 @@ impl BatchConfig {
     /// Create a batch config with custom settings
     #[must_use]
     pub fn new(max_batch_size: usize, max_batch_bytes: usize) -> Self {
-        Self::builder()
-            .max_batch_size(max_batch_size)
-            .max_batch_bytes(max_batch_bytes)
-            .build()
+        Self::builder().max_batch_size(max_batch_size).max_batch_bytes(max_batch_bytes).build()
     }
 
     /// Create a batch config optimized for large transactions
     #[must_use]
     pub fn for_large_transactions() -> Self {
-        Self::builder()
-            .max_batch_bytes(TRANSACTION_SIZE_LIMIT)
-            .build()
+        Self::builder().max_batch_bytes(TRANSACTION_SIZE_LIMIT).build()
     }
 }
 
@@ -113,11 +108,11 @@ impl BatchOperation {
             BatchOperation::Set { key, value } => {
                 // Key + value + overhead for encoding (estimate ~50 bytes)
                 key.len() + value.len() + 50
-            }
+            },
             BatchOperation::Delete { key } => {
                 // Key + overhead
                 key.len() + 50
-            }
+            },
         }
     }
 
@@ -158,12 +153,7 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
     /// Create a new batch writer
     #[must_use]
     pub fn new(backend: B, config: BatchConfig) -> Self {
-        Self {
-            backend,
-            operations: Vec::new(),
-            current_size_bytes: 0,
-            config,
-        }
+        Self { backend, operations: Vec::new(), current_size_bytes: 0, config }
     }
 
     /// Add a set operation to the batch
@@ -214,17 +204,10 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
             return Vec::new();
         }
 
-        let max_bytes = if self.config.enabled {
-            self.config.max_batch_bytes
-        } else {
-            TRANSACTION_SIZE_LIMIT
-        };
+        let max_bytes =
+            if self.config.enabled { self.config.max_batch_bytes } else { TRANSACTION_SIZE_LIMIT };
 
-        let max_ops = if self.config.enabled {
-            self.config.max_batch_size
-        } else {
-            usize::MAX
-        };
+        let max_ops = if self.config.enabled { self.config.max_batch_size } else { usize::MAX };
 
         let mut batches = Vec::new();
         let mut current_batch = Vec::new();
@@ -296,10 +279,10 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
                 match op {
                     BatchOperation::Set { key, value } => {
                         txn.set(key.clone(), value.clone());
-                    }
+                    },
                     BatchOperation::Delete { key } => {
                         txn.delete(key.clone());
-                    }
+                    },
                 }
             }
 
@@ -347,10 +330,7 @@ mod tests {
 
     #[test]
     fn test_batch_operation_size() {
-        let set_op = BatchOperation::Set {
-            key: vec![0; 10],
-            value: vec![0; 100],
-        };
+        let set_op = BatchOperation::Set { key: vec![0; 10], value: vec![0; 100] };
         // 10 + 100 + 50 overhead = 160
         assert_eq!(set_op.size_bytes(), 160);
 
@@ -375,10 +355,7 @@ mod tests {
 
     #[test]
     fn test_batch_config_builder() {
-        let config = BatchConfig::builder()
-            .max_batch_size(500)
-            .enabled(true)
-            .build();
+        let config = BatchConfig::builder().max_batch_size(500).enabled(true).build();
         assert_eq!(config.max_batch_size, 500);
         assert_eq!(config.max_batch_bytes, DEFAULT_MAX_BATCH_BYTES);
         assert!(config.enabled);
@@ -395,11 +372,8 @@ mod tests {
 
     #[test]
     fn test_batch_config_builder_all_fields() {
-        let config = BatchConfig::builder()
-            .max_batch_size(100)
-            .max_batch_bytes(1024)
-            .enabled(false)
-            .build();
+        let config =
+            BatchConfig::builder().max_batch_size(100).max_batch_bytes(1024).enabled(false).build();
         assert_eq!(config.max_batch_size, 100);
         assert_eq!(config.max_batch_bytes, 1024);
         assert!(!config.enabled);
@@ -432,10 +406,7 @@ mod tests {
         let backend = MemoryBackend::new();
 
         // Pre-populate
-        backend
-            .set(b"to_delete".to_vec(), b"value".to_vec())
-            .await
-            .expect("set failed");
+        backend.set(b"to_delete".to_vec(), b"value".to_vec()).await.expect("set failed");
 
         let mut writer = BatchWriter::new(backend.clone(), BatchConfig::default());
         writer.delete(b"to_delete".to_vec());
@@ -454,10 +425,7 @@ mod tests {
 
         // Add 12 operations - should split into 3 batches (5, 5, 2)
         for i in 0..12 {
-            writer.set(
-                format!("key{i}").into_bytes(),
-                format!("value{i}").into_bytes(),
-            );
+            writer.set(format!("key{i}").into_bytes(), format!("value{i}").into_bytes());
         }
 
         let stats = writer.flush().await.expect("flush failed");

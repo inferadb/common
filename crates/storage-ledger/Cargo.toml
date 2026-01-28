@@ -14,7 +14,7 @@ categories = ["database", "asynchronous"]
 workspace = true
 
 [dependencies]
-inferadb-common-storage = { path = "../storage" }
+inferadb-common-storage = ">=0.1.0-0"
 inferadb-ledger-sdk.workspace = true
 
 async-trait.workspace = true

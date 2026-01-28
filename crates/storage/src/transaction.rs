@@ -103,8 +103,8 @@ pub trait Transaction: Send {
     ///
     /// # Errors
     ///
-    /// - [`StorageError::Conflict`](crate::StorageError::Conflict) if another
-    ///   transaction modified the same keys and committed first
+    /// - [`StorageError::Conflict`](crate::StorageError::Conflict) if another transaction modified
+    ///   the same keys and committed first
     /// - Other [`StorageError`](crate::StorageError) variants on backend failures
     ///
     /// # Consumes

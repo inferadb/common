@@ -129,8 +129,9 @@ pub struct PublicSigningKey {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::*;
     use chrono::Duration;
+
+    use super::*;
 
     // ===== TDD Tests for bon::Builder =====
 

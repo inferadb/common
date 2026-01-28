@@ -53,10 +53,9 @@ use bytes::Bytes;
 use parking_lot::RwLock;
 use tokio::time::sleep;
 
-use crate::backend::StorageBackend;
-use crate::error::StorageResult;
-use crate::transaction::Transaction;
-use crate::types::KeyValue;
+use crate::{
+    backend::StorageBackend, error::StorageResult, transaction::Transaction, types::KeyValue,
+};
 
 /// In-memory storage backend using [`BTreeMap`].
 ///
@@ -274,10 +273,7 @@ struct MemoryTransaction {
 
 impl MemoryTransaction {
     fn new(backend: MemoryBackend) -> Self {
-        Self {
-            backend,
-            pending_writes: BTreeMap::new(),
-        }
+        Self { backend, pending_writes: BTreeMap::new() }
     }
 }
 
@@ -309,10 +305,10 @@ impl Transaction for MemoryTransaction {
             match value {
                 Some(v) => {
                     data.insert(key, Bytes::from(v));
-                }
+                },
                 None => {
                     data.remove(&key);
-                }
+                },
             }
         }
 
@@ -330,10 +326,7 @@ mod tests {
         let backend = MemoryBackend::new();
 
         // Set and get
-        backend
-            .set(b"key1".to_vec(), b"value1".to_vec())
-            .await
-            .unwrap();
+        backend.set(b"key1".to_vec(), b"value1".to_vec()).await.unwrap();
         let value = backend.get(b"key1").await.unwrap();
         assert_eq!(value, Some(Bytes::from("value1")));
 
@@ -351,10 +344,7 @@ mod tests {
         backend.set(b"b".to_vec(), b"2".to_vec()).await.unwrap();
         backend.set(b"c".to_vec(), b"3".to_vec()).await.unwrap();
 
-        let range = backend
-            .get_range(b"a".to_vec()..b"c".to_vec())
-            .await
-            .unwrap();
+        let range = backend.get_range(b"a".to_vec()..b"c".to_vec()).await.unwrap();
         assert_eq!(range.len(), 2);
         assert_eq!(range[0].key, Bytes::from("a"));
         assert_eq!(range[1].key, Bytes::from("b"));
@@ -368,10 +358,7 @@ mod tests {
         backend.set(b"b".to_vec(), b"2".to_vec()).await.unwrap();
         backend.set(b"c".to_vec(), b"3".to_vec()).await.unwrap();
 
-        backend
-            .clear_range(b"a".to_vec()..b"c".to_vec())
-            .await
-            .unwrap();
+        backend.clear_range(b"a".to_vec()..b"c".to_vec()).await.unwrap();
 
         assert_eq!(backend.get(b"a").await.unwrap(), None);
         assert_eq!(backend.get(b"b").await.unwrap(), None);
@@ -382,10 +369,7 @@ mod tests {
     async fn test_ttl() {
         let backend = MemoryBackend::new();
 
-        backend
-            .set_with_ttl(b"temp".to_vec(), b"value".to_vec(), 1)
-            .await
-            .unwrap();
+        backend.set_with_ttl(b"temp".to_vec(), b"value".to_vec(), 1).await.unwrap();
 
         // Should exist immediately
         let value = backend.get(b"temp").await.unwrap();
@@ -403,10 +387,7 @@ mod tests {
     async fn test_transaction() {
         let backend = MemoryBackend::new();
 
-        backend
-            .set(b"key1".to_vec(), b"value1".to_vec())
-            .await
-            .unwrap();
+        backend.set(b"key1".to_vec(), b"value1".to_vec()).await.unwrap();
 
         let mut txn = backend.transaction().await.unwrap();
 
@@ -450,16 +431,10 @@ mod tests {
         let backend = MemoryBackend::new();
 
         // Set with TTL
-        backend
-            .set_with_ttl(b"key".to_vec(), b"temp".to_vec(), 1)
-            .await
-            .unwrap();
+        backend.set_with_ttl(b"key".to_vec(), b"temp".to_vec(), 1).await.unwrap();
 
         // Overwrite without TTL
-        backend
-            .set(b"key".to_vec(), b"permanent".to_vec())
-            .await
-            .unwrap();
+        backend.set(b"key".to_vec(), b"permanent".to_vec()).await.unwrap();
 
         // Wait past original TTL
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -474,10 +449,7 @@ mod tests {
         let backend1 = MemoryBackend::new();
         let backend2 = backend1.clone();
 
-        backend1
-            .set(b"key".to_vec(), b"value".to_vec())
-            .await
-            .unwrap();
+        backend1.set(b"key".to_vec(), b"value".to_vec()).await.unwrap();
 
         let value = backend2.get(b"key").await.unwrap();
         assert_eq!(value, Some(Bytes::from("value")));
