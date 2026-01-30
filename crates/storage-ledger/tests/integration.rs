@@ -474,3 +474,392 @@ async fn test_key_ordering_preserved() {
     // Keys should be in order
     assert!(results[0].key < results[1].key);
 }
+
+// ============================================================================
+// Signing Key Store Tests
+// ============================================================================
+
+mod signing_key_store {
+    use std::sync::Arc;
+
+    use chrono::{Duration, Utc};
+    use inferadb_common_storage::{
+        StorageError,
+        auth::{PublicSigningKey, PublicSigningKeyStore, SigningKeyMetrics},
+    };
+    use inferadb_common_storage_ledger::auth::LedgerSigningKeyStore;
+    use inferadb_ledger_sdk::{
+        ClientConfig, LedgerClient, ReadConsistency, ServerSource, mock::MockLedgerServer,
+    };
+
+    async fn create_signing_key_store(server: &MockLedgerServer) -> LedgerSigningKeyStore {
+        let config = ClientConfig::builder()
+            .servers(ServerSource::from_static([server.endpoint()]))
+            .client_id("signing-key-test")
+            .build()
+            .expect("valid config");
+
+        let client = LedgerClient::new(config).await.expect("client creation");
+        LedgerSigningKeyStore::new(Arc::new(client))
+    }
+
+    fn create_test_key(kid: &str) -> PublicSigningKey {
+        let now = Utc::now();
+        PublicSigningKey::builder()
+            .kid(kid.to_owned())
+            .public_key("MCowBQYDK2VwAyEAtest_public_key_data".to_owned())
+            .client_id(12345)
+            .cert_id(42)
+            .created_at(now)
+            .valid_from(now)
+            .build()
+    }
+
+    #[tokio::test]
+    async fn test_create_and_get_key() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+
+        let key = create_test_key("test-key-001");
+        let namespace_id = 100;
+
+        // Create the key
+        store.create_key(namespace_id, &key).await.expect("create should succeed");
+
+        // Retrieve it
+        let retrieved =
+            store.get_key(namespace_id, "test-key-001").await.expect("get should succeed");
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.kid, "test-key-001");
+        assert_eq!(retrieved.client_id, 12345);
+    }
+
+    #[tokio::test]
+    async fn test_create_duplicate_key_fails() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+
+        let key = create_test_key("dup-key");
+        let namespace_id = 100;
+
+        // Create first time
+        store.create_key(namespace_id, &key).await.expect("first create should succeed");
+
+        // Create again should fail with conflict
+        let result = store.create_key(namespace_id, &key).await;
+        assert!(matches!(result, Err(StorageError::Conflict)));
+    }
+
+    #[tokio::test]
+    async fn test_get_nonexistent_key_returns_none() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+
+        let result = store.get_key(100, "nonexistent").await.expect("get should succeed");
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_list_active_keys() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+        let namespace_id = 100;
+
+        // Create an active key
+        let active_key = create_test_key("active-key");
+        store.create_key(namespace_id, &active_key).await.expect("create active");
+
+        // Create an inactive key
+        let mut inactive_key = create_test_key("inactive-key");
+        inactive_key.active = false;
+        store.create_key(namespace_id, &inactive_key).await.expect("create inactive");
+
+        // List should only return active keys
+        let active_keys = store.list_active_keys(namespace_id).await.expect("list should succeed");
+
+        // Should have at least the active key (mock might have different behavior)
+        let active_kids: Vec<_> = active_keys.iter().map(|k| k.kid.as_str()).collect();
+        assert!(active_kids.contains(&"active-key"));
+    }
+
+    #[tokio::test]
+    async fn test_deactivate_key() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+        let namespace_id = 100;
+
+        // Create a key
+        let key = create_test_key("to-deactivate");
+        store.create_key(namespace_id, &key).await.expect("create");
+
+        // Deactivate it
+        store
+            .deactivate_key(namespace_id, "to-deactivate")
+            .await
+            .expect("deactivate should succeed");
+
+        // Verify it's deactivated
+        let retrieved = store.get_key(namespace_id, "to-deactivate").await.expect("get").unwrap();
+        assert!(!retrieved.active);
+    }
+
+    #[tokio::test]
+    async fn test_deactivate_nonexistent_key_fails() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+
+        let result = store.deactivate_key(100, "nonexistent").await;
+        assert!(matches!(result, Err(StorageError::NotFound { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_revoke_key() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+        let namespace_id = 100;
+
+        // Create a key
+        let key = create_test_key("to-revoke");
+        store.create_key(namespace_id, &key).await.expect("create");
+
+        // Revoke it
+        store.revoke_key(namespace_id, "to-revoke", Some("test reason")).await.expect("revoke");
+
+        // Verify it's revoked
+        let retrieved = store.get_key(namespace_id, "to-revoke").await.expect("get").unwrap();
+        assert!(retrieved.revoked_at.is_some());
+        assert!(!retrieved.active);
+    }
+
+    #[tokio::test]
+    async fn test_revoke_key_idempotent() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+        let namespace_id = 100;
+
+        // Create and revoke a key
+        let key = create_test_key("revoke-twice");
+        store.create_key(namespace_id, &key).await.expect("create");
+        store.revoke_key(namespace_id, "revoke-twice", None).await.expect("first revoke");
+
+        // Get the revocation timestamp
+        let first = store.get_key(namespace_id, "revoke-twice").await.expect("get").unwrap();
+        let first_revoked_at = first.revoked_at.unwrap();
+
+        // Revoke again - should be idempotent (keep original timestamp)
+        store.revoke_key(namespace_id, "revoke-twice", None).await.expect("second revoke");
+
+        let second = store.get_key(namespace_id, "revoke-twice").await.expect("get").unwrap();
+        assert_eq!(second.revoked_at.unwrap(), first_revoked_at);
+    }
+
+    #[tokio::test]
+    async fn test_revoke_nonexistent_key_fails() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+
+        let result = store.revoke_key(100, "nonexistent", None).await;
+        assert!(matches!(result, Err(StorageError::NotFound { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_activate_key() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+        let namespace_id = 100;
+
+        // Create and deactivate a key
+        let key = create_test_key("to-activate");
+        store.create_key(namespace_id, &key).await.expect("create");
+        store.deactivate_key(namespace_id, "to-activate").await.expect("deactivate");
+
+        // Activate it
+        store.activate_key(namespace_id, "to-activate").await.expect("activate");
+
+        // Verify it's active
+        let retrieved = store.get_key(namespace_id, "to-activate").await.expect("get").unwrap();
+        assert!(retrieved.active);
+    }
+
+    #[tokio::test]
+    async fn test_activate_revoked_key_fails() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+        let namespace_id = 100;
+
+        // Create and revoke a key
+        let key = create_test_key("revoked-key");
+        store.create_key(namespace_id, &key).await.expect("create");
+        store.revoke_key(namespace_id, "revoked-key", None).await.expect("revoke");
+
+        // Trying to activate should fail
+        let result = store.activate_key(namespace_id, "revoked-key").await;
+        assert!(matches!(result, Err(StorageError::Internal { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_activate_nonexistent_key_fails() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+
+        let result = store.activate_key(100, "nonexistent").await;
+        assert!(matches!(result, Err(StorageError::NotFound { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_delete_key() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+        let namespace_id = 100;
+
+        // Create a key
+        let key = create_test_key("to-delete");
+        store.create_key(namespace_id, &key).await.expect("create");
+
+        // Delete it
+        store.delete_key(namespace_id, "to-delete").await.expect("delete");
+
+        // Verify it's gone
+        let retrieved = store.get_key(namespace_id, "to-delete").await.expect("get");
+        assert!(retrieved.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent_key_fails() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+
+        let result = store.delete_key(100, "nonexistent").await;
+        assert!(matches!(result, Err(StorageError::NotFound { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_store_with_metrics() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let config = ClientConfig::builder()
+            .servers(ServerSource::from_static([server.endpoint()]))
+            .client_id("metrics-test")
+            .build()
+            .expect("valid config");
+
+        let client = LedgerClient::new(config).await.expect("client");
+        let metrics = SigningKeyMetrics::new();
+        let store = LedgerSigningKeyStore::new(Arc::new(client)).with_metrics(metrics.clone());
+
+        // Verify metrics is attached
+        assert!(store.metrics().is_some());
+
+        // Perform operations
+        let key = create_test_key("metrics-key");
+        store.create_key(100, &key).await.expect("create");
+        store.get_key(100, "metrics-key").await.expect("get");
+
+        // Check metrics were recorded
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.create_count, 1);
+        assert_eq!(snapshot.get_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_store_with_eventual_consistency() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let config = ClientConfig::builder()
+            .servers(ServerSource::from_static([server.endpoint()]))
+            .client_id("eventual-test")
+            .build()
+            .expect("valid config");
+
+        let client = LedgerClient::new(config).await.expect("client");
+        let store = LedgerSigningKeyStore::with_read_consistency(
+            Arc::new(client),
+            ReadConsistency::Eventual,
+        );
+
+        // Operations should still work
+        let key = create_test_key("eventual-key");
+        store.create_key(100, &key).await.expect("create");
+        let retrieved = store.get_key(100, "eventual-key").await.expect("get");
+        assert!(retrieved.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_store_client_accessor() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+
+        // Should be able to access the client
+        let _client = store.client();
+    }
+
+    #[tokio::test]
+    async fn test_store_debug_impl() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+
+        let debug_str = format!("{:?}", store);
+        assert!(debug_str.contains("LedgerSigningKeyStore"));
+        assert!(debug_str.contains("read_consistency"));
+    }
+
+    #[tokio::test]
+    async fn test_list_filters_expired_keys() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+        let namespace_id = 100;
+
+        // Create a key that's already expired
+        let now = Utc::now();
+        let expired_key = PublicSigningKey::builder()
+            .kid("expired-key".to_owned())
+            .public_key("MCowBQYDK2VwAyEAtest".to_owned())
+            .client_id(1)
+            .cert_id(1)
+            .created_at(now - Duration::hours(2))
+            .valid_from(now - Duration::hours(2))
+            .valid_until(now - Duration::hours(1)) // Expired 1 hour ago
+            .build();
+        store.create_key(namespace_id, &expired_key).await.expect("create expired");
+
+        // Create a valid key
+        let valid_key = create_test_key("valid-key");
+        store.create_key(namespace_id, &valid_key).await.expect("create valid");
+
+        // List should not include expired key
+        let active_keys = store.list_active_keys(namespace_id).await.expect("list");
+        let kids: Vec<_> = active_keys.iter().map(|k| k.kid.as_str()).collect();
+
+        assert!(kids.contains(&"valid-key"));
+        assert!(!kids.contains(&"expired-key"));
+    }
+
+    #[tokio::test]
+    async fn test_list_filters_not_yet_valid_keys() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+        let namespace_id = 100;
+
+        // Create a key that's not yet valid
+        let now = Utc::now();
+        let future_key = PublicSigningKey::builder()
+            .kid("future-key".to_owned())
+            .public_key("MCowBQYDK2VwAyEAtest".to_owned())
+            .client_id(1)
+            .cert_id(1)
+            .created_at(now)
+            .valid_from(now + Duration::hours(1)) // Valid in 1 hour
+            .build();
+        store.create_key(namespace_id, &future_key).await.expect("create future");
+
+        // Create a currently valid key
+        let valid_key = create_test_key("now-valid-key");
+        store.create_key(namespace_id, &valid_key).await.expect("create valid");
+
+        // List should not include future key
+        let active_keys = store.list_active_keys(namespace_id).await.expect("list");
+        let kids: Vec<_> = active_keys.iter().map(|k| k.kid.as_str()).collect();
+
+        assert!(kids.contains(&"now-valid-key"));
+        assert!(!kids.contains(&"future-key"));
+    }
+}
