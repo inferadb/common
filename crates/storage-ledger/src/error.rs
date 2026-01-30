@@ -235,8 +235,7 @@ mod tests {
 
     #[test]
     fn test_retry_exhausted_error_mapping() {
-        let sdk_err =
-            SdkError::RetryExhausted { attempts: 3, last_error: "still down".into() };
+        let sdk_err = SdkError::RetryExhausted { attempts: 3, last_error: "still down".into() };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Connection { .. }));
@@ -293,7 +292,7 @@ mod tests {
 
     #[test]
     fn test_proof_verification_error_mapping() {
-        let sdk_err = SdkError::ProofVerification { reason: "hash mismatch".into() };
+        let sdk_err = SdkError::ProofVerification { reason: "hash mismatch" };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));

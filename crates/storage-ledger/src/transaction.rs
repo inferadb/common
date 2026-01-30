@@ -214,9 +214,9 @@ fn encode_key(key: &[u8]) -> String {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::*;
-
     use inferadb_ledger_sdk::{ClientConfig, ServerSource, mock::MockLedgerServer};
+
+    use super::*;
 
     async fn create_test_transaction(
         server: &MockLedgerServer,

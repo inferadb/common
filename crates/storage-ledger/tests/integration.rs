@@ -872,7 +872,9 @@ mod backend_tests {
     use std::sync::Arc;
 
     use inferadb_common_storage::StorageBackend;
-    use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig, ReadConsistencyConfig};
+    use inferadb_common_storage_ledger::{
+        LedgerBackend, LedgerBackendConfig, ReadConsistencyConfig,
+    };
     use inferadb_ledger_sdk::{
         ClientConfig, LedgerClient, ReadConsistency, ServerSource, mock::MockLedgerServer,
     };
@@ -979,7 +981,9 @@ mod backend_tests {
 
 mod transaction_tests {
     use inferadb_common_storage::StorageBackend;
-    use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig, ReadConsistencyConfig};
+    use inferadb_common_storage_ledger::{
+        LedgerBackend, LedgerBackendConfig, ReadConsistencyConfig,
+    };
     use inferadb_ledger_sdk::mock::MockLedgerServer;
 
     #[tokio::test]
