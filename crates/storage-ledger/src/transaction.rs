@@ -210,3 +210,60 @@ fn encode_key(key: &[u8]) -> String {
 // - test_transaction_delete_then_set
 // - test_transaction_set_then_delete
 // - test_transaction_empty_commit
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    use inferadb_ledger_sdk::{ClientConfig, ServerSource, mock::MockLedgerServer};
+
+    async fn create_test_transaction(
+        server: &MockLedgerServer,
+        consistency: ReadConsistency,
+    ) -> LedgerTransaction {
+        let config = ClientConfig::builder()
+            .servers(ServerSource::from_static([server.endpoint()]))
+            .client_id("test-client")
+            .build()
+            .expect("valid config");
+
+        let client = Arc::new(LedgerClient::new(config).await.expect("client"));
+        LedgerTransaction::new(client, 1, Some(100), consistency)
+    }
+
+    #[tokio::test]
+    async fn test_transaction_debug_impl() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let mut txn = create_test_transaction(&server, ReadConsistency::Linearizable).await;
+
+        txn.set(b"key1".to_vec(), b"value1".to_vec());
+        txn.set(b"key2".to_vec(), b"value2".to_vec());
+        txn.delete(b"key3".to_vec());
+
+        let debug_str = format!("{:?}", txn);
+
+        assert!(debug_str.contains("LedgerTransaction"));
+        assert!(debug_str.contains("namespace_id: 1"));
+        assert!(debug_str.contains("vault_id: Some(100)"));
+        assert!(debug_str.contains("pending_sets: 2"));
+        assert!(debug_str.contains("pending_deletes: 1"));
+    }
+
+    #[tokio::test]
+    async fn test_transaction_with_eventual_consistency() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let mut txn = create_test_transaction(&server, ReadConsistency::Eventual).await;
+
+        // Write a value
+        txn.set(b"key".to_vec(), b"value".to_vec());
+
+        // Read it back (should use pending_sets, not do_read)
+        let value = txn.get(b"key").await.expect("get");
+        assert_eq!(value.map(|b| b.to_vec()), Some(b"value".to_vec()));
+
+        // Read a nonexistent key (should use eventual consistency do_read path)
+        let value = txn.get(b"nonexistent").await.expect("get");
+        assert!(value.is_none());
+    }
+}

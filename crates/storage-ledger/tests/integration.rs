@@ -863,3 +863,176 @@ mod signing_key_store {
         assert!(!kids.contains(&"future-key"));
     }
 }
+
+// ============================================================================
+// Backend Additional Tests
+// ============================================================================
+
+mod backend_tests {
+    use std::sync::Arc;
+
+    use inferadb_common_storage::StorageBackend;
+    use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig, ReadConsistencyConfig};
+    use inferadb_ledger_sdk::{
+        ClientConfig, LedgerClient, ReadConsistency, ServerSource, mock::MockLedgerServer,
+    };
+
+    #[tokio::test]
+    async fn test_backend_debug_impl() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let config = LedgerBackendConfig::builder()
+            .endpoints([server.endpoint()])
+            .client_id("test-client")
+            .namespace_id(42)
+            .vault_id(100)
+            .build()
+            .expect("valid config");
+
+        let backend = LedgerBackend::new(config).await.expect("backend");
+        let debug_str = format!("{:?}", backend);
+
+        assert!(debug_str.contains("LedgerBackend"));
+        assert!(debug_str.contains("namespace_id: 42"));
+        assert!(debug_str.contains("vault_id: Some(100)"));
+    }
+
+    #[tokio::test]
+    async fn test_backend_getters() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let config = LedgerBackendConfig::builder()
+            .endpoints([server.endpoint()])
+            .client_id("test-client")
+            .namespace_id(123)
+            .vault_id(456)
+            .build()
+            .expect("valid config");
+
+        let backend = LedgerBackend::new(config).await.expect("backend");
+
+        assert_eq!(backend.namespace_id(), 123);
+        assert_eq!(backend.vault_id(), Some(456));
+
+        // Test client accessor
+        let _client = backend.client();
+
+        // Test client_arc accessor
+        let client_arc = backend.client_arc();
+        assert!(Arc::strong_count(&client_arc) >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_backend_from_client() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let config = ClientConfig::builder()
+            .servers(ServerSource::from_static([server.endpoint()]))
+            .client_id("test-client")
+            .build()
+            .expect("valid config");
+
+        let client = Arc::new(LedgerClient::new(config).await.expect("client"));
+
+        let backend =
+            LedgerBackend::from_client(client.clone(), 999, Some(888), ReadConsistency::Eventual);
+
+        assert_eq!(backend.namespace_id(), 999);
+        assert_eq!(backend.vault_id(), Some(888));
+    }
+
+    #[tokio::test]
+    async fn test_backend_with_eventual_consistency() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let config = LedgerBackendConfig::builder()
+            .endpoints([server.endpoint()])
+            .client_id("test-client")
+            .namespace_id(1)
+            .read_consistency(ReadConsistencyConfig::Eventual)
+            .build()
+            .expect("valid config");
+
+        let backend = LedgerBackend::new(config).await.expect("backend");
+
+        // Set and get with eventual consistency
+        backend.set(b"key".to_vec(), b"value".to_vec()).await.expect("set");
+        let value = backend.get(b"key").await.expect("get");
+        assert_eq!(value.map(|b| b.to_vec()), Some(b"value".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_backend_without_vault() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let config = LedgerBackendConfig::builder()
+            .endpoints([server.endpoint()])
+            .client_id("test-client")
+            .namespace_id(1)
+            .build()
+            .expect("valid config");
+
+        let backend = LedgerBackend::new(config).await.expect("backend");
+
+        assert_eq!(backend.vault_id(), None);
+    }
+}
+
+// ============================================================================
+// Transaction Additional Tests
+// ============================================================================
+
+mod transaction_tests {
+    use inferadb_common_storage::StorageBackend;
+    use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig, ReadConsistencyConfig};
+    use inferadb_ledger_sdk::mock::MockLedgerServer;
+
+    #[tokio::test]
+    async fn test_transaction_with_eventual_consistency() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let config = LedgerBackendConfig::builder()
+            .endpoints([server.endpoint()])
+            .client_id("test-client")
+            .namespace_id(1)
+            .read_consistency(ReadConsistencyConfig::Eventual)
+            .build()
+            .expect("valid config");
+
+        let backend = LedgerBackend::new(config).await.expect("backend");
+
+        // Pre-populate some data
+        backend.set(b"existing".to_vec(), b"data".to_vec()).await.expect("set");
+
+        let txn = backend.transaction().await.expect("transaction");
+
+        // Read from underlying storage with eventual consistency
+        let value = txn.get(b"existing").await.expect("get");
+        assert_eq!(value.map(|b| b.to_vec()), Some(b"data".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_transaction_read_deleted_key() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let config = LedgerBackendConfig::builder()
+            .endpoints([server.endpoint()])
+            .client_id("test-client")
+            .namespace_id(1)
+            .build()
+            .expect("valid config");
+
+        let backend = LedgerBackend::new(config).await.expect("backend");
+
+        // Pre-populate
+        backend.set(b"key".to_vec(), b"value".to_vec()).await.expect("set");
+
+        let mut txn = backend.transaction().await.expect("transaction");
+
+        // Delete the key in transaction
+        txn.delete(b"key".to_vec());
+
+        // Read should return None
+        let value = txn.get(b"key").await.expect("get");
+        assert!(value.is_none());
+
+        txn.commit().await.expect("commit");
+
+        // Verify the key is actually deleted
+        let value = backend.get(b"key").await.expect("get");
+        assert!(value.is_none());
+    }
+}

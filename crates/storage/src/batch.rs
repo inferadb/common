@@ -462,4 +462,150 @@ mod tests {
         assert_eq!(writer.pending_count(), 0);
         assert_eq!(writer.pending_bytes(), 0);
     }
+
+    #[test]
+    fn test_batch_operation_key() {
+        let set_op = BatchOperation::Set { key: vec![1, 2, 3], value: vec![4, 5, 6] };
+        assert_eq!(set_op.key(), &[1, 2, 3]);
+
+        let delete_op = BatchOperation::Delete { key: vec![7, 8, 9] };
+        assert_eq!(delete_op.key(), &[7, 8, 9]);
+    }
+
+    #[test]
+    fn test_batch_config_for_large_transactions() {
+        let config = BatchConfig::for_large_transactions();
+        assert_eq!(config.max_batch_bytes, TRANSACTION_SIZE_LIMIT);
+        assert!(config.enabled);
+    }
+
+    #[tokio::test]
+    async fn test_pending_operations() {
+        let backend = MemoryBackend::new();
+        let mut writer = BatchWriter::new(backend, BatchConfig::default());
+
+        writer.set(b"key1".to_vec(), b"value1".to_vec());
+        writer.delete(b"key2".to_vec());
+
+        let ops = writer.pending_operations();
+        assert_eq!(ops.len(), 2);
+        assert!(matches!(&ops[0], BatchOperation::Set { .. }));
+        assert!(matches!(&ops[1], BatchOperation::Delete { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_flush_empty() {
+        let backend = MemoryBackend::new();
+        let mut writer = BatchWriter::new(backend, BatchConfig::default());
+
+        let stats = writer.flush().await.expect("flush failed");
+        assert_eq!(stats.operations_count, 0);
+        assert_eq!(stats.batches_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_should_flush_disabled_config() {
+        let backend = MemoryBackend::new();
+        let config = BatchConfig::disabled();
+        let mut writer = BatchWriter::new(backend, config);
+
+        // With disabled config, should_flush returns true if there are any ops
+        assert!(!writer.should_flush());
+
+        writer.set(b"key".to_vec(), b"value".to_vec());
+        assert!(writer.should_flush());
+    }
+
+    #[tokio::test]
+    async fn test_should_flush_by_bytes() {
+        let backend = MemoryBackend::new();
+        // Set max_batch_bytes to a small value
+        let config = BatchConfig::new(1000, 200);
+        let mut writer = BatchWriter::new(backend, config);
+
+        // Add operations that exceed byte limit (each set is ~160 bytes)
+        writer.set(b"key1".to_vec(), vec![0; 100]);
+        assert!(!writer.should_flush());
+
+        writer.set(b"key2".to_vec(), vec![0; 100]);
+        assert!(writer.should_flush());
+    }
+
+    #[tokio::test]
+    async fn test_split_by_bytes() {
+        let backend = MemoryBackend::new();
+        // Small byte limit to force splits
+        let config = BatchConfig::new(1000, 200);
+        let mut writer = BatchWriter::new(backend, config);
+
+        // Each operation is ~160 bytes, so 2 per batch max with 200 byte limit
+        for i in 0..5 {
+            writer.set(format!("k{i}").into_bytes(), vec![0; 100]);
+        }
+
+        let stats = writer.flush().await.expect("flush failed");
+        assert_eq!(stats.operations_count, 5);
+        assert!(stats.batches_count >= 2); // Should be split into multiple batches
+    }
+
+    #[tokio::test]
+    async fn test_oversized_single_operation() {
+        let backend = MemoryBackend::new();
+        // Very small byte limit
+        let config = BatchConfig::new(1000, 50);
+        let mut writer = BatchWriter::new(backend, config);
+
+        // Add an operation that exceeds the byte limit by itself
+        writer.set(b"key".to_vec(), vec![0; 100]);
+
+        // This should still flush successfully (operation goes in its own batch)
+        let stats = writer.flush().await.expect("flush failed");
+        assert_eq!(stats.operations_count, 1);
+        assert_eq!(stats.batches_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_mixed_oversized_and_normal_operations() {
+        let backend = MemoryBackend::new();
+        let config = BatchConfig::new(1000, 100);
+        let mut writer = BatchWriter::new(backend, config);
+
+        // Add a normal operation
+        writer.set(b"k1".to_vec(), b"v1".to_vec());
+        // Add an oversized operation
+        writer.set(b"big".to_vec(), vec![0; 200]);
+        // Add another normal operation
+        writer.set(b"k2".to_vec(), b"v2".to_vec());
+
+        let stats = writer.flush().await.expect("flush failed");
+        assert_eq!(stats.operations_count, 3);
+        // Should be split: [k1], [big], [k2]
+        assert!(stats.batches_count >= 2);
+    }
+
+    #[tokio::test]
+    async fn test_batch_with_disabled_config() {
+        let backend = MemoryBackend::new();
+        let config = BatchConfig::disabled();
+        let mut writer = BatchWriter::new(backend.clone(), config);
+
+        for i in 0..10 {
+            writer.set(format!("key{i}").into_bytes(), format!("value{i}").into_bytes());
+        }
+
+        let stats = writer.flush().await.expect("flush failed");
+        assert_eq!(stats.operations_count, 10);
+        // With disabled config, uses TRANSACTION_SIZE_LIMIT and usize::MAX for ops
+        // So all should fit in one batch
+        assert_eq!(stats.batches_count, 1);
+    }
+
+    #[test]
+    fn test_batch_flush_stats_default() {
+        let stats = BatchFlushStats::default();
+        assert_eq!(stats.operations_count, 0);
+        assert_eq!(stats.batches_count, 0);
+        assert_eq!(stats.total_bytes, 0);
+        assert_eq!(stats.duration, std::time::Duration::ZERO);
+    }
 }

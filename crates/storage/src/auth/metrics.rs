@@ -650,4 +650,41 @@ mod tests {
         assert_eq!(actual.get_latency_us, expected.get_latency_us);
         assert_eq!(actual.error_not_found, expected.error_not_found);
     }
+
+    #[test]
+    fn test_log_metrics() {
+        let metrics = SigningKeyMetrics::new();
+
+        // Record some operations
+        metrics.record_get(Duration::from_micros(100));
+        metrics.record_create(Duration::from_micros(200));
+        metrics.record_list(Duration::from_micros(300));
+        metrics.record_error(SigningKeyErrorKind::NotFound);
+
+        // Should not panic
+        metrics.log_metrics();
+    }
+
+    #[test]
+    fn test_avg_create_latency() {
+        let metrics = SigningKeyMetrics::new();
+
+        metrics.record_create(Duration::from_micros(100));
+        metrics.record_create(Duration::from_micros(300));
+
+        let snapshot = metrics.snapshot();
+        assert!((snapshot.avg_create_latency_us() - 200.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_avg_list_latency() {
+        let metrics = SigningKeyMetrics::new();
+
+        metrics.record_list(Duration::from_micros(100));
+        metrics.record_list(Duration::from_micros(200));
+        metrics.record_list(Duration::from_micros(300));
+
+        let snapshot = metrics.snapshot();
+        assert!((snapshot.avg_list_latency_us() - 200.0).abs() < f64::EPSILON);
+    }
 }

@@ -448,4 +448,15 @@ mod tests {
         let result = LedgerBackend::decode_key("invalid-hex-gg");
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_common_prefix() {
+        assert_eq!(common_prefix("abc", "abd"), "ab");
+        assert_eq!(common_prefix("hello", "help"), "hel");
+        assert_eq!(common_prefix("abc", "xyz"), "");
+        assert_eq!(common_prefix("same", "same"), "same");
+        assert_eq!(common_prefix("", "anything"), "");
+        assert_eq!(common_prefix("anything", ""), "");
+        assert_eq!(common_prefix("", ""), "");
+    }
 }

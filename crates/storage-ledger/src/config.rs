@@ -438,4 +438,20 @@ mod tests {
         assert_eq!(config.initial_backoff, default_initial_backoff());
         assert_eq!(config.max_backoff, default_max_backoff());
     }
+
+    #[test]
+    fn test_config_deserialization_with_defaults() {
+        // Test that default_timeout and default_connect_timeout are called
+        let json = r#"{
+            "endpoints": ["http://localhost:50051"],
+            "client_id": "test",
+            "namespace_id": 1
+        }"#;
+
+        let config: LedgerBackendConfig = serde_json::from_str(json).unwrap();
+
+        // These should use the default_* functions
+        assert_eq!(config.timeout, DEFAULT_TIMEOUT);
+        assert_eq!(config.connect_timeout, DEFAULT_CONNECT_TIMEOUT);
+    }
 }
