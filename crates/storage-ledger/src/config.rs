@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use inferadb_ledger_sdk::{ClientConfig, ReadConsistency, RetryPolicy, TlsConfig};
+use inferadb_ledger_sdk::{ClientConfig, ReadConsistency, RetryPolicy, ServerSource, TlsConfig};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{LedgerStorageError, Result};
@@ -278,7 +278,7 @@ impl LedgerBackendConfig {
     /// Builds the SDK client configuration from this backend config.
     pub(crate) fn build_client_config(&self) -> Result<ClientConfig> {
         ClientConfig::builder()
-            .endpoints(self.endpoints.clone())
+            .servers(ServerSource::from_static(self.endpoints.clone()))
             .client_id(&self.client_id)
             .timeout(self.timeout)
             .connect_timeout(self.connect_timeout)
