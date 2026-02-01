@@ -2,10 +2,18 @@
 set -euo pipefail
 
 # Update InferaDB Ledger dependencies to latest nightly versions from crates.io
+#
+# This script temporarily disables the [patch.crates-io] config to ensure
+# we lock to actual crates.io versions, not local path dependencies.
 
-cargo update \
-    -p inferadb-ledger-raft \
-    -p inferadb-ledger-sdk \
-    -p inferadb-ledger-state \
-    -p inferadb-ledger-store \
-    -p inferadb-ledger-types
+CARGO_CONFIG=".cargo/config.toml"
+CARGO_CONFIG_BAK=".cargo/config.toml.bak"
+
+# Temporarily move cargo config if it exists (contains path overrides)
+if [[ -f "$CARGO_CONFIG" ]]; then
+    mv "$CARGO_CONFIG" "$CARGO_CONFIG_BAK"
+    trap 'mv "$CARGO_CONFIG_BAK" "$CARGO_CONFIG"' EXIT
+fi
+
+# Update the SDK (transitive deps like raft, state, store, types come along)
+cargo update -p inferadb-ledger-sdk
