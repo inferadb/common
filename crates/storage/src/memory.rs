@@ -454,4 +454,14 @@ mod tests {
         let value = backend2.get(b"key").await.unwrap();
         assert_eq!(value, Some(Bytes::from("value")));
     }
+
+    #[tokio::test]
+    async fn test_default_impl() {
+        let backend = MemoryBackend::default();
+
+        // Verify it works like new()
+        backend.set(b"key".to_vec(), b"value".to_vec()).await.unwrap();
+        let value = backend.get(b"key").await.unwrap();
+        assert_eq!(value, Some(Bytes::from("value")));
+    }
 }

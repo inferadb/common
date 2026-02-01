@@ -31,6 +31,10 @@ udeps:
 # Run all checks including udeps
 check-all: check udeps
 
+# Update ledger dependencies to latest nightly versions
+update-ledger:
+    ./scripts/update-ledger-deps.sh
+
 # Clean build artifacts
 clean:
     cargo clean

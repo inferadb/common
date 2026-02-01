@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use inferadb_ledger_sdk::{ClientConfig, ReadConsistency, RetryPolicy, TlsConfig};
+use inferadb_ledger_sdk::{ClientConfig, ReadConsistency, RetryPolicy, ServerSource, TlsConfig};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{LedgerStorageError, Result};
@@ -278,7 +278,7 @@ impl LedgerBackendConfig {
     /// Builds the SDK client configuration from this backend config.
     pub(crate) fn build_client_config(&self) -> Result<ClientConfig> {
         ClientConfig::builder()
-            .endpoints(self.endpoints.clone())
+            .servers(ServerSource::from_static(self.endpoints.clone()))
             .client_id(&self.client_id)
             .timeout(self.timeout)
             .connect_timeout(self.connect_timeout)
@@ -437,5 +437,21 @@ mod tests {
         // Other fields should use defaults
         assert_eq!(config.initial_backoff, default_initial_backoff());
         assert_eq!(config.max_backoff, default_max_backoff());
+    }
+
+    #[test]
+    fn test_config_deserialization_with_defaults() {
+        // Test that default_timeout and default_connect_timeout are called
+        let json = r#"{
+            "endpoints": ["http://localhost:50051"],
+            "client_id": "test",
+            "namespace_id": 1
+        }"#;
+
+        let config: LedgerBackendConfig = serde_json::from_str(json).unwrap();
+
+        // These should use the default_* functions
+        assert_eq!(config.timeout, DEFAULT_TIMEOUT);
+        assert_eq!(config.connect_timeout, DEFAULT_CONNECT_TIMEOUT);
     }
 }

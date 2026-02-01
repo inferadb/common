@@ -514,4 +514,197 @@ mod tests {
         assert_eq!(snapshot.set_count, 0);
         assert_eq!(snapshot.error_count, 0);
     }
+
+    #[test]
+    fn test_record_get_range() {
+        let metrics = Metrics::new();
+
+        metrics.record_get_range(Duration::from_micros(500));
+        metrics.record_get_range(Duration::from_micros(300));
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.get_range_count, 2);
+        assert_eq!(snapshot.get_range_latency_us, 800);
+        assert_eq!(snapshot.avg_get_range_latency_us(), 400.0);
+    }
+
+    #[test]
+    fn test_record_clear_range() {
+        let metrics = Metrics::new();
+
+        metrics.record_clear_range(Duration::from_micros(600));
+        metrics.record_clear_range(Duration::from_micros(400));
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.clear_range_count, 2);
+        // clear_range shares get_range_latency_us bucket
+        assert_eq!(snapshot.get_range_latency_us, 1000);
+    }
+
+    #[test]
+    fn test_record_transaction_latency() {
+        let metrics = Metrics::new();
+
+        metrics.record_transaction(Duration::from_micros(1000));
+        metrics.record_transaction(Duration::from_micros(2000));
+        metrics.record_transaction(Duration::from_micros(3000));
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.transaction_count, 3);
+        assert_eq!(snapshot.transaction_latency_us, 6000);
+        assert_eq!(snapshot.avg_transaction_latency_us(), 2000.0);
+    }
+
+    #[test]
+    fn test_record_timeout() {
+        let metrics = Metrics::new();
+
+        metrics.record_timeout();
+        metrics.record_timeout();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.timeout_count, 2);
+    }
+
+    #[test]
+    fn test_record_ttl_operation() {
+        let metrics = Metrics::new();
+
+        metrics.record_ttl_operation();
+        metrics.record_ttl_operation();
+        metrics.record_ttl_operation();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.ttl_operations, 3);
+    }
+
+    #[test]
+    fn test_record_health_check() {
+        let metrics = Metrics::new();
+
+        metrics.record_health_check();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.health_check_count, 1);
+    }
+
+    #[test]
+    fn test_avg_delete_latency() {
+        let metrics = Metrics::new();
+
+        metrics.record_delete(Duration::from_micros(100));
+        metrics.record_delete(Duration::from_micros(200));
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.avg_delete_latency_us(), 150.0);
+    }
+
+    #[test]
+    fn test_total_operations() {
+        let metrics = Metrics::new();
+
+        metrics.record_get(Duration::from_micros(100));
+        metrics.record_set(Duration::from_micros(100));
+        metrics.record_delete(Duration::from_micros(100));
+        metrics.record_get_range(Duration::from_micros(100));
+        metrics.record_clear_range(Duration::from_micros(100));
+        metrics.record_transaction(Duration::from_micros(100));
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.total_operations(), 6);
+    }
+
+    #[test]
+    fn test_zero_count_averages_return_zero() {
+        let snapshot = MetricsSnapshot::default();
+
+        assert_eq!(snapshot.avg_get_latency_us(), 0.0);
+        assert_eq!(snapshot.avg_set_latency_us(), 0.0);
+        assert_eq!(snapshot.avg_delete_latency_us(), 0.0);
+        assert_eq!(snapshot.avg_get_range_latency_us(), 0.0);
+        assert_eq!(snapshot.avg_transaction_latency_us(), 0.0);
+        assert_eq!(snapshot.cache_hit_rate(), 0.0);
+        assert_eq!(snapshot.error_rate(), 0.0);
+        assert_eq!(snapshot.conflict_rate(), 0.0);
+    }
+
+    #[test]
+    fn test_log_metrics_no_ops() {
+        // When there are no operations, log_metrics should return early
+        let metrics = Metrics::new();
+        metrics.log_metrics(); // Should not panic
+    }
+
+    #[test]
+    fn test_log_metrics_with_ops() {
+        let metrics = Metrics::new();
+
+        metrics.record_get(Duration::from_micros(100));
+        metrics.record_set(Duration::from_micros(200));
+        metrics.record_delete(Duration::from_micros(150));
+        metrics.record_transaction(Duration::from_micros(1000));
+
+        // Should log without panic
+        metrics.log_metrics();
+    }
+
+    #[test]
+    fn test_log_metrics_high_error_rate() {
+        let metrics = Metrics::new();
+
+        // Create 10 operations with 2 errors = 20% error rate (above 5% threshold)
+        for _ in 0..10 {
+            metrics.record_get(Duration::from_micros(100));
+        }
+        metrics.record_error();
+        metrics.record_error();
+
+        // Should log warning for high error rate
+        metrics.log_metrics();
+    }
+
+    #[test]
+    fn test_log_metrics_high_conflict_rate() {
+        let metrics = Metrics::new();
+
+        // Create 5 transactions with 1 conflict = 20% conflict rate (above 10% threshold)
+        for _ in 0..5 {
+            metrics.record_transaction(Duration::from_micros(1000));
+        }
+        metrics.record_conflict();
+
+        // Should log warning for high conflict rate
+        metrics.log_metrics();
+    }
+
+    #[test]
+    fn test_metrics_clone() {
+        let metrics = Metrics::new();
+        metrics.record_get(Duration::from_micros(100));
+
+        let cloned = metrics.clone();
+        // Both share the same inner state
+        cloned.record_get(Duration::from_micros(100));
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.get_count, 2);
+    }
+
+    #[test]
+    fn test_metrics_default() {
+        let metrics = Metrics::default();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.get_count, 0);
+        assert_eq!(snapshot.total_operations(), 0);
+    }
+
+    #[test]
+    fn test_metrics_snapshot_builder() {
+        let snapshot = MetricsSnapshot::builder().get_count(10).set_count(5).error_count(2).build();
+
+        assert_eq!(snapshot.get_count, 10);
+        assert_eq!(snapshot.set_count, 5);
+        assert_eq!(snapshot.error_count, 2);
+    }
 }

@@ -208,4 +208,147 @@ mod tests {
 
         assert!(matches!(storage_err, StorageError::Serialization { .. }));
     }
+
+    #[test]
+    fn test_transaction_error_mapping() {
+        let err = LedgerStorageError::Transaction("commit failed".into());
+        let storage_err: StorageError = err.into();
+
+        assert!(matches!(storage_err, StorageError::Internal { .. }));
+    }
+
+    #[test]
+    fn test_unavailable_error_mapping() {
+        let sdk_err = SdkError::Unavailable { message: "service down".into() };
+        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Connection { .. }));
+    }
+
+    #[test]
+    fn test_stream_disconnected_error_mapping() {
+        let sdk_err = SdkError::StreamDisconnected { message: "stream closed".into() };
+        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Connection { .. }));
+    }
+
+    #[test]
+    fn test_retry_exhausted_error_mapping() {
+        let sdk_err = SdkError::RetryExhausted { attempts: 3, last_error: "still down".into() };
+        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Connection { .. }));
+    }
+
+    #[test]
+    fn test_already_committed_error_mapping() {
+        let sdk_err = SdkError::AlreadyCommitted { tx_id: "tx-123".into(), block_height: 42 };
+        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Internal { .. }));
+    }
+
+    #[test]
+    fn test_sequence_gap_error_mapping() {
+        let sdk_err = SdkError::SequenceGap { expected: 5, server_has: 3 };
+        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Internal { .. }));
+    }
+
+    #[test]
+    fn test_idempotency_error_mapping() {
+        let sdk_err = SdkError::Idempotency { message: "duplicate request".into() };
+        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Internal { .. }));
+    }
+
+    #[test]
+    fn test_config_sdk_error_mapping() {
+        let sdk_err = SdkError::Config { message: "invalid config".into() };
+        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Internal { .. }));
+    }
+
+    #[test]
+    fn test_invalid_url_error_mapping() {
+        let sdk_err =
+            SdkError::InvalidUrl { url: "not-a-url".into(), message: "parse error".into() };
+        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Internal { .. }));
+    }
+
+    #[test]
+    fn test_shutdown_error_mapping() {
+        let sdk_err = SdkError::Shutdown;
+        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Connection { .. }));
+    }
+
+    #[test]
+    fn test_proof_verification_error_mapping() {
+        let sdk_err = SdkError::ProofVerification { reason: "hash mismatch" };
+        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Internal { .. }));
+    }
+
+    #[test]
+    fn test_failed_precondition_rpc_mapping() {
+        let sdk_err =
+            SdkError::Rpc { code: Code::FailedPrecondition, message: "precondition failed".into() };
+        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Conflict));
+    }
+
+    #[test]
+    fn test_data_loss_rpc_mapping() {
+        let sdk_err = SdkError::Rpc { code: Code::DataLoss, message: "data corrupted".into() };
+        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Internal { .. }));
+    }
+
+    #[test]
+    fn test_permission_denied_rpc_mapping() {
+        let sdk_err =
+            SdkError::Rpc { code: Code::PermissionDenied, message: "access denied".into() };
+        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Internal { .. }));
+    }
+
+    #[test]
+    fn test_unauthenticated_rpc_mapping() {
+        let sdk_err = SdkError::Rpc { code: Code::Unauthenticated, message: "not authed".into() };
+        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Internal { .. }));
+    }
+
+    #[test]
+    fn test_unknown_rpc_code_mapping() {
+        let sdk_err = SdkError::Rpc { code: Code::Unknown, message: "unknown error".into() };
+        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Internal { .. }));
+    }
+
+    #[test]
+    fn test_error_display() {
+        let err = LedgerStorageError::Config("test error".into());
+        assert_eq!(err.to_string(), "Configuration error: test error");
+
+        let err = LedgerStorageError::KeyEncoding("bad hex".into());
+        assert_eq!(err.to_string(), "Key encoding error: bad hex");
+
+        let err = LedgerStorageError::Transaction("commit failed".into());
+        assert_eq!(err.to_string(), "Transaction error: commit failed");
+    }
 }

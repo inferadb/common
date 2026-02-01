@@ -627,6 +627,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_activate_nonexistent_key_fails() {
+        let store = MemorySigningKeyStore::new();
+
+        let result = store.activate_key(100, "nonexistent").await;
+
+        assert!(result.is_err());
+        assert!(matches!(result.expect_err("should be NotFound"), StorageError::NotFound { .. }));
+    }
+
+    #[tokio::test]
     async fn test_clone_store_shares_state() {
         let store = MemorySigningKeyStore::new();
         let cloned = store.clone();

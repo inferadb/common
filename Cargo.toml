@@ -17,10 +17,10 @@ inferadb-ledger-sdk = ">=0.1.0-0"
 
 # Async
 async-trait = "0.1"
-tokio = { version = "1.43", features = ["time", "sync", "rt"] }
+tokio = { version = "1.49", features = ["time", "sync", "rt"] }
 
 # Data types
-bytes = "1.9"
+bytes = "1.11"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 
 # Concurrency
@@ -48,7 +48,6 @@ thiserror = "1.0"
 
 # Testing
 rand = "0.8"
-snafu = "0.8"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

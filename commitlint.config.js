@@ -20,6 +20,10 @@ export default {
         "build", // Build system or external dependencies
         "ci", // CI configuration
         "chore", // Other changes that don't modify src or test
+        "dx",
+        "ai",
+        "imp",
+        "release",
       ],
     ],
     // Scope is optional but must be lowercase if provided
