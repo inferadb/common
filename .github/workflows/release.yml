@@ -191,7 +191,7 @@ jobs:
           sudo apt-get install -y -qq protobuf-compiler
 
       - name: Cache Rust dependencies
-        uses: step-security/rust-cache@f8fba7098297c8c53a7c9a30575ec2ad4ad85056 # v2.8.2
+        uses: step-security/rust-cache@9be15b830520fab0ec3939586e917e4855cf76bd # v2.8.3
 
       - name: Build documentation
         env:
@@ -199,7 +199,7 @@ jobs:
         run: cargo +nightly doc --workspace --no-deps --all-features
 
       - name: Upload documentation artifact
-        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: documentation
           path: target/doc
