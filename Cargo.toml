@@ -44,7 +44,7 @@ hex = "0.4"
 tonic = "0.14"
 
 # Error handling
-thiserror = "1.0"
+thiserror = "2.0"
 
 # Testing
 rand = "0.8"
