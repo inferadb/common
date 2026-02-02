@@ -15,5 +15,6 @@ if [[ -f "$CARGO_CONFIG" ]]; then
     trap 'mv "$CARGO_CONFIG_BAK" "$CARGO_CONFIG"' EXIT
 fi
 
-# Update the SDK (transitive deps like raft, state, store, types come along)
-cargo update -p inferadb-ledger-sdk
+# Update all dependencies - this re-resolves inferadb-ledger-sdk from crates.io
+# (can't use -p because the lockfile may only have the path dependency version)
+cargo update
