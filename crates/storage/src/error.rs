@@ -22,7 +22,12 @@
 //! }
 //! ```
 
+use std::sync::Arc;
+
 use thiserror::Error;
+
+/// A boxed error type for source chain tracking.
+pub type BoxError = Arc<dyn std::error::Error + Send + Sync>;
 
 /// Result type alias for storage operations.
 ///
@@ -35,6 +40,9 @@ pub type StorageResult<T> = Result<T, StorageError>;
 /// This enum represents the canonical set of errors that any storage backend
 /// can produce. Backend implementations should map their internal error types
 /// to these variants.
+///
+/// Errors preserve their source chain via the `#[source]` attribute, enabling
+/// debugging tools to display the full error context.
 #[derive(Debug, Error)]
 pub enum StorageError {
     /// The requested key was not found in the storage backend.
@@ -62,6 +70,9 @@ pub enum StorageError {
     Connection {
         /// Description of the connection error.
         message: String,
+        /// The underlying error that caused this connection failure.
+        #[source]
+        source: Option<BoxError>,
     },
 
     /// Serialization or deserialization error.
@@ -73,6 +84,9 @@ pub enum StorageError {
     Serialization {
         /// Description of the serialization error.
         message: String,
+        /// The underlying error that caused serialization to fail.
+        #[source]
+        source: Option<BoxError>,
     },
 
     /// Internal storage backend error.
@@ -83,6 +97,9 @@ pub enum StorageError {
     Internal {
         /// Description of the internal error.
         message: String,
+        /// The underlying error that caused this internal failure.
+        #[source]
+        source: Option<BoxError>,
     },
 
     /// Operation timed out.
@@ -109,19 +126,46 @@ impl StorageError {
     /// Creates a new `Connection` error with the given message.
     #[must_use]
     pub fn connection(message: impl Into<String>) -> Self {
-        Self::Connection { message: message.into() }
+        Self::Connection { message: message.into(), source: None }
+    }
+
+    /// Creates a new `Connection` error with a message and source error.
+    #[must_use]
+    pub fn connection_with_source(
+        message: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Connection { message: message.into(), source: Some(Arc::new(source)) }
     }
 
     /// Creates a new `Serialization` error with the given message.
     #[must_use]
     pub fn serialization(message: impl Into<String>) -> Self {
-        Self::Serialization { message: message.into() }
+        Self::Serialization { message: message.into(), source: None }
+    }
+
+    /// Creates a new `Serialization` error with a message and source error.
+    #[must_use]
+    pub fn serialization_with_source(
+        message: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Serialization { message: message.into(), source: Some(Arc::new(source)) }
     }
 
     /// Creates a new `Internal` error with the given message.
     #[must_use]
     pub fn internal(message: impl Into<String>) -> Self {
-        Self::Internal { message: message.into() }
+        Self::Internal { message: message.into(), source: None }
+    }
+
+    /// Creates a new `Internal` error with a message and source error.
+    #[must_use]
+    pub fn internal_with_source(
+        message: impl Into<String>,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Internal { message: message.into(), source: Some(Arc::new(source)) }
     }
 
     /// Creates a new `Timeout` error.

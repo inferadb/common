@@ -2,6 +2,9 @@
 //!
 //! This module provides error types that map between the Ledger SDK's errors
 //! and the generic [`StorageError`](inferadb_common_storage::StorageError) type.
+//!
+//! Error chains are preserved through the conversion, enabling debugging tools
+//! to display the full error context from SDK through to storage layer.
 
 use inferadb_common_storage::StorageError;
 use inferadb_ledger_sdk::SdkError;
@@ -14,7 +17,8 @@ pub type Result<T> = std::result::Result<T, LedgerStorageError>;
 /// Errors specific to the Ledger storage backend.
 ///
 /// This error type wraps SDK errors and provides additional context
-/// for storage-layer failures.
+/// for storage-layer failures. The error chain is preserved when
+/// converting to [`StorageError`].
 #[derive(Debug, Error)]
 pub enum LedgerStorageError {
     /// Error from the Ledger SDK.
@@ -49,21 +53,27 @@ impl From<LedgerStorageError> for StorageError {
     }
 }
 
-/// Converts an SDK error to a storage error.
+/// Converts an SDK error to a storage error, preserving the error chain.
 ///
 /// This mapping is designed to preserve the semantic meaning of errors
-/// while using the canonical [`StorageError`] variants.
+/// while using the canonical [`StorageError`] variants. The original
+/// SDK error is preserved as the source for debugging.
 fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
     match &err {
-        // Connection and transport errors
-        SdkError::Connection { message, .. } => StorageError::connection(message.clone()),
-        SdkError::Transport { source, .. } => StorageError::connection(source.to_string()),
-        SdkError::Unavailable { message } => StorageError::connection(message.clone()),
-        SdkError::StreamDisconnected { message } => StorageError::connection(message.clone()),
+        // Connection and transport errors - preserve source chain
+        SdkError::Connection { message, .. } => {
+            StorageError::connection_with_source(message.clone(), err)
+        },
+        SdkError::Transport { .. } => StorageError::connection_with_source("Transport error", err),
+        SdkError::Unavailable { message } => {
+            StorageError::connection_with_source(message.clone(), err)
+        },
+        SdkError::StreamDisconnected { message } => {
+            StorageError::connection_with_source(message.clone(), err)
+        },
 
         // Timeout errors
         SdkError::Timeout { duration_ms } => {
-            // Log the timeout duration for debugging
             tracing::warn!(duration_ms = duration_ms, "Ledger operation timed out");
             StorageError::timeout()
         },
@@ -73,63 +83,67 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
             Code::NotFound => StorageError::not_found(message.clone()),
             Code::AlreadyExists => StorageError::conflict(),
             Code::Aborted | Code::FailedPrecondition => StorageError::conflict(),
-            Code::InvalidArgument => StorageError::serialization(message.clone()),
+            Code::InvalidArgument => StorageError::serialization_with_source(message.clone(), err),
             Code::Unavailable | Code::DeadlineExceeded | Code::ResourceExhausted => {
-                if err.is_retryable() {
-                    // Retryable errors are typically transient
-                    StorageError::connection(message.clone())
-                } else {
-                    StorageError::internal(message.clone())
-                }
+                StorageError::connection_with_source(message.clone(), err)
             },
             Code::PermissionDenied | Code::Unauthenticated => {
-                StorageError::internal(format!("Auth error: {message}"))
+                StorageError::internal_with_source(format!("Auth error: {message}"), err)
             },
-            Code::DataLoss => StorageError::internal(format!("Data loss: {message}")),
-            _ => StorageError::internal(format!("gRPC error ({code:?}): {message}")),
+            Code::DataLoss => {
+                StorageError::internal_with_source(format!("Data loss: {message}"), err)
+            },
+            _ => {
+                StorageError::internal_with_source(format!("gRPC error ({code:?}): {message}"), err)
+            },
         },
 
-        // Retry exhausted
+        // Retry exhausted - preserve the full context
         SdkError::RetryExhausted { attempts, last_error } => {
             tracing::error!(attempts = attempts, "Retry exhausted: {}", last_error);
-            StorageError::connection(format!(
-                "Retry exhausted after {attempts} attempts: {last_error}"
-            ))
+            StorageError::connection_with_source(
+                format!("Retry exhausted after {attempts} attempts: {last_error}"),
+                err,
+            )
         },
 
-        // Idempotency errors - these shouldn't normally surface to the storage layer
+        // Idempotency errors
         SdkError::AlreadyCommitted { tx_id, block_height } => {
-            // This is actually success - the operation was already applied
             tracing::debug!(
                 tx_id = tx_id,
                 block_height = block_height,
                 "Operation already committed"
             );
-            // Return internal error as this shouldn't happen in normal flow
-            StorageError::internal(format!("Unexpected: already committed tx={tx_id}"))
+            StorageError::internal_with_source(
+                format!("Unexpected: already committed tx={tx_id}"),
+                err,
+            )
         },
 
-        SdkError::SequenceGap { expected, server_has } => StorageError::internal(format!(
-            "Sequence gap: expected {expected}, server has {server_has}"
-        )),
+        SdkError::SequenceGap { expected, server_has } => StorageError::internal_with_source(
+            format!("Sequence gap: expected {expected}, server has {server_has}"),
+            err,
+        ),
 
         SdkError::Idempotency { message } => {
-            StorageError::internal(format!("Idempotency error: {message}"))
+            StorageError::internal_with_source(format!("Idempotency error: {message}"), err)
         },
 
         // Configuration and validation errors
-        SdkError::Config { message } => StorageError::internal(format!("Config: {message}")),
+        SdkError::Config { message } => {
+            StorageError::internal_with_source(format!("Config: {message}"), err)
+        },
         SdkError::InvalidUrl { url, message } => {
-            StorageError::internal(format!("Invalid URL '{url}': {message}"))
+            StorageError::internal_with_source(format!("Invalid URL '{url}': {message}"), err)
         },
 
         // Client shutdown
-        SdkError::Shutdown => StorageError::connection("Client shutting down"),
+        SdkError::Shutdown => StorageError::connection_with_source("Client shutting down", err),
 
         // Proof verification - indicates data integrity issue
         SdkError::ProofVerification { reason } => {
             tracing::error!("Proof verification failed: {}", reason);
-            StorageError::internal(format!("Proof verification failed: {reason}"))
+            StorageError::internal_with_source(format!("Proof verification failed: {reason}"), err)
         },
     }
 }
@@ -137,6 +151,8 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use std::error::Error;
+
     use snafu::Location;
 
     use super::*;
@@ -150,6 +166,8 @@ mod tests {
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Connection { .. }));
+        // Verify source chain is preserved
+        assert!(storage_err.source().is_some());
     }
 
     #[test]
@@ -191,6 +209,8 @@ mod tests {
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Serialization { .. }));
+        // Verify source chain is preserved
+        assert!(storage_err.source().is_some());
     }
 
     #[test]
@@ -223,6 +243,7 @@ mod tests {
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Connection { .. }));
+        assert!(storage_err.source().is_some());
     }
 
     #[test]
@@ -231,6 +252,7 @@ mod tests {
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Connection { .. }));
+        assert!(storage_err.source().is_some());
     }
 
     #[test]
@@ -239,6 +261,7 @@ mod tests {
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Connection { .. }));
+        assert!(storage_err.source().is_some());
     }
 
     #[test]
@@ -247,6 +270,7 @@ mod tests {
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
+        assert!(storage_err.source().is_some());
     }
 
     #[test]
@@ -255,6 +279,7 @@ mod tests {
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
+        assert!(storage_err.source().is_some());
     }
 
     #[test]
@@ -263,6 +288,7 @@ mod tests {
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
+        assert!(storage_err.source().is_some());
     }
 
     #[test]
@@ -271,6 +297,7 @@ mod tests {
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
+        assert!(storage_err.source().is_some());
     }
 
     #[test]
@@ -280,6 +307,7 @@ mod tests {
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
+        assert!(storage_err.source().is_some());
     }
 
     #[test]
@@ -288,6 +316,7 @@ mod tests {
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Connection { .. }));
+        assert!(storage_err.source().is_some());
     }
 
     #[test]
@@ -296,6 +325,7 @@ mod tests {
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
+        assert!(storage_err.source().is_some());
     }
 
     #[test]
@@ -313,6 +343,7 @@ mod tests {
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
+        assert!(storage_err.source().is_some());
     }
 
     #[test]
@@ -322,6 +353,7 @@ mod tests {
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
+        assert!(storage_err.source().is_some());
     }
 
     #[test]
@@ -330,6 +362,7 @@ mod tests {
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
+        assert!(storage_err.source().is_some());
     }
 
     #[test]
@@ -338,6 +371,7 @@ mod tests {
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
+        assert!(storage_err.source().is_some());
     }
 
     #[test]
