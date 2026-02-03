@@ -1,6 +1,6 @@
 //! Ledger-backed signing key cache for JWT validation.
 //!
-//! This module provides [`SigningKeyCache`], which wraps [`PublicSigningKeyStore`]
+//! This module provides [`SigningKeyCache`], which wraps [`PublicSigningKeyStore`](inferadb_common_storage::auth::PublicSigningKeyStore)
 //! with in-memory caching to avoid Ledger round-trips on every token validation.
 //!
 //! # Architecture
@@ -251,7 +251,7 @@ impl SigningKeyCache {
     /// Returns current cache entry count.
     ///
     /// Note: This count is eventually consistent. For accurate counts in tests,
-    /// call [`sync`] first.
+    /// call `sync` first.
     #[must_use]
     pub fn entry_count(&self) -> u64 {
         self.cache.entry_count()

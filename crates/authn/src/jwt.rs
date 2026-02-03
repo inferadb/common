@@ -43,11 +43,11 @@ use crate::{error::AuthError, signing_key_cache::SigningKeyCache, validation::va
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JwtClaims {
-    /// Issuer - Should be the Management API URL (e.g., "https://api.inferadb.com").
+    /// Issuer - Should be the Management API URL (e.g., `https://api.inferadb.com`).
     pub iss: String,
     /// Subject - Client identifier (e.g., "client:<client_id>").
     pub sub: String,
-    /// Audience - Target service (e.g., "https://api.inferadb.com/evaluate").
+    /// Audience - Target service (e.g., `https://api.inferadb.com/evaluate`).
     pub aud: String,
     /// Expiration time (seconds since epoch).
     pub exp: u64,
