@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Update InferaDB Ledger dependencies to latest nightly versions from crates.io
+# Update dependencies to latest versions from crates.io
 #
 # This script temporarily disables the [patch.crates-io] config to ensure
 # we lock to actual crates.io versions, not local path dependencies.
@@ -15,6 +15,6 @@ if [[ -f "$CARGO_CONFIG" ]]; then
     trap 'mv "$CARGO_CONFIG_BAK" "$CARGO_CONFIG"' EXIT
 fi
 
-# Update all dependencies - this re-resolves inferadb-ledger-sdk from crates.io
+# Update all dependencies
 # (can't use -p because the lockfile may only have the path dependency version)
 cargo update
