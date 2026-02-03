@@ -1,7 +1,8 @@
 //! Ledger-backed signing key cache for JWT validation.
 //!
-//! This module provides [`SigningKeyCache`], which wraps [`PublicSigningKeyStore`](inferadb_common_storage::auth::PublicSigningKeyStore)
-//! with in-memory caching to avoid Ledger round-trips on every token validation.
+//! This module provides [`SigningKeyCache`], which wraps
+//! [`PublicSigningKeyStore`](inferadb_common_storage::auth::PublicSigningKeyStore) with in-memory
+//! caching to avoid Ledger round-trips on every token validation.
 //!
 //! # Architecture
 //!
