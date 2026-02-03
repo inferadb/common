@@ -24,9 +24,9 @@ This repository provides the storage abstraction layer used by [InferaDB Engine]
 
 ## Crates
 
-| Crate | Description |
-|-------|-------------|
-| [`inferadb-common-storage`](https://crates.io/crates/inferadb-common-storage) | Storage backend trait and in-memory implementation |
+| Crate                                                                                       | Description                                                                |
+| ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| [`inferadb-common-storage`](https://crates.io/crates/inferadb-common-storage)               | Storage backend trait and in-memory implementation                         |
 | [`inferadb-common-storage-ledger`](https://crates.io/crates/inferadb-common-storage-ledger) | [Ledger](https://github.com/inferadb/ledger)-backed storage implementation |
 
 ## Installation
