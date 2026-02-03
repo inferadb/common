@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/authn",
     "crates/storage",
     "crates/storage-ledger",
 ]
@@ -38,6 +39,7 @@ bon = "3.8"
 tracing = "0.1"
 
 # Encoding
+base64 = "0.22"
 hex = "0.4"
 
 # gRPC
@@ -45,6 +47,15 @@ tonic = "0.14"
 
 # Error handling
 thiserror = "2.0"
+
+# Cryptography
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+
+# JWT
+jsonwebtoken = "9"
+
+# Caching
+moka = { version = "0.12", features = ["future"] }
 
 # Testing
 rand = "0.9"

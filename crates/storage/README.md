@@ -20,10 +20,10 @@ This crate provides the `StorageBackend` trait and related types that form the f
 │                 inferadb-common-storage                     │
 │              StorageBackend trait                           │
 │    (get, set, delete, get_range, transaction)               │
-├──────────────┬──────────────┬───────────────────────────────┤
-│ MemoryBackend│       LedgerBackend           │
-│   (testing)  │    (production)               │
-└──────────────┴───────────────────────────────┘
+├─────────────────┬───────────────────────────────────────────┤
+│  MemoryBackend  │       LedgerBackend                       │
+│    (testing)    │        (production)                       │
+└─────────────────┴───────────────────────────────────────────┘
 ```
 
 ## Quick Start
@@ -55,10 +55,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Available Backends
 
-| Backend | Crate | Use Case | Persistence |
-|---------|-------|----------|-------------|
-| `MemoryBackend` | `inferadb-common-storage` | Testing, development | No |
-| `LedgerBackend` | `inferadb-common-storage-ledger` | Production | Yes |
+| Backend         | Crate                            | Use Case             | Persistence |
+| --------------- | -------------------------------- | -------------------- | ----------- |
+| `MemoryBackend` | `inferadb-common-storage`        | Testing, development | No          |
+| `LedgerBackend` | `inferadb-common-storage-ledger` | Production           | Yes         |
 
 ## Core Traits
 
@@ -120,14 +120,14 @@ pub trait Transaction: Send + Sync {
 
 All operations return `StorageResult<T>`, which wraps `StorageError`:
 
-| Error Variant | Description |
-|---------------|-------------|
-| `NotFound` | Key does not exist |
-| `Conflict` | Transaction conflict or duplicate key |
-| `Connection` | Backend connection failed |
+| Error Variant   | Description                               |
+| --------------- | ----------------------------------------- |
+| `NotFound`      | Key does not exist                        |
+| `Conflict`      | Transaction conflict or duplicate key     |
+| `Connection`    | Backend connection failed                 |
 | `Serialization` | Data serialization/deserialization failed |
-| `Internal` | Internal backend error |
-| `Timeout` | Operation timed out |
+| `Internal`      | Internal backend error                    |
+| `Timeout`       | Operation timed out                       |
 
 ## Implementing a Backend
 

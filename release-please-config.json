@@ -32,6 +32,11 @@
       "extra-files": [
         {
           "type": "toml",
+          "path": "crates/authn/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
           "path": "crates/storage/Cargo.toml",
           "jsonpath": "$.package.version"
         },

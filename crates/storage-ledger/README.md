@@ -22,13 +22,13 @@ This crate provides `LedgerBackend`, a production-grade storage backend that imp
 │                     Repository Layer                        │
 │  OrganizationRepository │ VaultRepository │ RelationshipRepo│
 ├─────────────────────────────────────────────────────────────┤
-│                   LedgerBackend                              │
-│         (implements StorageBackend trait)                    │
+│                   LedgerBackend                             │
+│         (implements StorageBackend trait)                   │
 ├─────────────────────────────────────────────────────────────┤
-│                   Ledger SDK                                 │
+│                   Ledger SDK                                │
 │   LedgerClient │ SequenceTracker │ ConnectionPool           │
 ├─────────────────────────────────────────────────────────────┤
-│                   Ledger Service                             │
+│                   Ledger Service                            │
 │   Blockchain consensus │ Merkle trees │ Replication         │
 └─────────────────────────────────────────────────────────────┘
 ```

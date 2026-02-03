@@ -154,6 +154,16 @@ jobs:
           done
           echo "Warning: Timed out waiting for index, proceeding anyway..."
 
+      # Patch authn's version AND dependency, then publish
+      - name: Publish inferadb-common-authn
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          NIGHTLY_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          sed -i "s/^version = \".*\"/version = \"${NIGHTLY_VERSION}\"/" crates/authn/Cargo.toml
+          sed -i "s/^inferadb-common-storage = .*/inferadb-common-storage = \"=${NIGHTLY_VERSION}\"/" crates/authn/Cargo.toml
+          cargo publish --package inferadb-common-authn --token "$CARGO_REGISTRY_TOKEN" --allow-dirty
+
       # Now patch storage-ledger's version AND dependency, then publish
       - name: Publish inferadb-common-storage-ledger
         env:
@@ -199,12 +209,14 @@ jobs:
 
             | Crate | Version |
             |-------|---------|
+            | `inferadb-common-authn` | `${{ needs.version.outputs.version }}` |
             | `inferadb-common-storage` | `${{ needs.version.outputs.version }}` |
             | `inferadb-common-storage-ledger` | `${{ needs.version.outputs.version }}` |
 
             Install with Cargo:
             ```toml
             [dependencies]
+            inferadb-common-authn = "=${{ needs.version.outputs.version }}"
             inferadb-common-storage = "=${{ needs.version.outputs.version }}"
             inferadb-common-storage-ledger = "=${{ needs.version.outputs.version }}"
             ```

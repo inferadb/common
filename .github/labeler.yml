@@ -38,6 +38,12 @@ area/testing:
           - "**/*_test.rs"
           - "**/*_tests.rs"
 
+# Authn crate
+area/authn:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "crates/authn/**/*"
+
 # Storage crate
 area/storage:
   - changed-files:
