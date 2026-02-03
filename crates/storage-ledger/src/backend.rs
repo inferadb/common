@@ -273,6 +273,7 @@ impl StorageBackend for LedgerBackend {
             limit: 10000, // Reasonable page size
             page_token: None,
             consistency: self.read_consistency,
+            vault_id: self.vault_id,
         };
 
         let result = self
