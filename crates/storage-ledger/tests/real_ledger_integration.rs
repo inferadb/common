@@ -36,6 +36,7 @@ use std::{
 use bytes::Bytes;
 use inferadb_common_storage::StorageBackend;
 use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
+use inferadb_ledger_sdk::{ClientConfig, ServerSource};
 use tokio::time::sleep;
 
 // ============================================================================
@@ -66,15 +67,22 @@ fn unique_vault_id() -> i64 {
     VAULT_COUNTER.fetch_add(1, Ordering::SeqCst) as i64
 }
 
+/// Creates a ClientConfig for testing.
+fn test_client_config(client_id: &str) -> ClientConfig {
+    ClientConfig::builder()
+        .servers(ServerSource::from_static([ledger_endpoint()]))
+        .client_id(client_id)
+        .build()
+        .expect("valid client config")
+}
+
 /// Creates a LedgerBackend for testing with a unique vault.
 async fn create_test_backend() -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
-        .endpoints([ledger_endpoint()])
-        .client_id(format!("test-client-{}", unique_vault_id()))
+        .client(test_client_config(&format!("test-client-{}", unique_vault_id())))
         .namespace_id(ledger_namespace_id())
         .vault_id(unique_vault_id())
-        .build()
-        .expect("valid config");
+        .build();
 
     LedgerBackend::new(config).await.expect("backend creation should succeed")
 }
@@ -82,12 +90,10 @@ async fn create_test_backend() -> LedgerBackend {
 /// Creates a LedgerBackend with a specific vault ID (for isolation tests).
 async fn create_backend_with_vault(vault_id: i64) -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
-        .endpoints([ledger_endpoint()])
-        .client_id(format!("test-client-vault-{}", vault_id))
+        .client(test_client_config(&format!("test-client-vault-{}", vault_id)))
         .namespace_id(ledger_namespace_id())
         .vault_id(vault_id)
-        .build()
-        .expect("valid config");
+        .build();
 
     LedgerBackend::new(config).await.expect("backend creation should succeed")
 }

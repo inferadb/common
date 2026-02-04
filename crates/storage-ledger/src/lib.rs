@@ -36,14 +36,19 @@
 //! ```no_run
 //! use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
 //! use inferadb_common_storage::StorageBackend;
+//! use inferadb_ledger_sdk::{ClientConfig, ServerSource};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let config = LedgerBackendConfig::builder()
-//!         .endpoints(["http://localhost:50051"])
+//!     let client = ClientConfig::builder()
+//!         .servers(ServerSource::from_static(["http://localhost:50051"]))
 //!         .client_id("my-service")
-//!         .namespace_id(1)
 //!         .build()?;
+//!
+//!     let config = LedgerBackendConfig::builder()
+//!         .client(client)
+//!         .namespace_id(1)
+//!         .build();
 //!
 //!     let backend = LedgerBackend::new(config).await?;
 //!
@@ -85,6 +90,6 @@ mod transaction;
 pub mod auth;
 
 pub use backend::LedgerBackend;
-pub use config::{LedgerBackendConfig, ReadConsistencyConfig, RetryPolicyConfig};
+pub use config::LedgerBackendConfig;
 pub use error::{LedgerStorageError, Result};
 pub use transaction::LedgerTransaction;

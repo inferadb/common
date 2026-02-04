@@ -10,21 +10,28 @@ use std::ops::Bound;
 use bytes::Bytes;
 use inferadb_common_storage::StorageBackend;
 use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
-use inferadb_ledger_sdk::mock::MockLedgerServer;
+use inferadb_ledger_sdk::{ClientConfig, ServerSource, mock::MockLedgerServer};
 
 // ============================================================================
 // Test Helpers
 // ============================================================================
 
+/// Creates a ClientConfig for testing.
+fn test_client_config(server: &MockLedgerServer, client_id: &str) -> ClientConfig {
+    ClientConfig::builder()
+        .servers(ServerSource::from_static([server.endpoint()]))
+        .client_id(client_id)
+        .build()
+        .expect("valid client config")
+}
+
 /// Creates a LedgerBackend connected to the given mock server.
 async fn create_test_backend(server: &MockLedgerServer) -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
-        .endpoints([server.endpoint()])
-        .client_id("test-client")
+        .client(test_client_config(server, "test-client"))
         .namespace_id(1)
         .vault_id(0)
-        .build()
-        .expect("valid config");
+        .build();
 
     LedgerBackend::new(config).await.expect("backend creation should succeed")
 }
@@ -398,20 +405,16 @@ async fn test_vault_isolation() {
 
     // Create two backends with different vaults
     let config1 = LedgerBackendConfig::builder()
-        .endpoints([server.endpoint()])
-        .client_id("client-vault-1")
+        .client(test_client_config(&server, "client-vault-1"))
         .namespace_id(1)
         .vault_id(100)
-        .build()
-        .unwrap();
+        .build();
 
     let config2 = LedgerBackendConfig::builder()
-        .endpoints([server.endpoint()])
-        .client_id("client-vault-2")
+        .client(test_client_config(&server, "client-vault-2"))
         .namespace_id(1)
         .vault_id(200)
-        .build()
-        .unwrap();
+        .build();
 
     let backend1 = LedgerBackend::new(config1).await.unwrap();
     let backend2 = LedgerBackend::new(config2).await.unwrap();
@@ -872,23 +875,27 @@ mod backend_tests {
     use std::sync::Arc;
 
     use inferadb_common_storage::StorageBackend;
-    use inferadb_common_storage_ledger::{
-        LedgerBackend, LedgerBackendConfig, ReadConsistencyConfig,
-    };
+    use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
     use inferadb_ledger_sdk::{
         ClientConfig, LedgerClient, ReadConsistency, ServerSource, mock::MockLedgerServer,
     };
+
+    fn test_client(server: &MockLedgerServer, client_id: &str) -> ClientConfig {
+        ClientConfig::builder()
+            .servers(ServerSource::from_static([server.endpoint()]))
+            .client_id(client_id)
+            .build()
+            .expect("valid config")
+    }
 
     #[tokio::test]
     async fn test_backend_debug_impl() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
-            .endpoints([server.endpoint()])
-            .client_id("test-client")
+            .client(test_client(&server, "test-client"))
             .namespace_id(42)
             .vault_id(100)
-            .build()
-            .expect("valid config");
+            .build();
 
         let backend = LedgerBackend::new(config).await.expect("backend");
         let debug_str = format!("{:?}", backend);
@@ -902,12 +909,10 @@ mod backend_tests {
     async fn test_backend_getters() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
-            .endpoints([server.endpoint()])
-            .client_id("test-client")
+            .client(test_client(&server, "test-client"))
             .namespace_id(123)
             .vault_id(456)
-            .build()
-            .expect("valid config");
+            .build();
 
         let backend = LedgerBackend::new(config).await.expect("backend");
 
@@ -944,12 +949,10 @@ mod backend_tests {
     async fn test_backend_with_eventual_consistency() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
-            .endpoints([server.endpoint()])
-            .client_id("test-client")
+            .client(test_client(&server, "test-client"))
             .namespace_id(1)
-            .read_consistency(ReadConsistencyConfig::Eventual)
-            .build()
-            .expect("valid config");
+            .read_consistency(ReadConsistency::Eventual)
+            .build();
 
         let backend = LedgerBackend::new(config).await.expect("backend");
 
@@ -963,11 +966,9 @@ mod backend_tests {
     async fn test_backend_without_vault() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
-            .endpoints([server.endpoint()])
-            .client_id("test-client")
+            .client(test_client(&server, "test-client"))
             .namespace_id(1)
-            .build()
-            .expect("valid config");
+            .build();
 
         let backend = LedgerBackend::new(config).await.expect("backend");
 
@@ -981,21 +982,27 @@ mod backend_tests {
 
 mod transaction_tests {
     use inferadb_common_storage::StorageBackend;
-    use inferadb_common_storage_ledger::{
-        LedgerBackend, LedgerBackendConfig, ReadConsistencyConfig,
+    use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
+    use inferadb_ledger_sdk::{
+        ClientConfig, ReadConsistency, ServerSource, mock::MockLedgerServer,
     };
-    use inferadb_ledger_sdk::mock::MockLedgerServer;
+
+    fn test_client(server: &MockLedgerServer) -> ClientConfig {
+        ClientConfig::builder()
+            .servers(ServerSource::from_static([server.endpoint()]))
+            .client_id("test-client")
+            .build()
+            .expect("valid config")
+    }
 
     #[tokio::test]
     async fn test_transaction_with_eventual_consistency() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
-            .endpoints([server.endpoint()])
-            .client_id("test-client")
+            .client(test_client(&server))
             .namespace_id(1)
-            .read_consistency(ReadConsistencyConfig::Eventual)
-            .build()
-            .expect("valid config");
+            .read_consistency(ReadConsistency::Eventual)
+            .build();
 
         let backend = LedgerBackend::new(config).await.expect("backend");
 
@@ -1012,12 +1019,8 @@ mod transaction_tests {
     #[tokio::test]
     async fn test_transaction_read_deleted_key() {
         let server = MockLedgerServer::start().await.expect("mock server");
-        let config = LedgerBackendConfig::builder()
-            .endpoints([server.endpoint()])
-            .client_id("test-client")
-            .namespace_id(1)
-            .build()
-            .expect("valid config");
+        let config =
+            LedgerBackendConfig::builder().client(test_client(&server)).namespace_id(1).build();
 
         let backend = LedgerBackend::new(config).await.expect("backend");
 

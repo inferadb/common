@@ -48,14 +48,19 @@ fn common_prefix(a: &str, b: &str) -> String {
 /// ```no_run
 /// use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
 /// use inferadb_common_storage::StorageBackend;
+/// use inferadb_ledger_sdk::{ClientConfig, ServerSource};
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let config = LedgerBackendConfig::builder()
-///         .endpoints(["http://localhost:50051"])
+///     let client = ClientConfig::builder()
+///         .servers(ServerSource::from_static(["http://localhost:50051"]))
 ///         .client_id("my-service")
-///         .namespace_id(1)
 ///         .build()?;
+///
+///     let config = LedgerBackendConfig::builder()
+///         .client(client)
+///         .namespace_id(1)
+///         .build();
 ///
 ///     let backend = LedgerBackend::new(config).await?;
 ///
@@ -108,28 +113,33 @@ impl LedgerBackend {
     ///
     /// ```no_run
     /// use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
+    /// use inferadb_ledger_sdk::{ClientConfig, ServerSource};
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-    /// let config = LedgerBackendConfig::builder()
-    ///     .endpoints(["http://localhost:50051"])
+    /// let client = ClientConfig::builder()
+    ///     .servers(ServerSource::from_static(["http://localhost:50051"]))
     ///     .client_id("my-service")
-    ///     .namespace_id(1)
     ///     .build()?;
+    ///
+    /// let config = LedgerBackendConfig::builder()
+    ///     .client(client)
+    ///     .namespace_id(1)
+    ///     .build();
     ///
     /// let backend = LedgerBackend::new(config).await?;
     /// # Ok(())
     /// # }
     /// ```
     pub async fn new(config: LedgerBackendConfig) -> Result<Self> {
-        let client_config = config.build_client_config()?;
-        let client = LedgerClient::new(client_config).await.map_err(LedgerStorageError::from)?;
+        let namespace_id = config.namespace_id();
+        let vault_id = config.vault_id();
+        let read_consistency = config.read_consistency();
 
-        Ok(Self {
-            client: Arc::new(client),
-            namespace_id: config.namespace_id(),
-            vault_id: config.vault_id(),
-            read_consistency: config.read_consistency(),
-        })
+        let client = LedgerClient::new(config.into_client_config())
+            .await
+            .map_err(LedgerStorageError::from)?;
+
+        Ok(Self { client: Arc::new(client), namespace_id, vault_id, read_consistency })
     }
 
     /// Creates a backend from an existing SDK client.
