@@ -34,9 +34,10 @@
 //! # Quick Start
 //!
 //! ```no_run
-//! use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
+//! use inferadb_common_storage_ledger::{
+//!     ClientConfig, LedgerBackend, LedgerBackendConfig, ServerSource,
+//! };
 //! use inferadb_common_storage::StorageBackend;
-//! use inferadb_ledger_sdk::{ClientConfig, ServerSource};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -93,3 +94,6 @@ pub use backend::LedgerBackend;
 pub use config::LedgerBackendConfig;
 pub use error::{LedgerStorageError, Result};
 pub use transaction::LedgerTransaction;
+
+// Re-export SDK types needed to build LedgerBackendConfig
+pub use inferadb_ledger_sdk::{ClientConfig, ReadConsistency, ServerSource};

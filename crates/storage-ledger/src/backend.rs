@@ -46,9 +46,10 @@ fn common_prefix(a: &str, b: &str) -> String {
 /// # Example
 ///
 /// ```no_run
-/// use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
+/// use inferadb_common_storage_ledger::{
+///     ClientConfig, LedgerBackend, LedgerBackendConfig, ServerSource,
+/// };
 /// use inferadb_common_storage::StorageBackend;
-/// use inferadb_ledger_sdk::{ClientConfig, ServerSource};
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -112,8 +113,9 @@ impl LedgerBackend {
     /// # Example
     ///
     /// ```no_run
-    /// use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
-    /// use inferadb_ledger_sdk::{ClientConfig, ServerSource};
+    /// use inferadb_common_storage_ledger::{
+    ///     ClientConfig, LedgerBackend, LedgerBackendConfig, ServerSource,
+    /// };
     ///
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// let client = ClientConfig::builder()

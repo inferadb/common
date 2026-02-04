@@ -23,8 +23,7 @@ use inferadb_ledger_sdk::{ClientConfig, ReadConsistency};
 /// # Example
 ///
 /// ```no_run
-/// use inferadb_common_storage_ledger::LedgerBackendConfig;
-/// use inferadb_ledger_sdk::{ClientConfig, ServerSource};
+/// use inferadb_common_storage_ledger::{ClientConfig, LedgerBackendConfig, ServerSource};
 ///
 /// let client = ClientConfig::builder()
 ///     .servers(ServerSource::from_static(["http://localhost:50051"]))
