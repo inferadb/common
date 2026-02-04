@@ -93,7 +93,6 @@ pub mod auth;
 pub use backend::LedgerBackend;
 pub use config::LedgerBackendConfig;
 pub use error::{LedgerStorageError, Result};
-pub use transaction::LedgerTransaction;
-
 // Re-export SDK types needed to build LedgerBackendConfig
 pub use inferadb_ledger_sdk::{ClientConfig, ReadConsistency, ServerSource};
+pub use transaction::LedgerTransaction;
