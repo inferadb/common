@@ -1508,7 +1508,7 @@ dependencies = [
  "base64",
  "chrono",
  "ed25519-dalek",
- "inferadb-common-storage 0.1.0-dev.20260204.34+fb329f0",
+ "inferadb-common-storage 0.1.0-dev.20260204.35+bfbe61d",
  "jsonwebtoken",
  "moka",
  "rand_core 0.6.4",
@@ -1521,9 +1521,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-common-storage"
-version = "0.1.0-dev.20260204.34+fb329f0"
+version = "0.1.0-dev.20260204.35+bfbe61d"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4aca1ab211bc68decc624509658c393e435dd8f8658d16519f5410608d109716"
+checksum = "7a197a4a49d50132b9875259b79658f6d5c3b4508b2064fd95fcd7dd61e116f9"
 dependencies = [
  "async-trait",
  "bon",
@@ -1562,7 +1562,7 @@ dependencies = [
  "bytes",
  "chrono",
  "hex",
- "inferadb-common-storage 0.1.0-dev.20260204.34+fb329f0",
+ "inferadb-common-storage 0.1.0-dev.20260204.35+bfbe61d",
  "inferadb-ledger-sdk",
  "serde",
  "serde_json",
@@ -1575,9 +1575,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-raft"
-version = "0.1.0-dev.20260203.39"
+version = "0.1.0-dev.20260205.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1764e5f37576d3fd81a46fe21eca629d3aa7426f6a6635fa0b613e6d4cd1615"
+checksum = "6931d0b3afd7c783e92518b5c7006fd9971ca3b09feaa0e2ce273a0341922065"
 dependencies = [
  "base64",
  "bon",
@@ -1619,9 +1619,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-sdk"
-version = "0.1.0-dev.20260203.39"
+version = "0.1.0-dev.20260205.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6977576fa89b17692f3f5b43173efa3b1f8b9e0f29f71f3afdc49708b6734060"
+checksum = "438393afb2bb9b5caa3acf416d7999da139487b84c10955d548d623e01325cbc"
 dependencies = [
  "backon",
  "bon",
@@ -1651,9 +1651,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-state"
-version = "0.1.0-dev.20260203.39"
+version = "0.1.0-dev.20260205.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4b564984a9c46c9a27aa99b99518920431a7eca4f9107d6eaeb4c94d2e3d19a"
+checksum = "2f14b6eab5351fe3591f9a0ae80fa1586bdf5726de028804b40bcd1699284c03"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1678,9 +1678,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-store"
-version = "0.1.0-dev.20260203.39"
+version = "0.1.0-dev.20260205.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb4d6d7f56d7f155b74c00961a06fef54a7d5f25094e4f981a63523c0a10af5c"
+checksum = "c4f5b2ae9ff5a8539385bdc212ca749110c099181ca8fd3202dc410343fac8f4"
 dependencies = [
  "arc-swap",
  "bon",
@@ -1693,9 +1693,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-types"
-version = "0.1.0-dev.20260203.39"
+version = "0.1.0-dev.20260205.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b7df71d4d4639c02f215764a76dd8275622a0f79e58bb3e6e20b5f06fa0eaea"
+checksum = "719e1d679d773b981dbadc332df71a0de93c2d36d0a142fb029c35d42b5aead3"
 dependencies = [
  "bon",
  "chrono",
