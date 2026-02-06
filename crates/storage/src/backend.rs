@@ -44,6 +44,7 @@ use crate::{error::StorageResult, transaction::Transaction, types::KeyValue};
 /// |--------|-------------|
 /// | [`get`](StorageBackend::get) | Retrieve a single value by key |
 /// | [`set`](StorageBackend::set) | Store a key-value pair |
+/// | [`compare_and_set`](StorageBackend::compare_and_set) | Atomic compare-and-swap |
 /// | [`delete`](StorageBackend::delete) | Remove a key |
 /// | [`get_range`](StorageBackend::get_range) | Retrieve multiple keys in a range |
 /// | [`clear_range`](StorageBackend::clear_range) | Delete multiple keys in a range |
@@ -89,6 +90,48 @@ pub trait StorageBackend: Send + Sync {
     /// * `key` - The key to store
     /// * `value` - The value to associate with the key
     async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()>;
+
+    /// Atomically compares the current value and sets a new value if they match.
+    ///
+    /// This is a compare-and-swap (CAS) operation that enables atomic
+    /// read-modify-write patterns. The operation succeeds only if the current
+    /// value matches `expected`.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to update
+    /// * `expected` - The expected current value. Use `None` to require the key doesn't exist.
+    /// * `new_value` - The new value to set if the comparison succeeds
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(true)` if the swap succeeded (current value matched expected)
+    /// - `Ok(false)` if the swap failed (current value didn't match expected)
+    /// - `Err(...)` on storage errors
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Atomic increment pattern with retry
+    /// loop {
+    ///     let current = backend.get(b"counter").await?;
+    ///     let new_value = match &current {
+    ///         Some(bytes) => u64::from_le_bytes(bytes[..].try_into()?) + 1,
+    ///         None => 1,
+    ///     };
+    ///     let expected = current.map(|b| b.to_vec());
+    ///     if backend.compare_and_set(b"counter".to_vec(), expected, new_value.to_le_bytes().to_vec()).await? {
+    ///         break; // Success
+    ///     }
+    ///     // Retry if another writer modified the value
+    /// }
+    /// ```
+    async fn compare_and_set(
+        &self,
+        key: Vec<u8>,
+        expected: Option<Vec<u8>>,
+        new_value: Vec<u8>,
+    ) -> StorageResult<bool>;
 
     /// Deletes a key.
     ///

@@ -95,6 +95,34 @@ pub trait Transaction: Send {
     /// * `key` - The key to delete
     fn delete(&mut self, key: Vec<u8>);
 
+    /// Buffers a compare-and-set operation within the transaction.
+    ///
+    /// This is a conditional set that will only succeed if the current value
+    /// of the key matches the expected value at commit time. If the condition
+    /// fails, the entire transaction commit will fail.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to update
+    /// * `expected` - The expected current value. Use `None` to require the key doesn't exist.
+    /// * `new_value` - The new value to set if the comparison succeeds
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(())` if the operation was buffered successfully
+    /// - `Err(...)` if the operation could not be buffered
+    ///
+    /// # Note
+    ///
+    /// The condition is checked at commit time, not when this method is called.
+    /// If the condition fails at commit time, the entire transaction fails.
+    fn compare_and_set(
+        &mut self,
+        key: Vec<u8>,
+        expected: Option<Vec<u8>>,
+        new_value: Vec<u8>,
+    ) -> StorageResult<()>;
+
     /// Commits all buffered operations atomically.
     ///
     /// This method applies all pending sets and deletes to the underlying

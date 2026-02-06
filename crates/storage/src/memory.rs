@@ -177,6 +177,41 @@ impl StorageBackend for MemoryBackend {
         Ok(())
     }
 
+    async fn compare_and_set(
+        &self,
+        key: Vec<u8>,
+        expected: Option<Vec<u8>>,
+        new_value: Vec<u8>,
+    ) -> StorageResult<bool> {
+        let mut data = self.data.write();
+
+        // Check if key is expired (treat as non-existent)
+        let current_value = if self.is_expired(&key) { None } else { data.get(&key).cloned() };
+
+        let matches = match (&expected, &current_value) {
+            // Both None: key doesn't exist and we expected it not to exist
+            (None, None) => true,
+            // Expected value matches current value
+            (Some(expected_bytes), Some(current_bytes)) => expected_bytes.as_slice() == &current_bytes[..],
+            // Mismatch: one is Some and other is None
+            _ => false,
+        };
+
+        if matches {
+            data.insert(key.clone(), Bytes::from(new_value));
+
+            // Clear any TTL on the key
+            {
+                let mut ttl_guard = self.ttl_data.write();
+                ttl_guard.remove(&key);
+            }
+
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {
         let mut data = self.data.write();
         data.remove(key);
@@ -262,6 +297,14 @@ impl StorageBackend for MemoryBackend {
     }
 }
 
+/// A compare-and-set operation to be verified at commit time.
+#[derive(Debug, Clone)]
+struct CasOperation {
+    key: Vec<u8>,
+    expected: Option<Vec<u8>>,
+    new_value: Vec<u8>,
+}
+
 /// In-memory transaction implementation.
 ///
 /// Buffers writes and deletes until commit, providing read-your-writes
@@ -269,11 +312,12 @@ impl StorageBackend for MemoryBackend {
 struct MemoryTransaction {
     backend: MemoryBackend,
     pending_writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+    pending_cas: Vec<CasOperation>,
 }
 
 impl MemoryTransaction {
     fn new(backend: MemoryBackend) -> Self {
-        Self { backend, pending_writes: BTreeMap::new() }
+        Self { backend, pending_writes: BTreeMap::new(), pending_cas: Vec::new() }
     }
 }
 
@@ -297,8 +341,51 @@ impl Transaction for MemoryTransaction {
         self.pending_writes.insert(key, None);
     }
 
+    fn compare_and_set(
+        &mut self,
+        key: Vec<u8>,
+        expected: Option<Vec<u8>>,
+        new_value: Vec<u8>,
+    ) -> StorageResult<()> {
+        // Buffer the CAS operation - it will be verified at commit time
+        self.pending_cas.push(CasOperation { key, expected, new_value });
+        Ok(())
+    }
+
     async fn commit(self: Box<Self>) -> StorageResult<()> {
         let mut data = self.backend.data.write();
+
+        // First, verify all CAS conditions hold
+        for cas in &self.pending_cas {
+            let current_value = if self.backend.is_expired(&cas.key) {
+                None
+            } else {
+                data.get(&cas.key).cloned()
+            };
+
+            let matches = match (&cas.expected, &current_value) {
+                // Both None: key doesn't exist and we expected it not to exist
+                (None, None) => true,
+                // Expected value matches current value
+                (Some(expected_bytes), Some(current_bytes)) => {
+                    expected_bytes.as_slice() == &current_bytes[..]
+                },
+                // Mismatch: one is Some and other is None
+                _ => false,
+            };
+
+            if !matches {
+                return Err(crate::StorageError::Conflict);
+            }
+        }
+
+        // Apply all CAS writes
+        for cas in self.pending_cas {
+            data.insert(cas.key.clone(), Bytes::from(cas.new_value));
+            // Clear any TTL on the key
+            let mut ttl_guard = self.backend.ttl_data.write();
+            ttl_guard.remove(&cas.key);
+        }
 
         // Apply all pending writes atomically
         for (key, value) in self.pending_writes {

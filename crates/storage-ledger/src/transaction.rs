@@ -12,9 +12,20 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use inferadb_common_storage::{StorageError, StorageResult, Transaction};
-use inferadb_ledger_sdk::{LedgerClient, Operation, ReadConsistency};
+use inferadb_ledger_sdk::{LedgerClient, Operation, ReadConsistency, SetCondition};
 
 use crate::error::LedgerStorageError;
+
+/// A compare-and-set operation to be verified at commit time.
+#[derive(Debug, Clone)]
+struct CasOperation {
+    /// Hex-encoded key.
+    key: String,
+    /// Expected current value (None means key should not exist).
+    expected: Option<Vec<u8>>,
+    /// New value to set if condition is met.
+    new_value: Vec<u8>,
+}
 
 /// Transaction for atomic operations on Ledger.
 ///
@@ -78,6 +89,9 @@ pub struct LedgerTransaction {
 
     /// Pending delete operations: hex-encoded keys.
     pending_deletes: HashSet<String>,
+
+    /// Pending compare-and-set operations.
+    pending_cas: Vec<CasOperation>,
 }
 
 impl std::fmt::Debug for LedgerTransaction {
@@ -87,6 +101,7 @@ impl std::fmt::Debug for LedgerTransaction {
             .field("vault_id", &self.vault_id)
             .field("pending_sets", &self.pending_sets.len())
             .field("pending_deletes", &self.pending_deletes.len())
+            .field("pending_cas", &self.pending_cas.len())
             .finish()
     }
 }
@@ -106,6 +121,7 @@ impl LedgerTransaction {
             read_consistency,
             pending_sets: HashMap::new(),
             pending_deletes: HashSet::new(),
+            pending_cas: Vec::new(),
         }
     }
 
@@ -167,17 +183,43 @@ impl Transaction for LedgerTransaction {
         self.pending_deletes.insert(encoded_key);
     }
 
+    fn compare_and_set(
+        &mut self,
+        key: Vec<u8>,
+        expected: Option<Vec<u8>>,
+        new_value: Vec<u8>,
+    ) -> StorageResult<()> {
+        let encoded_key = encode_key(&key);
+
+        // Buffer the CAS operation - it will be applied at commit time
+        self.pending_cas.push(CasOperation { key: encoded_key, expected, new_value });
+        Ok(())
+    }
+
     async fn commit(self: Box<Self>) -> StorageResult<()> {
         // If there are no pending operations, this is a no-op
-        if self.pending_sets.is_empty() && self.pending_deletes.is_empty() {
+        if self.pending_sets.is_empty()
+            && self.pending_deletes.is_empty()
+            && self.pending_cas.is_empty()
+        {
             return Ok(());
         }
 
         // Build the list of operations
-        let mut operations =
-            Vec::with_capacity(self.pending_sets.len() + self.pending_deletes.len());
+        let mut operations = Vec::with_capacity(
+            self.pending_sets.len() + self.pending_deletes.len() + self.pending_cas.len(),
+        );
 
-        // Add set operations
+        // Add CAS operations first (they typically have ordering requirements)
+        for cas in self.pending_cas {
+            let condition = match cas.expected {
+                None => SetCondition::NotExists,
+                Some(expected_value) => SetCondition::ValueEquals(expected_value),
+            };
+            operations.push(Operation::set_entity_if(cas.key, cas.new_value, condition));
+        }
+
+        // Add regular set operations
         for (key, value) in self.pending_sets {
             operations.push(Operation::set_entity(key, value));
         }
@@ -188,12 +230,18 @@ impl Transaction for LedgerTransaction {
         }
 
         // Submit all operations atomically
-        self.client
-            .write(self.namespace_id, self.vault_id, operations)
-            .await
-            .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
+        // If any CAS condition fails, the whole transaction fails
+        use inferadb_ledger_sdk::SdkError;
+        use tonic::Code;
 
-        Ok(())
+        match self.client.write(self.namespace_id, self.vault_id, operations).await {
+            Ok(_) => Ok(()),
+            Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
+                // CAS condition failed
+                Err(StorageError::Conflict)
+            },
+            Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
+        }
     }
 }
 

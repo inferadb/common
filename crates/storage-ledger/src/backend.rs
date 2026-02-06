@@ -12,7 +12,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use inferadb_common_storage::{KeyValue, StorageBackend, StorageError, StorageResult, Transaction};
-use inferadb_ledger_sdk::{LedgerClient, ListEntitiesOpts, Operation, ReadConsistency};
+use inferadb_ledger_sdk::{LedgerClient, ListEntitiesOpts, Operation, ReadConsistency, SetCondition};
 
 use crate::{
     config::LedgerBackendConfig,
@@ -238,6 +238,37 @@ impl StorageBackend for LedgerBackend {
             .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
         Ok(())
+    }
+
+    async fn compare_and_set(
+        &self,
+        key: Vec<u8>,
+        expected: Option<Vec<u8>>,
+        new_value: Vec<u8>,
+    ) -> StorageResult<bool> {
+        use inferadb_ledger_sdk::SdkError;
+        use tonic::Code;
+
+        let encoded_key = Self::encode_key(&key);
+
+        // Determine the condition based on the expected value
+        let condition = match expected {
+            // If expected is None, we require the key doesn't exist
+            None => SetCondition::NotExists,
+            // If expected is Some, we require the current value matches
+            Some(expected_value) => SetCondition::ValueEquals(expected_value),
+        };
+
+        let operation = Operation::set_entity_if(encoded_key, new_value, condition);
+
+        match self.client.write(self.namespace_id, self.vault_id, vec![operation]).await {
+            Ok(_) => Ok(true),
+            Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
+                // Condition failure: the current value didn't match expected
+                Ok(false)
+            },
+            Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
+        }
     }
 
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {
