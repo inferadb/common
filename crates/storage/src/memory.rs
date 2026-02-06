@@ -177,41 +177,6 @@ impl StorageBackend for MemoryBackend {
         Ok(())
     }
 
-    async fn compare_and_set(
-        &self,
-        key: Vec<u8>,
-        expected: Option<Vec<u8>>,
-        new_value: Vec<u8>,
-    ) -> StorageResult<bool> {
-        let mut data = self.data.write();
-
-        // Check if key is expired (treat as non-existent)
-        let current_value = if self.is_expired(&key) { None } else { data.get(&key).cloned() };
-
-        let matches = match (&expected, &current_value) {
-            // Both None: key doesn't exist and we expected it not to exist
-            (None, None) => true,
-            // Expected value matches current value
-            (Some(expected_bytes), Some(current_bytes)) => expected_bytes.as_slice() == &current_bytes[..],
-            // Mismatch: one is Some and other is None
-            _ => false,
-        };
-
-        if matches {
-            data.insert(key.clone(), Bytes::from(new_value));
-
-            // Clear any TTL on the key
-            {
-                let mut ttl_guard = self.ttl_data.write();
-                ttl_guard.remove(&key);
-            }
-
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {
         let mut data = self.data.write();
         data.remove(key);
