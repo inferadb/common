@@ -344,11 +344,12 @@ impl Transaction for MemoryTransaction {
             }
         }
 
+        // Acquire TTL lock once for all writes
+        let mut ttl_guard = self.backend.ttl_data.write();
+
         // Apply all CAS writes
         for cas in self.pending_cas {
             data.insert(cas.key.clone(), Bytes::from(cas.new_value));
-            // Clear any TTL on the key
-            let mut ttl_guard = self.backend.ttl_data.write();
             ttl_guard.remove(&cas.key);
         }
 
@@ -356,10 +357,12 @@ impl Transaction for MemoryTransaction {
         for (key, value) in self.pending_writes {
             match value {
                 Some(v) => {
-                    data.insert(key, Bytes::from(v));
+                    data.insert(key.clone(), Bytes::from(v));
+                    ttl_guard.remove(&key);
                 },
                 None => {
                     data.remove(&key);
+                    ttl_guard.remove(&key);
                 },
             }
         }
