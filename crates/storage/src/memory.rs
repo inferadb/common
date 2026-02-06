@@ -322,11 +322,8 @@ impl Transaction for MemoryTransaction {
 
         // First, verify all CAS conditions hold
         for cas in &self.pending_cas {
-            let current_value = if self.backend.is_expired(&cas.key) {
-                None
-            } else {
-                data.get(&cas.key).cloned()
-            };
+            let current_value =
+                if self.backend.is_expired(&cas.key) { None } else { data.get(&cas.key).cloned() };
 
             let matches = match (&cas.expected, &current_value) {
                 // Both None: key doesn't exist and we expected it not to exist
