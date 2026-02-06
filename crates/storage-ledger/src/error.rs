@@ -120,11 +120,6 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
             )
         },
 
-        SdkError::SequenceGap { expected, server_has } => StorageError::internal_with_source(
-            format!("Sequence gap: expected {expected}, server has {server_has}"),
-            err,
-        ),
-
         SdkError::Idempotency { message } => {
             StorageError::internal_with_source(format!("Idempotency error: {message}"), err)
         },
@@ -267,15 +262,6 @@ mod tests {
     #[test]
     fn test_already_committed_error_mapping() {
         let sdk_err = SdkError::AlreadyCommitted { tx_id: "tx-123".into(), block_height: 42 };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
-
-        assert!(matches!(storage_err, StorageError::Internal { .. }));
-        assert!(storage_err.source().is_some());
-    }
-
-    #[test]
-    fn test_sequence_gap_error_mapping() {
-        let sdk_err = SdkError::SequenceGap { expected: 5, server_has: 3 };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
