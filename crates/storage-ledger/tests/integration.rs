@@ -8,7 +8,7 @@
 use std::ops::Bound;
 
 use bytes::Bytes;
-use inferadb_common_storage::StorageBackend;
+use inferadb_common_storage::{StorageBackend, StorageError};
 use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
 use inferadb_ledger_sdk::{ClientConfig, ServerSource, mock::MockLedgerServer};
 
@@ -142,11 +142,12 @@ async fn test_empty_key() {
     let server = MockLedgerServer::start().await.expect("mock server start");
     let backend = create_test_backend(&server).await;
 
-    // Empty key should work
-    backend.set(vec![], b"empty key value".to_vec()).await.expect("set should succeed");
-    let result = backend.get(&[]).await.expect("get should succeed");
-
-    assert_eq!(result, Some(Bytes::from("empty key value")));
+    // SDK now validates keys must not be empty
+    let result = backend.set(vec![], b"empty key value".to_vec()).await;
+    assert!(
+        matches!(result, Err(StorageError::Serialization { .. })),
+        "empty key should be rejected with Serialization error, got: {result:?}"
+    );
 }
 
 #[tokio::test]

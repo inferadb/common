@@ -79,7 +79,7 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
         },
 
         // RPC errors - map based on gRPC status code
-        SdkError::Rpc { code, message } => match code {
+        SdkError::Rpc { code, message, .. } => match code {
             Code::NotFound => StorageError::not_found(message.clone()),
             Code::AlreadyExists => StorageError::conflict(),
             Code::Aborted | Code::FailedPrecondition => StorageError::conflict(),
@@ -99,7 +99,7 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
         },
 
         // Retry exhausted - preserve the full context
-        SdkError::RetryExhausted { attempts, last_error } => {
+        SdkError::RetryExhausted { attempts, last_error, .. } => {
             tracing::error!(attempts = attempts, "Retry exhausted: {}", last_error);
             StorageError::connection_with_source(
                 format!("Retry exhausted after {attempts} attempts: {last_error}"),
@@ -120,7 +120,7 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
             )
         },
 
-        SdkError::Idempotency { message } => {
+        SdkError::Idempotency { message, .. } => {
             StorageError::internal_with_source(format!("Idempotency error: {message}"), err)
         },
 
@@ -139,6 +139,29 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
         SdkError::ProofVerification { reason } => {
             tracing::error!("Proof verification failed: {}", reason);
             StorageError::internal_with_source(format!("Proof verification failed: {reason}"), err)
+        },
+
+        // Rate limiting - connection-level retry
+        SdkError::RateLimited { retry_after, .. } => {
+            tracing::warn!(
+                retry_after_ms = retry_after.as_millis() as u64,
+                "Rate limited by Ledger"
+            );
+            StorageError::connection_with_source("Rate limited", err)
+        },
+
+        // Request cancelled by caller
+        SdkError::Cancelled => StorageError::internal_with_source("Request cancelled", err),
+
+        // Client-side validation error
+        SdkError::Validation { message } => {
+            StorageError::serialization_with_source(message.clone(), err)
+        },
+
+        // Circuit breaker open
+        SdkError::CircuitOpen { endpoint, .. } => {
+            tracing::warn!(endpoint = %endpoint, "Circuit breaker open");
+            StorageError::connection_with_source(format!("Circuit open for {endpoint}"), err)
         },
     }
 }
@@ -175,7 +198,12 @@ mod tests {
 
     #[test]
     fn test_not_found_rpc_mapping() {
-        let sdk_err = SdkError::Rpc { code: Code::NotFound, message: "key not found".into() };
+        let sdk_err = SdkError::Rpc {
+            code: Code::NotFound,
+            message: "key not found".into(),
+            request_id: None,
+            trace_id: None,
+        };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::NotFound { .. }));
@@ -183,7 +211,12 @@ mod tests {
 
     #[test]
     fn test_conflict_rpc_mapping() {
-        let sdk_err = SdkError::Rpc { code: Code::Aborted, message: "transaction conflict".into() };
+        let sdk_err = SdkError::Rpc {
+            code: Code::Aborted,
+            message: "transaction conflict".into(),
+            request_id: None,
+            trace_id: None,
+        };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Conflict));
@@ -191,7 +224,12 @@ mod tests {
 
     #[test]
     fn test_already_exists_rpc_mapping() {
-        let sdk_err = SdkError::Rpc { code: Code::AlreadyExists, message: "key exists".into() };
+        let sdk_err = SdkError::Rpc {
+            code: Code::AlreadyExists,
+            message: "key exists".into(),
+            request_id: None,
+            trace_id: None,
+        };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Conflict));
@@ -199,8 +237,12 @@ mod tests {
 
     #[test]
     fn test_invalid_argument_rpc_mapping() {
-        let sdk_err =
-            SdkError::Rpc { code: Code::InvalidArgument, message: "invalid key format".into() };
+        let sdk_err = SdkError::Rpc {
+            code: Code::InvalidArgument,
+            message: "invalid key format".into(),
+            request_id: None,
+            trace_id: None,
+        };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Serialization { .. }));
@@ -252,7 +294,11 @@ mod tests {
 
     #[test]
     fn test_retry_exhausted_error_mapping() {
-        let sdk_err = SdkError::RetryExhausted { attempts: 3, last_error: "still down".into() };
+        let sdk_err = SdkError::RetryExhausted {
+            attempts: 3,
+            last_error: "still down".into(),
+            attempt_history: vec![],
+        };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Connection { .. }));
@@ -270,7 +316,11 @@ mod tests {
 
     #[test]
     fn test_idempotency_error_mapping() {
-        let sdk_err = SdkError::Idempotency { message: "duplicate request".into() };
+        let sdk_err = SdkError::Idempotency {
+            message: "duplicate request".into(),
+            conflict_key: None,
+            original_tx_id: None,
+        };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
@@ -316,8 +366,12 @@ mod tests {
 
     #[test]
     fn test_failed_precondition_rpc_mapping() {
-        let sdk_err =
-            SdkError::Rpc { code: Code::FailedPrecondition, message: "precondition failed".into() };
+        let sdk_err = SdkError::Rpc {
+            code: Code::FailedPrecondition,
+            message: "precondition failed".into(),
+            request_id: None,
+            trace_id: None,
+        };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Conflict));
@@ -325,7 +379,12 @@ mod tests {
 
     #[test]
     fn test_data_loss_rpc_mapping() {
-        let sdk_err = SdkError::Rpc { code: Code::DataLoss, message: "data corrupted".into() };
+        let sdk_err = SdkError::Rpc {
+            code: Code::DataLoss,
+            message: "data corrupted".into(),
+            request_id: None,
+            trace_id: None,
+        };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
@@ -334,8 +393,12 @@ mod tests {
 
     #[test]
     fn test_permission_denied_rpc_mapping() {
-        let sdk_err =
-            SdkError::Rpc { code: Code::PermissionDenied, message: "access denied".into() };
+        let sdk_err = SdkError::Rpc {
+            code: Code::PermissionDenied,
+            message: "access denied".into(),
+            request_id: None,
+            trace_id: None,
+        };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
@@ -344,7 +407,12 @@ mod tests {
 
     #[test]
     fn test_unauthenticated_rpc_mapping() {
-        let sdk_err = SdkError::Rpc { code: Code::Unauthenticated, message: "not authed".into() };
+        let sdk_err = SdkError::Rpc {
+            code: Code::Unauthenticated,
+            message: "not authed".into(),
+            request_id: None,
+            trace_id: None,
+        };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
@@ -353,7 +421,12 @@ mod tests {
 
     #[test]
     fn test_unknown_rpc_code_mapping() {
-        let sdk_err = SdkError::Rpc { code: Code::Unknown, message: "unknown error".into() };
+        let sdk_err = SdkError::Rpc {
+            code: Code::Unknown,
+            message: "unknown error".into(),
+            request_id: None,
+            trace_id: None,
+        };
         let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
