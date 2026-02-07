@@ -25,7 +25,12 @@ tracing.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
 proptest.workspace = true
 rand.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
+
+[[bench]]
+name = "storage_benchmarks"
+harness = false
