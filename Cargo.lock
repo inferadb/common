@@ -1487,12 +1487,29 @@ dependencies = [
  "base64",
  "chrono",
  "ed25519-dalek",
- "inferadb-common-storage",
+ "inferadb-common-storage 0.1.0-dev.20260207.38+aa7ca09",
  "jsonwebtoken",
  "moka",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "inferadb-common-storage"
+version = "0.1.0-dev.20260207.38+aa7ca09"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bfa2a9c32f4fba367ee7af723453fc189ba2063264a8cdcec5602086d211f03c"
+dependencies = [
+ "async-trait",
+ "bon",
+ "bytes",
+ "chrono",
+ "parking_lot",
+ "serde",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1524,7 +1541,7 @@ dependencies = [
  "bytes",
  "chrono",
  "hex",
- "inferadb-common-storage",
+ "inferadb-common-storage 0.1.0-dev.20260207.38+aa7ca09",
  "inferadb-ledger-sdk",
  "serde",
  "serde_json",
