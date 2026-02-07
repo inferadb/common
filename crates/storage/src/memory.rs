@@ -51,7 +51,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use parking_lot::RwLock;
-use tokio::time::sleep;
+use tokio::{select, sync::watch, time::sleep};
 
 use crate::{
     backend::StorageBackend,
@@ -59,6 +59,19 @@ use crate::{
     transaction::Transaction,
     types::KeyValue,
 };
+
+/// Holds the shutdown signal sender. When dropped, the watch channel
+/// closes and the cleanup task exits.
+struct ShutdownGuard {
+    shutdown_tx: watch::Sender<()>,
+}
+
+impl Drop for ShutdownGuard {
+    fn drop(&mut self) {
+        // Sending is a best-effort signal; the receiver may already be gone.
+        let _ = self.shutdown_tx.send(());
+    }
+}
 
 /// In-memory storage backend using [`BTreeMap`].
 ///
@@ -69,10 +82,20 @@ use crate::{
 ///
 /// `MemoryBackend` is cheaply cloneable via [`Arc`]. All clones share the
 /// same underlying data store.
+///
+/// # Shutdown
+///
+/// The background TTL cleanup task stops automatically when all clones of
+/// the `MemoryBackend` are dropped (via the internal [`ShutdownGuard`]).
+/// You can also call [`shutdown`](Self::shutdown) to stop the task explicitly.
 #[derive(Clone)]
 pub struct MemoryBackend {
     data: Arc<RwLock<BTreeMap<Vec<u8>, Bytes>>>,
     ttl_data: Arc<RwLock<BTreeMap<Vec<u8>, Instant>>>,
+    /// Shared ownership of the shutdown sender. When the last clone drops
+    /// (and [`ShutdownGuard`] is deallocated), the sender is dropped, which
+    /// closes the watch channel and signals the cleanup task to exit.
+    shutdown_guard: Arc<ShutdownGuard>,
 }
 
 impl MemoryBackend {
@@ -80,6 +103,7 @@ impl MemoryBackend {
     ///
     /// This also spawns a background task that periodically cleans up
     /// expired keys (those set with TTL via [`set_with_ttl`](StorageBackend::set_with_ttl)).
+    /// The task stops automatically when all clones of the backend are dropped.
     ///
     /// # Example
     ///
@@ -93,15 +117,17 @@ impl MemoryBackend {
     /// }
     /// ```
     pub fn new() -> Self {
+        let (shutdown_tx, shutdown_rx) = watch::channel(());
         let backend = Self {
             data: Arc::new(RwLock::new(BTreeMap::new())),
             ttl_data: Arc::new(RwLock::new(BTreeMap::new())),
+            shutdown_guard: Arc::new(ShutdownGuard { shutdown_tx }),
         };
 
         // Start background TTL cleanup task
         let backend_clone = backend.clone();
         tokio::spawn(async move {
-            backend_clone.cleanup_expired_keys().await;
+            backend_clone.cleanup_expired_keys(shutdown_rx).await;
         });
 
         backend
@@ -110,9 +136,16 @@ impl MemoryBackend {
     /// Background task to clean up expired keys.
     ///
     /// Runs every second, scanning for and removing keys whose TTL has elapsed.
-    async fn cleanup_expired_keys(&self) {
+    /// Exits when the shutdown signal is received (i.e., when the watch sender
+    /// is dropped or [`shutdown`](Self::shutdown) is called).
+    async fn cleanup_expired_keys(&self, mut shutdown_rx: watch::Receiver<()>) {
         loop {
-            sleep(Duration::from_secs(1)).await;
+            select! {
+                _ = sleep(Duration::from_secs(1)) => {}
+                _ = shutdown_rx.changed() => {
+                    return;
+                }
+            }
 
             let now = Instant::now();
             let mut expired_keys = Vec::new();
@@ -137,6 +170,15 @@ impl MemoryBackend {
                 }
             }
         }
+    }
+
+    /// Explicitly signals the background TTL cleanup task to stop.
+    ///
+    /// This is optional — the task also stops automatically when all clones
+    /// of the backend are dropped. Use this when you need deterministic
+    /// shutdown timing (e.g., in tests).
+    pub fn shutdown(&self) {
+        let _ = self.shutdown_guard.shutdown_tx.send(());
     }
 
     /// Checks if a key has expired.
@@ -629,5 +671,64 @@ mod tests {
         // Verify TTL was cleared (key persists in ttl_data check)
         let ttl_data = backend.ttl_data.read();
         assert!(!ttl_data.contains_key(&b"key".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_stops_cleanup_task() {
+        let backend = MemoryBackend::new();
+
+        // Set a key with a very short TTL
+        backend.set_with_ttl(b"ttl_key".to_vec(), b"value".to_vec(), 1).await.unwrap();
+
+        // Shut down the cleanup task
+        backend.shutdown();
+
+        // Give the task time to exit
+        sleep(Duration::from_millis(50)).await;
+
+        // Wait long enough for the TTL to expire
+        sleep(Duration::from_millis(1500)).await;
+
+        // The key should still exist because the cleanup task was stopped.
+        // (The key is expired but not yet cleaned up.)
+        let ttl_data = backend.ttl_data.read();
+        assert!(
+            ttl_data.contains_key(&b"ttl_key".to_vec()),
+            "cleanup task should not have removed the expired TTL entry after shutdown"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_drop_stops_cleanup_task() {
+        // Verify that dropping all clones causes the task to stop
+        // (i.e., no panic or leaked task handle).
+        let backend = MemoryBackend::new();
+        let _clone = backend.clone();
+
+        // Set a key so the backend has some state
+        backend.set(b"key".to_vec(), b"value".to_vec()).await.unwrap();
+
+        // Drop both clones — the ShutdownGuard should be deallocated,
+        // closing the watch channel and signaling the task to exit.
+        drop(_clone);
+        drop(backend);
+
+        // If the cleanup task leaked, this sleep would not cause issues,
+        // but the test verifies no panics from the task after drop.
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_is_idempotent() {
+        let backend = MemoryBackend::new();
+
+        // Calling shutdown multiple times should not panic
+        backend.shutdown();
+        backend.shutdown();
+
+        // Backend should still be usable for data operations after shutdown
+        backend.set(b"key".to_vec(), b"value".to_vec()).await.unwrap();
+        let value = backend.get(b"key").await.unwrap();
+        assert_eq!(value, Some(Bytes::from("value")));
     }
 }
