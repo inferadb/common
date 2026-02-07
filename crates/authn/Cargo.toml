@@ -18,7 +18,7 @@ workspace = true
 
 [dependencies]
 # Internal
-inferadb-common-storage = ">=0.1.0-0"
+inferadb-common-storage = { path = "../storage", version = ">=0.1.0-0" }
 
 # External
 async-trait.workspace = true

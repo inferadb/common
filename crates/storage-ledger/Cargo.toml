@@ -17,7 +17,7 @@ testutil = ["inferadb-common-storage/testutil"]
 workspace = true
 
 [dependencies]
-inferadb-common-storage = ">=0.1.0-0"
+inferadb-common-storage = { path = "../storage", version = ">=0.1.0-0" }
 inferadb-ledger-sdk.workspace = true
 
 async-trait.workspace = true
