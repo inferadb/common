@@ -107,7 +107,7 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`StorageError::Conflict`] when the current value does not match
+    /// Returns [`crate::error::StorageError::Conflict`] when the current value does not match
     /// `expected`.
     async fn compare_and_set(
         &self,

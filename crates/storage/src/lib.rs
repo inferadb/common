@@ -76,7 +76,7 @@
 //!
 //! # Feature Flags
 //!
-//! - **`testutil`**: Enables the [`testutil`] module with shared test helpers (key/value
+//! - **`testutil`**: Enables the `testutil` module with shared test helpers (key/value
 //!   generators, backend factories, assertion macros). Enable this in `[dev-dependencies]` for
 //!   integration tests.
 

@@ -86,7 +86,7 @@ impl Drop for ShutdownGuard {
 /// # Shutdown
 ///
 /// The background TTL cleanup task stops automatically when all clones of
-/// the `MemoryBackend` are dropped (via the internal [`ShutdownGuard`]).
+/// the `MemoryBackend` are dropped (via the internal `ShutdownGuard`).
 /// You can also call [`shutdown`](Self::shutdown) to stop the task explicitly.
 #[derive(Clone)]
 pub struct MemoryBackend {
