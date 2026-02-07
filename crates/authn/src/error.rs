@@ -120,8 +120,17 @@ pub enum AuthError {
     InvalidPublicKey(String),
 
     /// Storage backend error during key lookup.
+    ///
+    /// Wraps the original [`StorageError`] to preserve the full error source
+    /// chain for debugging and structured logging.
+    ///
+    /// [`StorageError`]: inferadb_common_storage::StorageError
     #[error("Key storage error: {0}")]
-    KeyStorageError(String),
+    KeyStorageError(
+        /// The underlying storage error that caused the key lookup to fail.
+        #[source]
+        inferadb_common_storage::StorageError,
+    ),
 }
 
 impl From<jsonwebtoken::errors::Error> for AuthError {
@@ -144,6 +153,12 @@ impl From<jsonwebtoken::errors::Error> for AuthError {
             },
             _ => AuthError::InvalidTokenFormat(format!("JWT error: {}", err)),
         }
+    }
+}
+
+impl From<inferadb_common_storage::StorageError> for AuthError {
+    fn from(err: inferadb_common_storage::StorageError) -> Self {
+        AuthError::KeyStorageError(err)
     }
 }
 
@@ -210,5 +225,62 @@ mod tests {
 
         let err = AuthError::KeyExpired { kid: "key-def".into() };
         assert_eq!(err.to_string(), "Signing key expired: key-def");
+    }
+
+    #[test]
+    fn test_key_storage_error_display() {
+        let storage_err = inferadb_common_storage::StorageError::Connection {
+            message: "connection refused".into(),
+            source: None,
+        };
+        let err = AuthError::KeyStorageError(storage_err);
+        assert_eq!(err.to_string(), "Key storage error: Connection error: connection refused");
+    }
+
+    #[test]
+    fn test_key_storage_error_preserves_source_chain() {
+        use std::error::Error;
+
+        let storage_err = inferadb_common_storage::StorageError::Connection {
+            message: "connection refused".into(),
+            source: None,
+        };
+        let auth_err = AuthError::KeyStorageError(storage_err);
+
+        // The source chain should expose the StorageError
+        let source = auth_err.source();
+        assert!(source.is_some(), "source chain must be preserved");
+
+        let source = source.expect("source exists");
+        assert_eq!(source.to_string(), "Connection error: connection refused");
+    }
+
+    #[test]
+    fn test_key_storage_error_from_conversion() {
+        let storage_err = inferadb_common_storage::StorageError::Timeout;
+        let auth_err: AuthError = storage_err.into();
+        assert!(matches!(auth_err, AuthError::KeyStorageError(_)));
+        assert_eq!(auth_err.to_string(), "Key storage error: Operation timeout");
+    }
+
+    #[test]
+    fn test_key_storage_error_nested_source_chain() {
+        use std::{error::Error, sync::Arc};
+
+        let inner_err: Arc<dyn std::error::Error + Send + Sync> =
+            Arc::new(inferadb_common_storage::StorageError::Timeout);
+        let storage_err = inferadb_common_storage::StorageError::Connection {
+            message: "connection failed".into(),
+            source: Some(inner_err),
+        };
+        let auth_err = AuthError::KeyStorageError(storage_err);
+
+        // Level 1: AuthError → StorageError
+        let level_1 = auth_err.source().expect("level 1 source");
+        assert_eq!(level_1.to_string(), "Connection error: connection failed");
+
+        // Level 2: StorageError → inner error
+        let level_2 = level_1.source().expect("level 2 source");
+        assert_eq!(level_2.to_string(), "Operation timeout");
     }
 }

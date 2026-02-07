@@ -226,7 +226,7 @@ impl SigningKeyCache {
                 }
 
                 // No fallback available or not a transient error
-                Err(AuthError::KeyStorageError(storage_error.to_string()))
+                Err(AuthError::KeyStorageError(storage_error))
             },
         }
     }
