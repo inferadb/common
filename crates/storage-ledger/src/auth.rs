@@ -32,6 +32,7 @@
 //! use chrono::Utc;
 //! use inferadb_ledger_sdk::LedgerClient;
 //! use inferadb_common_storage::auth::{PublicSigningKey, PublicSigningKeyStore};
+//! use inferadb_common_storage::NamespaceId;
 //! use inferadb_common_storage_ledger::auth::LedgerSigningKeyStore;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -47,10 +48,11 @@
 //!     .build();
 //!
 //! // Store the key in the org's namespace
-//! store.create_key(100, &key).await?;
+//! let ns = NamespaceId::from(100);
+//! store.create_key(ns, &key).await?;
 //!
 //! // Retrieve it later
-//! let retrieved = store.get_key(100, "key-2024-001").await?;
+//! let retrieved = store.get_key(ns, "key-2024-001").await?;
 //! assert!(retrieved.is_some());
 //! # Ok(())
 //! # }
@@ -61,7 +63,7 @@ use std::{sync::Arc, time::Instant};
 use async_trait::async_trait;
 use chrono::Utc;
 use inferadb_common_storage::{
-    StorageError, StorageResult,
+    NamespaceId, StorageError, StorageResult,
     auth::{
         PublicSigningKey, PublicSigningKeyStore, SIGNING_KEY_PREFIX, SigningKeyErrorKind,
         SigningKeyMetrics,
@@ -188,14 +190,13 @@ impl LedgerSigningKeyStore {
     /// Reads a key from Ledger with the configured consistency.
     async fn do_read(
         &self,
-        namespace_id: i64,
+        namespace_id: NamespaceId,
         key: &str,
     ) -> Result<Option<Vec<u8>>, LedgerStorageError> {
+        let ns: i64 = namespace_id.into();
         let result = match self.read_consistency {
-            ReadConsistency::Linearizable => {
-                self.client.read_consistent(namespace_id, None, key).await
-            },
-            ReadConsistency::Eventual => self.client.read(namespace_id, None, key).await,
+            ReadConsistency::Linearizable => self.client.read_consistent(ns, None, key).await,
+            ReadConsistency::Eventual => self.client.read(ns, None, key).await,
         };
 
         result.map_err(LedgerStorageError::from)
@@ -232,7 +233,11 @@ impl LedgerSigningKeyStore {
 
 #[async_trait]
 impl PublicSigningKeyStore for LedgerSigningKeyStore {
-    async fn create_key(&self, namespace_id: i64, key: &PublicSigningKey) -> StorageResult<()> {
+    async fn create_key(
+        &self,
+        namespace_id: NamespaceId,
+        key: &PublicSigningKey,
+    ) -> StorageResult<()> {
         let start = Instant::now();
         let storage_key = Self::storage_key(&key.kid);
 
@@ -247,7 +252,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         let result = self
             .client
             .write(
-                namespace_id,
+                namespace_id.into(),
                 None, // No vault - keys are namespace-level
                 vec![Operation::set_entity(storage_key, value)],
             )
@@ -276,7 +281,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
     async fn get_key(
         &self,
-        namespace_id: i64,
+        namespace_id: NamespaceId,
         kid: &str,
     ) -> StorageResult<Option<PublicSigningKey>> {
         let start = Instant::now();
@@ -299,7 +304,10 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         result
     }
 
-    async fn list_active_keys(&self, namespace_id: i64) -> StorageResult<Vec<PublicSigningKey>> {
+    async fn list_active_keys(
+        &self,
+        namespace_id: NamespaceId,
+    ) -> StorageResult<Vec<PublicSigningKey>> {
         let start = Instant::now();
         let opts = ListEntitiesOpts {
             key_prefix: SIGNING_KEY_PREFIX.to_string(),
@@ -313,7 +321,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
         let result = self
             .client
-            .list_entities(namespace_id, opts)
+            .list_entities(namespace_id.into(), opts)
             .await
             .map_err(|e| StorageError::from(LedgerStorageError::from(e)));
 
@@ -360,7 +368,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         list_result
     }
 
-    async fn deactivate_key(&self, namespace_id: i64, kid: &str) -> StorageResult<()> {
+    async fn deactivate_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
         let start = Instant::now();
         let storage_key = Self::storage_key(kid);
 
@@ -376,7 +384,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
             let value = Self::serialize_key(&key)?;
 
             self.client
-                .write(namespace_id, None, vec![Operation::set_entity(storage_key, value)])
+                .write(namespace_id.into(), None, vec![Operation::set_entity(storage_key, value)])
                 .await
                 .map(|_| ())
                 .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
@@ -396,7 +404,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
     async fn revoke_key(
         &self,
-        namespace_id: i64,
+        namespace_id: NamespaceId,
         kid: &str,
         _reason: Option<&str>,
     ) -> StorageResult<()> {
@@ -420,7 +428,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
             let value = Self::serialize_key(&key)?;
 
             self.client
-                .write(namespace_id, None, vec![Operation::set_entity(storage_key, value)])
+                .write(namespace_id.into(), None, vec![Operation::set_entity(storage_key, value)])
                 .await
                 .map(|_| ())
                 .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
@@ -438,7 +446,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         result
     }
 
-    async fn activate_key(&self, namespace_id: i64, kid: &str) -> StorageResult<()> {
+    async fn activate_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
         let start = Instant::now();
         let storage_key = Self::storage_key(kid);
 
@@ -462,7 +470,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
             let value = Self::serialize_key(&key)?;
 
             self.client
-                .write(namespace_id, None, vec![Operation::set_entity(storage_key, value)])
+                .write(namespace_id.into(), None, vec![Operation::set_entity(storage_key, value)])
                 .await
                 .map(|_| ())
                 .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
@@ -480,7 +488,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         result
     }
 
-    async fn delete_key(&self, namespace_id: i64, kid: &str) -> StorageResult<()> {
+    async fn delete_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
         let start = Instant::now();
         let storage_key = Self::storage_key(kid);
 
@@ -491,7 +499,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
             }
 
             self.client
-                .write(namespace_id, None, vec![Operation::delete_entity(storage_key)])
+                .write(namespace_id.into(), None, vec![Operation::delete_entity(storage_key)])
                 .await
                 .map(|_| ())
                 .map_err(|e| StorageError::from(LedgerStorageError::from(e)))

@@ -318,12 +318,13 @@ pub async fn verify_with_signing_key_cache(
     // 2. Decode claims without verification to extract organization ID
     let claims = decode_jwt_claims(token)?;
     let org_id_str = claims.extract_org_id()?;
-    let org_id: i64 = org_id_str.parse().map_err(|_| {
-        AuthError::InvalidTokenFormat(format!(
-            "org_id '{}' is not a valid Snowflake ID",
-            org_id_str
-        ))
-    })?;
+    let org_id =
+        inferadb_common_storage::NamespaceId::from(org_id_str.parse::<i64>().map_err(|_| {
+            AuthError::InvalidTokenFormat(format!(
+                "org_id '{}' is not a valid Snowflake ID",
+                org_id_str
+            ))
+        })?);
 
     // 3. Get decoding key from signing key cache (fetches from Ledger on cache miss)
     let decoding_key = signing_key_cache.get_decoding_key(org_id, &kid).await.map_err(|e| {
@@ -473,8 +474,9 @@ mod ledger_verification_tests {
     use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use chrono::Utc;
     use ed25519_dalek::SigningKey;
-    use inferadb_common_storage::auth::{
-        MemorySigningKeyStore, PublicSigningKey, PublicSigningKeyStore,
+    use inferadb_common_storage::{
+        CertId, ClientId, NamespaceId,
+        auth::{MemorySigningKeyStore, PublicSigningKey, PublicSigningKeyStore},
     };
     use jsonwebtoken::{Algorithm, EncodingKey, Header};
     use rand_core::OsRng;
@@ -531,7 +533,7 @@ mod ledger_verification_tests {
         // Generate key pair
         let (pkcs8_der, public_key_b64) = generate_test_keypair();
         let kid = "test-key-001";
-        let org_id: i64 = 12345;
+        let org_id = NamespaceId::from(12345);
 
         // Create store and cache
         let store = Arc::new(MemorySigningKeyStore::new());
@@ -541,8 +543,8 @@ mod ledger_verification_tests {
         let public_key = PublicSigningKey {
             kid: kid.to_string(),
             public_key: public_key_b64,
-            client_id: 1,
-            cert_id: 1,
+            client_id: ClientId::from(1),
+            cert_id: CertId::from(1),
             created_at: Utc::now(),
             valid_from: Utc::now() - chrono::Duration::hours(1),
             valid_until: None,
@@ -564,7 +566,7 @@ mod ledger_verification_tests {
         // Generate key pair
         let (pkcs8_der, _) = generate_test_keypair();
         let kid = "nonexistent-key";
-        let org_id: i64 = 12345;
+        let org_id = NamespaceId::from(12345);
 
         // Create store and cache (without registering the key)
         let store = Arc::new(MemorySigningKeyStore::new());
@@ -582,7 +584,7 @@ mod ledger_verification_tests {
         // Generate key pair
         let (pkcs8_der, public_key_b64) = generate_test_keypair();
         let kid = "revoked-key";
-        let org_id: i64 = 12345;
+        let org_id = NamespaceId::from(12345);
 
         // Create store and cache
         let store = Arc::new(MemorySigningKeyStore::new());
@@ -592,8 +594,8 @@ mod ledger_verification_tests {
         let public_key = PublicSigningKey {
             kid: kid.to_string(),
             public_key: public_key_b64,
-            client_id: 1,
-            cert_id: 1,
+            client_id: ClientId::from(1),
+            cert_id: CertId::from(1),
             created_at: Utc::now(),
             valid_from: Utc::now() - chrono::Duration::hours(1),
             valid_until: None,

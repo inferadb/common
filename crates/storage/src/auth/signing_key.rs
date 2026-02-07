@@ -3,6 +3,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::types::{CertId, ClientId};
+
 /// Public signing key stored in Ledger (Ed25519 only).
 ///
 /// This stores the public key material used for JWT signature verification.
@@ -81,13 +83,15 @@ pub struct PublicSigningKey {
     ///
     /// This links the key to the API client that will use it for
     /// authentication.
-    pub client_id: i64,
+    #[builder(into)]
+    pub client_id: ClientId,
 
     /// Certificate ID in Control's database (Snowflake ID).
     ///
     /// This provides a back-reference to the certificate record in
     /// Control for auditing and management purposes.
-    pub cert_id: i64,
+    #[builder(into)]
+    pub cert_id: CertId,
 
     /// When the key was registered in Ledger.
     ///
@@ -145,8 +149,8 @@ mod tests {
             .build();
 
         assert_eq!(key.kid, "test-key");
-        assert_eq!(key.client_id, 1001);
-        assert_eq!(key.cert_id, 42);
+        assert_eq!(key.client_id, ClientId::from(1001));
+        assert_eq!(key.cert_id, CertId::from(42));
         // Defaults
         assert!(key.active); // default true
         assert!(key.valid_until.is_none()); // default None
@@ -212,8 +216,8 @@ mod tests {
 
         assert_eq!(key.kid, "full-key");
         assert_eq!(key.public_key, "MCowBQYDK2VwAyEAfull");
-        assert_eq!(key.client_id, 5555);
-        assert_eq!(key.cert_id, 999);
+        assert_eq!(key.client_id, ClientId::from(5555));
+        assert_eq!(key.cert_id, CertId::from(999));
         assert_eq!(key.created_at, now);
         assert_eq!(key.valid_from, now);
         assert_eq!(key.valid_until, Some(expiry));
@@ -323,8 +327,8 @@ mod tests {
 
         assert_eq!(key.kid, "known-key-123");
         assert_eq!(key.public_key, "dGVzdC1wdWJsaWMta2V5LWJhc2U2NA");
-        assert_eq!(key.client_id, 9999);
-        assert_eq!(key.cert_id, 8888);
+        assert_eq!(key.client_id, ClientId::from(9999));
+        assert_eq!(key.cert_id, CertId::from(8888));
         assert!(key.active);
         assert!(key.valid_until.is_some());
         assert!(key.revoked_at.is_none());

@@ -34,10 +34,12 @@
 //! use inferadb_common_storage::auth::{
 //!     MemorySigningKeyStore, PublicSigningKey, PublicSigningKeyStore,
 //! };
+//! use inferadb_common_storage::NamespaceId;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let store = MemorySigningKeyStore::new();
+//!     let ns = NamespaceId::from(100);
 //!     
 //!     let key = PublicSigningKey::builder()
 //!         .kid("key-abc123".to_owned())
@@ -46,9 +48,9 @@
 //!         .cert_id(42)
 //!         .build();
 //!     
-//!     store.create_key(100, &key).await?;
+//!     store.create_key(ns, &key).await?;
 //!     
-//!     let retrieved = store.get_key(100, "key-abc123").await?;
+//!     let retrieved = store.get_key(ns, "key-abc123").await?;
 //!     assert!(retrieved.is_some());
 //!     
 //!     Ok(())

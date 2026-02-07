@@ -27,7 +27,7 @@
 //! use std::sync::Arc;
 //! use std::time::Duration;
 //! use inferadb_common_authn::SigningKeyCache;
-//! use inferadb_common_storage::auth::PublicSigningKeyStore;
+//! use inferadb_common_storage::{NamespaceId, auth::PublicSigningKeyStore};
 //!
 //! async fn example(key_store: Arc<dyn PublicSigningKeyStore>) {
 //!     // Create cache with 5-minute TTL
@@ -35,7 +35,7 @@
 //!
 //!     // Get decoding key for JWT validation
 //!     // org_id from JWT claims, kid from JWT header
-//!     let decoding_key = cache.get_decoding_key(42, "key-2024-001").await;
+//!     let decoding_key = cache.get_decoding_key(NamespaceId::from(42), "key-2024-001").await;
 //! }
 //! ```
 
@@ -45,7 +45,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
 use ed25519_dalek::{PUBLIC_KEY_LENGTH, VerifyingKey};
 use inferadb_common_storage::{
-    StorageError,
+    NamespaceId, StorageError,
     auth::{PublicSigningKey, PublicSigningKeyStore},
 };
 use jsonwebtoken::DecodingKey;
@@ -178,7 +178,7 @@ impl SigningKeyCache {
     /// - Storage backend error with no fallback available ([`AuthError::KeyStorageError`])
     pub async fn get_decoding_key(
         &self,
-        org_id: i64,
+        org_id: NamespaceId,
         kid: &str,
     ) -> Result<Arc<DecodingKey>, AuthError> {
         let cache_key = format!("{org_id}:{kid}");
@@ -205,7 +205,7 @@ impl SigningKeyCache {
                 self.cache.insert(cache_key.clone(), decoding_key.clone()).await;
                 self.fallback.insert(cache_key, decoding_key.clone()).await;
 
-                tracing::debug!(namespace_id, kid, "Cached signing key from Ledger");
+                tracing::debug!(namespace_id = %namespace_id, kid, "Cached signing key from Ledger");
 
                 Ok(decoding_key)
             },
@@ -217,7 +217,7 @@ impl SigningKeyCache {
                     && let Some(key) = self.fallback.get(&cache_key).await
                 {
                     tracing::warn!(
-                        namespace_id,
+                        namespace_id = %namespace_id,
                         kid,
                         error = %storage_error,
                         "Ledger unavailable, using fallback cached key"
@@ -236,11 +236,11 @@ impl SigningKeyCache {
     /// Removes the key from both the L1 TTL cache and the L3 fallback cache.
     /// Call this when a key is known to be revoked or deleted.
     /// The next lookup will fetch fresh state from Ledger.
-    pub async fn invalidate(&self, org_id: i64, kid: &str) {
+    pub async fn invalidate(&self, org_id: NamespaceId, kid: &str) {
         let cache_key = format!("{org_id}:{kid}");
         self.cache.invalidate(&cache_key).await;
         self.fallback.invalidate(&cache_key).await;
-        tracing::debug!(org_id = org_id, kid = kid, "Invalidated signing key from all cache tiers");
+        tracing::debug!(org_id = %org_id, kid = kid, "Invalidated signing key from all cache tiers");
     }
 
     /// Clears all keys from all cache tiers.
@@ -377,7 +377,7 @@ fn to_decoding_key(key: &PublicSigningKey) -> Result<DecodingKey, AuthError> {
 mod tests {
     use chrono::Duration as ChronoDuration;
     use ed25519_dalek::SigningKey;
-    use inferadb_common_storage::auth::MemorySigningKeyStore;
+    use inferadb_common_storage::{CertId, ClientId, auth::MemorySigningKeyStore};
     use rand_core::OsRng;
 
     use super::*;
@@ -393,8 +393,8 @@ mod tests {
         PublicSigningKey {
             kid: kid.to_string(),
             public_key: generate_test_public_key(),
-            client_id: 1,
-            cert_id: 1,
+            client_id: ClientId::from(1),
+            cert_id: CertId::from(1),
             created_at: Utc::now(),
             valid_from: Utc::now() - ChronoDuration::hours(1),
             valid_until: Some(Utc::now() + ChronoDuration::days(365)),
@@ -412,7 +412,7 @@ mod tests {
         let store = Arc::new(MemorySigningKeyStore::new());
         let cache = SigningKeyCache::new(store, Duration::from_secs(60));
 
-        let result = cache.get_decoding_key(1, "nonexistent").await;
+        let result = cache.get_decoding_key(NamespaceId::from(1), "nonexistent").await;
 
         assert!(matches!(result, Err(AuthError::KeyNotFound { kid }) if kid == "nonexistent"));
     }
@@ -421,14 +421,14 @@ mod tests {
     async fn test_key_inactive() {
         let store = Arc::new(MemorySigningKeyStore::new());
         let key = create_test_key("inactive-key", false);
-        store.create_key(1, &key).await.expect("create_key");
+        store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
 
         let cache = SigningKeyCache::new(
             Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
             Duration::from_secs(60),
         );
 
-        let result = cache.get_decoding_key(1, "inactive-key").await;
+        let result = cache.get_decoding_key(NamespaceId::from(1), "inactive-key").await;
 
         assert!(matches!(result, Err(AuthError::KeyInactive { kid }) if kid == "inactive-key"));
     }
@@ -438,14 +438,14 @@ mod tests {
         let store = Arc::new(MemorySigningKeyStore::new());
         let mut key = create_test_key("revoked-key", true);
         key.revoked_at = Some(Utc::now());
-        store.create_key(1, &key).await.expect("create_key");
+        store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
 
         let cache = SigningKeyCache::new(
             Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
             Duration::from_secs(60),
         );
 
-        let result = cache.get_decoding_key(1, "revoked-key").await;
+        let result = cache.get_decoding_key(NamespaceId::from(1), "revoked-key").await;
 
         assert!(matches!(result, Err(AuthError::KeyRevoked { kid }) if kid == "revoked-key"));
     }
@@ -455,14 +455,14 @@ mod tests {
         let store = Arc::new(MemorySigningKeyStore::new());
         let mut key = create_test_key("future-key", true);
         key.valid_from = Utc::now() + ChronoDuration::hours(1);
-        store.create_key(1, &key).await.expect("create_key");
+        store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
 
         let cache = SigningKeyCache::new(
             Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
             Duration::from_secs(60),
         );
 
-        let result = cache.get_decoding_key(1, "future-key").await;
+        let result = cache.get_decoding_key(NamespaceId::from(1), "future-key").await;
 
         assert!(matches!(result, Err(AuthError::KeyNotYetValid { kid }) if kid == "future-key"));
     }
@@ -473,14 +473,14 @@ mod tests {
         let mut key = create_test_key("expired-key", true);
         key.valid_from = Utc::now() - ChronoDuration::days(2);
         key.valid_until = Some(Utc::now() - ChronoDuration::days(1));
-        store.create_key(1, &key).await.expect("create_key");
+        store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
 
         let cache = SigningKeyCache::new(
             Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
             Duration::from_secs(60),
         );
 
-        let result = cache.get_decoding_key(1, "expired-key").await;
+        let result = cache.get_decoding_key(NamespaceId::from(1), "expired-key").await;
 
         assert!(matches!(result, Err(AuthError::KeyExpired { kid }) if kid == "expired-key"));
     }
@@ -490,14 +490,14 @@ mod tests {
         let store = Arc::new(MemorySigningKeyStore::new());
         let mut key = create_test_key("bad-key", true);
         key.public_key = "not-valid-base64!!!".to_string();
-        store.create_key(1, &key).await.expect("create_key");
+        store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
 
         let cache = SigningKeyCache::new(
             Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
             Duration::from_secs(60),
         );
 
-        let result = cache.get_decoding_key(1, "bad-key").await;
+        let result = cache.get_decoding_key(NamespaceId::from(1), "bad-key").await;
 
         assert!(matches!(result, Err(AuthError::InvalidPublicKey(_))));
     }
@@ -506,7 +506,7 @@ mod tests {
     async fn test_cache_hit() {
         let store = Arc::new(MemorySigningKeyStore::new());
         let key = create_valid_test_key("cached-key");
-        store.create_key(1, &key).await.expect("create_key");
+        store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
 
         let cache = SigningKeyCache::new(
             Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
@@ -514,11 +514,11 @@ mod tests {
         );
 
         // First call - cache miss
-        let result1 = cache.get_decoding_key(1, "cached-key").await;
+        let result1 = cache.get_decoding_key(NamespaceId::from(1), "cached-key").await;
         assert!(result1.is_ok());
 
         // Second call - should hit cache
-        let result2 = cache.get_decoding_key(1, "cached-key").await;
+        let result2 = cache.get_decoding_key(NamespaceId::from(1), "cached-key").await;
         assert!(result2.is_ok());
 
         // Entry should be in cache (sync to ensure count is accurate)
@@ -533,8 +533,8 @@ mod tests {
         // Same kid, different namespaces
         let key1 = create_valid_test_key("shared-kid");
         let key2 = create_valid_test_key("shared-kid");
-        store.create_key(1, &key1).await.expect("create_key org1");
-        store.create_key(2, &key2).await.expect("create_key org2");
+        store.create_key(NamespaceId::from(1), &key1).await.expect("create_key org1");
+        store.create_key(NamespaceId::from(2), &key2).await.expect("create_key org2");
 
         let cache = SigningKeyCache::new(
             Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
@@ -542,8 +542,8 @@ mod tests {
         );
 
         // Both should work independently
-        let result1 = cache.get_decoding_key(1, "shared-kid").await;
-        let result2 = cache.get_decoding_key(2, "shared-kid").await;
+        let result1 = cache.get_decoding_key(NamespaceId::from(1), "shared-kid").await;
+        let result2 = cache.get_decoding_key(NamespaceId::from(2), "shared-kid").await;
 
         assert!(result1.is_ok());
         assert!(result2.is_ok());
@@ -556,7 +556,7 @@ mod tests {
     async fn test_invalidate() {
         let store = Arc::new(MemorySigningKeyStore::new());
         let key = create_valid_test_key("to-invalidate");
-        store.create_key(1, &key).await.expect("create_key");
+        store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
 
         let cache = SigningKeyCache::new(
             Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
@@ -564,12 +564,12 @@ mod tests {
         );
 
         // Populate cache
-        let _ = cache.get_decoding_key(1, "to-invalidate").await;
+        let _ = cache.get_decoding_key(NamespaceId::from(1), "to-invalidate").await;
         cache.sync().await;
         assert_eq!(cache.entry_count(), 1);
 
         // Invalidate
-        cache.invalidate(1, "to-invalidate").await;
+        cache.invalidate(NamespaceId::from(1), "to-invalidate").await;
 
         // Cache should be empty after invalidation
         cache.sync().await;
@@ -582,7 +582,7 @@ mod tests {
 
         for i in 0..5 {
             let key = create_valid_test_key(&format!("key-{i}"));
-            store.create_key(1, &key).await.expect("create_key");
+            store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
         }
 
         let cache = SigningKeyCache::new(
@@ -592,7 +592,7 @@ mod tests {
 
         // Populate cache
         for i in 0..5 {
-            let _ = cache.get_decoding_key(1, &format!("key-{i}")).await;
+            let _ = cache.get_decoding_key(NamespaceId::from(1), &format!("key-{i}")).await;
         }
         cache.sync().await;
         assert_eq!(cache.entry_count(), 5);
@@ -612,14 +612,14 @@ mod tests {
         let store = Arc::new(MemorySigningKeyStore::new());
         let mut key = create_valid_test_key("no-expiry");
         key.valid_until = None; // No expiry
-        store.create_key(1, &key).await.expect("create_key");
+        store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
 
         let cache = SigningKeyCache::new(
             Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
             Duration::from_secs(60),
         );
 
-        let result = cache.get_decoding_key(1, "no-expiry").await;
+        let result = cache.get_decoding_key(NamespaceId::from(1), "no-expiry").await;
 
         assert!(result.is_ok());
     }
@@ -703,7 +703,7 @@ mod tests {
     impl PublicSigningKeyStore for FailingStore {
         async fn create_key(
             &self,
-            namespace_id: i64,
+            namespace_id: NamespaceId,
             key: &PublicSigningKey,
         ) -> Result<(), StorageError> {
             self.inner.create_key(namespace_id, key).await
@@ -711,7 +711,7 @@ mod tests {
 
         async fn get_key(
             &self,
-            namespace_id: i64,
+            namespace_id: NamespaceId,
             kid: &str,
         ) -> Result<Option<PublicSigningKey>, StorageError> {
             if let Some(ref error) = *self.fail_with.lock().expect("lock") {
@@ -728,29 +728,41 @@ mod tests {
 
         async fn list_active_keys(
             &self,
-            namespace_id: i64,
+            namespace_id: NamespaceId,
         ) -> Result<Vec<PublicSigningKey>, StorageError> {
             self.inner.list_active_keys(namespace_id).await
         }
 
-        async fn deactivate_key(&self, namespace_id: i64, kid: &str) -> Result<(), StorageError> {
+        async fn deactivate_key(
+            &self,
+            namespace_id: NamespaceId,
+            kid: &str,
+        ) -> Result<(), StorageError> {
             self.inner.deactivate_key(namespace_id, kid).await
         }
 
         async fn revoke_key(
             &self,
-            namespace_id: i64,
+            namespace_id: NamespaceId,
             kid: &str,
             reason: Option<&str>,
         ) -> Result<(), StorageError> {
             self.inner.revoke_key(namespace_id, kid, reason).await
         }
 
-        async fn activate_key(&self, namespace_id: i64, kid: &str) -> Result<(), StorageError> {
+        async fn activate_key(
+            &self,
+            namespace_id: NamespaceId,
+            kid: &str,
+        ) -> Result<(), StorageError> {
             self.inner.activate_key(namespace_id, kid).await
         }
 
-        async fn delete_key(&self, namespace_id: i64, kid: &str) -> Result<(), StorageError> {
+        async fn delete_key(
+            &self,
+            namespace_id: NamespaceId,
+            kid: &str,
+        ) -> Result<(), StorageError> {
             self.inner.delete_key(namespace_id, kid).await
         }
     }
@@ -759,7 +771,7 @@ mod tests {
     async fn test_fallback_on_connection_error() {
         let store = Arc::new(FailingStore::new());
         let key = create_valid_test_key("fallback-key");
-        store.inner.create_key(1, &key).await.expect("create_key");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
 
         let cache = SigningKeyCache::new(
             Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
@@ -767,7 +779,7 @@ mod tests {
         );
 
         // First call succeeds and populates both L1 and fallback
-        let result1 = cache.get_decoding_key(1, "fallback-key").await;
+        let result1 = cache.get_decoding_key(NamespaceId::from(1), "fallback-key").await;
         assert!(result1.is_ok());
 
         // Simulate Ledger connection failure
@@ -778,7 +790,7 @@ mod tests {
         cache.sync().await;
 
         // Should use fallback cache
-        let result2 = cache.get_decoding_key(1, "fallback-key").await;
+        let result2 = cache.get_decoding_key(NamespaceId::from(1), "fallback-key").await;
         assert!(result2.is_ok(), "should use fallback on connection error");
     }
 
@@ -786,7 +798,7 @@ mod tests {
     async fn test_fallback_on_timeout_error() {
         let store = Arc::new(FailingStore::new());
         let key = create_valid_test_key("timeout-key");
-        store.inner.create_key(1, &key).await.expect("create_key");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
 
         let cache = SigningKeyCache::new(
             Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
@@ -794,7 +806,7 @@ mod tests {
         );
 
         // First call succeeds and populates both L1 and fallback
-        let result1 = cache.get_decoding_key(1, "timeout-key").await;
+        let result1 = cache.get_decoding_key(NamespaceId::from(1), "timeout-key").await;
         assert!(result1.is_ok());
 
         // Simulate Ledger timeout
@@ -805,7 +817,7 @@ mod tests {
         cache.sync().await;
 
         // Should use fallback cache
-        let result2 = cache.get_decoding_key(1, "timeout-key").await;
+        let result2 = cache.get_decoding_key(NamespaceId::from(1), "timeout-key").await;
         assert!(result2.is_ok(), "should use fallback on timeout error");
     }
 
@@ -813,7 +825,7 @@ mod tests {
     async fn test_no_fallback_on_non_transient_error() {
         let store = Arc::new(FailingStore::new());
         let key = create_valid_test_key("no-fallback-key");
-        store.inner.create_key(1, &key).await.expect("create_key");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
 
         let cache = SigningKeyCache::new(
             Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
@@ -821,7 +833,7 @@ mod tests {
         );
 
         // First call succeeds and populates both L1 and fallback
-        let result1 = cache.get_decoding_key(1, "no-fallback-key").await;
+        let result1 = cache.get_decoding_key(NamespaceId::from(1), "no-fallback-key").await;
         assert!(result1.is_ok());
 
         // Simulate non-transient internal error (should NOT use fallback)
@@ -832,7 +844,7 @@ mod tests {
         cache.sync().await;
 
         // Should NOT use fallback - internal errors are definitive responses
-        let result2 = cache.get_decoding_key(1, "no-fallback-key").await;
+        let result2 = cache.get_decoding_key(NamespaceId::from(1), "no-fallback-key").await;
         assert!(
             matches!(result2, Err(AuthError::KeyStorageError(_))),
             "should NOT use fallback on internal error"
@@ -853,7 +865,7 @@ mod tests {
         store.set_failure(Some(StorageError::connection("network error")));
 
         // Should return error since no fallback available
-        let result = cache.get_decoding_key(1, "unknown-key").await;
+        let result = cache.get_decoding_key(NamespaceId::from(1), "unknown-key").await;
         assert!(
             matches!(result, Err(AuthError::KeyStorageError(_))),
             "should return error when no fallback available"
@@ -888,7 +900,7 @@ mod tests {
     async fn test_invalidate_removes_from_fallback() {
         let store = Arc::new(FailingStore::new());
         let key = create_valid_test_key("revoked-key");
-        store.inner.create_key(1, &key).await.expect("create_key");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
 
         let cache = SigningKeyCache::new(
             Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
@@ -896,13 +908,13 @@ mod tests {
         );
 
         // Populate both L1 and fallback
-        let result = cache.get_decoding_key(1, "revoked-key").await;
+        let result = cache.get_decoding_key(NamespaceId::from(1), "revoked-key").await;
         assert!(result.is_ok());
         cache.sync().await;
         assert_eq!(cache.fallback_entry_count(), 1);
 
         // Invalidate the key (simulating revocation)
-        cache.invalidate(1, "revoked-key").await;
+        cache.invalidate(NamespaceId::from(1), "revoked-key").await;
         cache.sync().await;
 
         // Verify key is gone from both tiers
@@ -912,7 +924,7 @@ mod tests {
         // Simulate Ledger outage — the revoked key should NOT be served from fallback
         store.set_failure(Some(StorageError::connection("network error")));
 
-        let result = cache.get_decoding_key(1, "revoked-key").await;
+        let result = cache.get_decoding_key(NamespaceId::from(1), "revoked-key").await;
         assert!(
             matches!(result, Err(AuthError::KeyStorageError(_))),
             "invalidated key must not be returned from fallback"
@@ -923,7 +935,7 @@ mod tests {
     async fn test_clear_all_removes_from_fallback() {
         let store = Arc::new(FailingStore::new());
         let key = create_valid_test_key("rotation-key");
-        store.inner.create_key(1, &key).await.expect("create_key");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
 
         let cache = SigningKeyCache::new(
             Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
@@ -931,7 +943,7 @@ mod tests {
         );
 
         // Populate both tiers
-        let result = cache.get_decoding_key(1, "rotation-key").await;
+        let result = cache.get_decoding_key(NamespaceId::from(1), "rotation-key").await;
         assert!(result.is_ok());
         cache.sync().await;
         assert_eq!(cache.fallback_entry_count(), 1);
@@ -946,7 +958,7 @@ mod tests {
         // Simulate Ledger outage — no stale keys should be available
         store.set_failure(Some(StorageError::connection("network error")));
 
-        let result = cache.get_decoding_key(1, "rotation-key").await;
+        let result = cache.get_decoding_key(NamespaceId::from(1), "rotation-key").await;
         assert!(
             matches!(result, Err(AuthError::KeyStorageError(_))),
             "cleared key must not be returned from fallback"
@@ -968,8 +980,8 @@ mod tests {
         for i in 0..5 {
             let kid = format!("cap-key-{i}");
             let key = create_valid_test_key(&kid);
-            store.create_key(1, &key).await.expect("create_key");
-            let _ = cache.get_decoding_key(1, &kid).await;
+            store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+            let _ = cache.get_decoding_key(NamespaceId::from(1), &kid).await;
         }
         cache.sync().await;
 

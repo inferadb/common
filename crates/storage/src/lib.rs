@@ -96,4 +96,4 @@ pub use error::{BoxError, StorageError, StorageResult};
 pub use memory::MemoryBackend;
 pub use metrics::{Metrics, MetricsCollector, MetricsSnapshot};
 pub use transaction::Transaction;
-pub use types::KeyValue;
+pub use types::{CertId, ClientId, KeyValue, NamespaceId, VaultId};

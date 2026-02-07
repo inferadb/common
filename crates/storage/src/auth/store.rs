@@ -25,11 +25,11 @@
 //! ```no_run
 //! use async_trait::async_trait;
 //! use inferadb_common_storage::auth::{PublicSigningKey, PublicSigningKeyStore};
-//! use inferadb_common_storage::StorageError;
+//! use inferadb_common_storage::{NamespaceId, StorageError};
 //!
 //! async fn store_key<S: PublicSigningKeyStore>(
 //!     store: &S,
-//!     namespace_id: i64,
+//!     namespace_id: NamespaceId,
 //!     key: &PublicSigningKey,
 //! ) -> Result<(), StorageError> {
 //!     store.create_key(namespace_id, key).await
@@ -45,6 +45,7 @@ use parking_lot::RwLock;
 use crate::{
     auth::PublicSigningKey,
     error::{StorageError, StorageResult},
+    types::NamespaceId,
 };
 
 /// Storage key prefix for signing keys within a namespace.
@@ -90,7 +91,11 @@ pub trait PublicSigningKeyStore: Send + Sync {
     /// - A key with the same `kid` already exists
     /// - The storage backend is unavailable
     /// - Serialization fails
-    async fn create_key(&self, namespace_id: i64, key: &PublicSigningKey) -> StorageResult<()>;
+    async fn create_key(
+        &self,
+        namespace_id: NamespaceId,
+        key: &PublicSigningKey,
+    ) -> StorageResult<()>;
 
     /// Retrieves a public signing key by ID.
     ///
@@ -106,7 +111,7 @@ pub trait PublicSigningKeyStore: Send + Sync {
     /// - `Err(...)` on storage errors
     async fn get_key(
         &self,
-        namespace_id: i64,
+        namespace_id: NamespaceId,
         kid: &str,
     ) -> StorageResult<Option<PublicSigningKey>>;
 
@@ -125,7 +130,10 @@ pub trait PublicSigningKeyStore: Send + Sync {
     /// # Returns
     ///
     /// A vector of active keys (may be empty).
-    async fn list_active_keys(&self, namespace_id: i64) -> StorageResult<Vec<PublicSigningKey>>;
+    async fn list_active_keys(
+        &self,
+        namespace_id: NamespaceId,
+    ) -> StorageResult<Vec<PublicSigningKey>>;
 
     /// Marks a key as inactive (soft revocation).
     ///
@@ -141,7 +149,7 @@ pub trait PublicSigningKeyStore: Send + Sync {
     /// # Errors
     ///
     /// Returns [`StorageError::NotFound`] if the key doesn't exist.
-    async fn deactivate_key(&self, namespace_id: i64, kid: &str) -> StorageResult<()>;
+    async fn deactivate_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()>;
 
     /// Marks a key as revoked (hard revocation with timestamp).
     ///
@@ -162,7 +170,7 @@ pub trait PublicSigningKeyStore: Send + Sync {
     /// Returns [`StorageError::NotFound`] if the key doesn't exist.
     async fn revoke_key(
         &self,
-        namespace_id: i64,
+        namespace_id: NamespaceId,
         kid: &str,
         reason: Option<&str>,
     ) -> StorageResult<()>;
@@ -183,7 +191,7 @@ pub trait PublicSigningKeyStore: Send + Sync {
     /// Returns an error if:
     /// - The key doesn't exist ([`StorageError::NotFound`])
     /// - The key has been permanently revoked ([`StorageError::Internal`])
-    async fn activate_key(&self, namespace_id: i64, kid: &str) -> StorageResult<()>;
+    async fn activate_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()>;
 
     /// Deletes a key from storage.
     ///
@@ -198,7 +206,7 @@ pub trait PublicSigningKeyStore: Send + Sync {
     /// # Errors
     ///
     /// Returns [`StorageError::NotFound`] if the key doesn't exist.
-    async fn delete_key(&self, namespace_id: i64, kid: &str) -> StorageResult<()>;
+    async fn delete_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()>;
 }
 
 /// In-memory implementation of [`PublicSigningKeyStore`] for testing.
@@ -218,10 +226,12 @@ pub trait PublicSigningKeyStore: Send + Sync {
 /// use inferadb_common_storage::auth::{
 ///     MemorySigningKeyStore, PublicSigningKey, PublicSigningKeyStore,
 /// };
+/// use inferadb_common_storage::NamespaceId;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let store = MemorySigningKeyStore::new();
+///     let ns = NamespaceId::from(1);
 ///     
 ///     let key = PublicSigningKey::builder()
 ///         .kid("test-key-1".to_owned())
@@ -230,9 +240,9 @@ pub trait PublicSigningKeyStore: Send + Sync {
 ///         .cert_id(1)
 ///         .build();
 ///     
-///     store.create_key(1, &key).await?;
+///     store.create_key(ns, &key).await?;
 ///     
-///     let retrieved = store.get_key(1, "test-key-1").await?;
+///     let retrieved = store.get_key(ns, "test-key-1").await?;
 ///     assert!(retrieved.is_some());
 ///     
 ///     Ok(())
@@ -241,7 +251,7 @@ pub trait PublicSigningKeyStore: Send + Sync {
 #[derive(Debug, Default, Clone)]
 pub struct MemorySigningKeyStore {
     /// Keys indexed by (namespace_id, kid).
-    keys: Arc<RwLock<HashMap<(i64, String), PublicSigningKey>>>,
+    keys: Arc<RwLock<HashMap<(NamespaceId, String), PublicSigningKey>>>,
 }
 
 impl MemorySigningKeyStore {
@@ -252,14 +262,18 @@ impl MemorySigningKeyStore {
     }
 
     /// Creates a composite key for the hash map.
-    fn make_key(namespace_id: i64, kid: &str) -> (i64, String) {
+    fn make_key(namespace_id: NamespaceId, kid: &str) -> (NamespaceId, String) {
         (namespace_id, kid.to_string())
     }
 }
 
 #[async_trait]
 impl PublicSigningKeyStore for MemorySigningKeyStore {
-    async fn create_key(&self, namespace_id: i64, key: &PublicSigningKey) -> StorageResult<()> {
+    async fn create_key(
+        &self,
+        namespace_id: NamespaceId,
+        key: &PublicSigningKey,
+    ) -> StorageResult<()> {
         let map_key = Self::make_key(namespace_id, &key.kid);
         let mut keys = self.keys.write();
 
@@ -273,7 +287,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
 
     async fn get_key(
         &self,
-        namespace_id: i64,
+        namespace_id: NamespaceId,
         kid: &str,
     ) -> StorageResult<Option<PublicSigningKey>> {
         let map_key = Self::make_key(namespace_id, kid);
@@ -281,7 +295,10 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         Ok(keys.get(&map_key).cloned())
     }
 
-    async fn list_active_keys(&self, namespace_id: i64) -> StorageResult<Vec<PublicSigningKey>> {
+    async fn list_active_keys(
+        &self,
+        namespace_id: NamespaceId,
+    ) -> StorageResult<Vec<PublicSigningKey>> {
         let keys = self.keys.read();
         let now = Utc::now();
 
@@ -301,7 +318,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         Ok(active_keys)
     }
 
-    async fn deactivate_key(&self, namespace_id: i64, kid: &str) -> StorageResult<()> {
+    async fn deactivate_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
         let map_key = Self::make_key(namespace_id, kid);
         let mut keys = self.keys.write();
 
@@ -313,7 +330,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
 
     async fn revoke_key(
         &self,
-        namespace_id: i64,
+        namespace_id: NamespaceId,
         kid: &str,
         _reason: Option<&str>,
     ) -> StorageResult<()> {
@@ -330,7 +347,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         Ok(())
     }
 
-    async fn activate_key(&self, namespace_id: i64, kid: &str) -> StorageResult<()> {
+    async fn activate_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
         let map_key = Self::make_key(namespace_id, kid);
         let mut keys = self.keys.write();
 
@@ -347,7 +364,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         Ok(())
     }
 
-    async fn delete_key(&self, namespace_id: i64, kid: &str) -> StorageResult<()> {
+    async fn delete_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
         let map_key = Self::make_key(namespace_id, kid);
         let mut keys = self.keys.write();
 
@@ -395,7 +412,7 @@ mod tests {
     async fn test_create_and_get_key() {
         let store = MemorySigningKeyStore::new();
         let key = make_test_key("key-1");
-        let namespace_id = 100;
+        let namespace_id = NamespaceId::from(100);
 
         // Create the key
         store.create_key(namespace_id, &key).await.expect("create_key should succeed");
@@ -413,7 +430,7 @@ mod tests {
     async fn test_get_nonexistent_key() {
         let store = MemorySigningKeyStore::new();
 
-        let result = store.get_key(100, "nonexistent").await;
+        let result = store.get_key(NamespaceId::from(100), "nonexistent").await;
 
         assert!(result.is_ok());
         assert!(result.expect("should not error").is_none());
@@ -423,7 +440,7 @@ mod tests {
     async fn test_create_duplicate_key_fails() {
         let store = MemorySigningKeyStore::new();
         let key = make_test_key("dup-key");
-        let namespace_id = 100;
+        let namespace_id = NamespaceId::from(100);
 
         store.create_key(namespace_id, &key).await.expect("first create should succeed");
 
@@ -441,11 +458,11 @@ mod tests {
         let key2 = make_test_key("shared-kid");
 
         // Same kid in different namespaces should work
-        store.create_key(100, &key1).await.expect("create in ns 100");
-        store.create_key(200, &key2).await.expect("create in ns 200");
+        store.create_key(NamespaceId::from(100), &key1).await.expect("create in ns 100");
+        store.create_key(NamespaceId::from(200), &key2).await.expect("create in ns 200");
 
-        let r1 = store.get_key(100, "shared-kid").await.expect("get ns 100");
-        let r2 = store.get_key(200, "shared-kid").await.expect("get ns 200");
+        let r1 = store.get_key(NamespaceId::from(100), "shared-kid").await.expect("get ns 100");
+        let r2 = store.get_key(NamespaceId::from(200), "shared-kid").await.expect("get ns 200");
 
         assert!(r1.is_some());
         assert!(r2.is_some());
@@ -454,7 +471,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_active_keys() {
         let store = MemorySigningKeyStore::new();
-        let namespace_id = 100;
+        let namespace_id = NamespaceId::from(100);
 
         // Create several keys with different states
         let active_key = make_test_key("active");
@@ -487,7 +504,7 @@ mod tests {
     async fn test_list_active_keys_empty_namespace() {
         let store = MemorySigningKeyStore::new();
 
-        let result = store.list_active_keys(999).await;
+        let result = store.list_active_keys(NamespaceId::from(999)).await;
 
         assert!(result.is_ok());
         assert!(result.expect("should return empty vec").is_empty());
@@ -497,7 +514,7 @@ mod tests {
     async fn test_deactivate_key() {
         let store = MemorySigningKeyStore::new();
         let key = make_test_key("to-deactivate");
-        let namespace_id = 100;
+        let namespace_id = NamespaceId::from(100);
 
         store.create_key(namespace_id, &key).await.expect("create");
 
@@ -511,7 +528,7 @@ mod tests {
     async fn test_deactivate_nonexistent_key() {
         let store = MemorySigningKeyStore::new();
 
-        let result = store.deactivate_key(100, "nonexistent").await;
+        let result = store.deactivate_key(NamespaceId::from(100), "nonexistent").await;
 
         assert!(result.is_err());
         assert!(matches!(result.expect_err("should be NotFound"), StorageError::NotFound { .. }));
@@ -521,7 +538,7 @@ mod tests {
     async fn test_revoke_key() {
         let store = MemorySigningKeyStore::new();
         let key = make_test_key("to-revoke");
-        let namespace_id = 100;
+        let namespace_id = NamespaceId::from(100);
 
         store.create_key(namespace_id, &key).await.expect("create");
 
@@ -538,7 +555,7 @@ mod tests {
     async fn test_revoke_key_idempotent() {
         let store = MemorySigningKeyStore::new();
         let key = make_test_key("revoke-twice");
-        let namespace_id = 100;
+        let namespace_id = NamespaceId::from(100);
 
         store.create_key(namespace_id, &key).await.expect("create");
 
@@ -561,7 +578,7 @@ mod tests {
     async fn test_revoke_nonexistent_key() {
         let store = MemorySigningKeyStore::new();
 
-        let result = store.revoke_key(100, "nonexistent", None).await;
+        let result = store.revoke_key(NamespaceId::from(100), "nonexistent", None).await;
 
         assert!(result.is_err());
         assert!(matches!(result.expect_err("should be NotFound"), StorageError::NotFound { .. }));
@@ -571,7 +588,7 @@ mod tests {
     async fn test_activate_key() {
         let store = MemorySigningKeyStore::new();
         let key = make_test_key("to-reactivate");
-        let namespace_id = 100;
+        let namespace_id = NamespaceId::from(100);
 
         store.create_key(namespace_id, &key).await.expect("create");
         store.deactivate_key(namespace_id, "to-reactivate").await.expect("deactivate");
@@ -591,7 +608,7 @@ mod tests {
     async fn test_activate_revoked_key_fails() {
         let store = MemorySigningKeyStore::new();
         let key = make_test_key("permanently-revoked");
-        let namespace_id = 100;
+        let namespace_id = NamespaceId::from(100);
 
         store.create_key(namespace_id, &key).await.expect("create");
         store.revoke_key(namespace_id, "permanently-revoked", None).await.expect("revoke");
@@ -606,7 +623,7 @@ mod tests {
     async fn test_delete_key() {
         let store = MemorySigningKeyStore::new();
         let key = make_test_key("to-delete");
-        let namespace_id = 100;
+        let namespace_id = NamespaceId::from(100);
 
         store.create_key(namespace_id, &key).await.expect("create");
 
@@ -620,7 +637,7 @@ mod tests {
     async fn test_delete_nonexistent_key() {
         let store = MemorySigningKeyStore::new();
 
-        let result = store.delete_key(100, "nonexistent").await;
+        let result = store.delete_key(NamespaceId::from(100), "nonexistent").await;
 
         assert!(result.is_err());
         assert!(matches!(result.expect_err("should be NotFound"), StorageError::NotFound { .. }));
@@ -630,7 +647,7 @@ mod tests {
     async fn test_activate_nonexistent_key_fails() {
         let store = MemorySigningKeyStore::new();
 
-        let result = store.activate_key(100, "nonexistent").await;
+        let result = store.activate_key(NamespaceId::from(100), "nonexistent").await;
 
         assert!(result.is_err());
         assert!(matches!(result.expect_err("should be NotFound"), StorageError::NotFound { .. }));
@@ -642,9 +659,9 @@ mod tests {
         let cloned = store.clone();
         let key = make_test_key("shared");
 
-        store.create_key(100, &key).await.expect("create via original");
+        store.create_key(NamespaceId::from(100), &key).await.expect("create via original");
 
-        let result = cloned.get_key(100, "shared").await.expect("get via clone");
+        let result = cloned.get_key(NamespaceId::from(100), "shared").await.expect("get via clone");
 
         assert!(result.is_some());
     }

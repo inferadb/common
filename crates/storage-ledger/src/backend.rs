@@ -11,7 +11,9 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use inferadb_common_storage::{KeyValue, StorageBackend, StorageError, StorageResult, Transaction};
+use inferadb_common_storage::{
+    KeyValue, NamespaceId, StorageBackend, StorageError, StorageResult, Transaction, VaultId,
+};
 use inferadb_ledger_sdk::{
     LedgerClient, ListEntitiesOpts, Operation, ReadConsistency, SetCondition,
 };
@@ -82,10 +84,10 @@ pub struct LedgerBackend {
     client: Arc<LedgerClient>,
 
     /// Namespace ID for all operations.
-    namespace_id: i64,
+    namespace_id: NamespaceId,
 
     /// Optional vault ID for scoped operations.
-    vault_id: Option<i64>,
+    vault_id: Option<VaultId>,
 
     /// Read consistency level.
     read_consistency: ReadConsistency,
@@ -154,8 +156,8 @@ impl LedgerBackend {
     #[must_use]
     pub fn from_client(
         client: Arc<LedgerClient>,
-        namespace_id: i64,
-        vault_id: Option<i64>,
+        namespace_id: NamespaceId,
+        vault_id: Option<VaultId>,
         read_consistency: ReadConsistency,
     ) -> Self {
         Self { client, namespace_id, vault_id, read_consistency }
@@ -163,13 +165,13 @@ impl LedgerBackend {
 
     /// Returns the namespace ID.
     #[must_use]
-    pub fn namespace_id(&self) -> i64 {
+    pub fn namespace_id(&self) -> NamespaceId {
         self.namespace_id
     }
 
     /// Returns the vault ID if configured.
     #[must_use]
-    pub fn vault_id(&self) -> Option<i64> {
+    pub fn vault_id(&self) -> Option<VaultId> {
         self.vault_id
     }
 
@@ -188,14 +190,24 @@ impl LedgerBackend {
         Arc::clone(&self.client)
     }
 
+    /// Returns the namespace ID as a raw `i64` for SDK calls.
+    fn ns_raw(&self) -> i64 {
+        self.namespace_id.into()
+    }
+
+    /// Returns the vault ID as a raw `Option<i64>` for SDK calls.
+    fn vault_raw(&self) -> Option<i64> {
+        self.vault_id.map(Into::into)
+    }
+
     /// Performs a read with the configured consistency level.
     async fn do_read(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, LedgerStorageError> {
         let result = match self.read_consistency {
             ReadConsistency::Linearizable => {
-                self.client.read_consistent(self.namespace_id, self.vault_id, key).await
+                self.client.read_consistent(self.ns_raw(), self.vault_raw(), key).await
             },
             ReadConsistency::Eventual => {
-                self.client.read(self.namespace_id, self.vault_id, key).await
+                self.client.read(self.ns_raw(), self.vault_raw(), key).await
             },
         };
 
@@ -240,11 +252,7 @@ impl StorageBackend for LedgerBackend {
         let encoded_key = encode_key(&key);
 
         self.client
-            .write(
-                self.namespace_id,
-                self.vault_id,
-                vec![Operation::set_entity(encoded_key, value)],
-            )
+            .write(self.ns_raw(), self.vault_raw(), vec![Operation::set_entity(encoded_key, value)])
             .await
             .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
@@ -270,8 +278,8 @@ impl StorageBackend for LedgerBackend {
         match self
             .client
             .write(
-                self.namespace_id,
-                self.vault_id,
+                self.ns_raw(),
+                self.vault_raw(),
                 vec![Operation::set_entity_if(encoded_key, new_value, condition)],
             )
             .await
@@ -288,7 +296,7 @@ impl StorageBackend for LedgerBackend {
         let encoded_key = encode_key(key);
 
         self.client
-            .write(self.namespace_id, self.vault_id, vec![Operation::delete_entity(encoded_key)])
+            .write(self.ns_raw(), self.vault_raw(), vec![Operation::delete_entity(encoded_key)])
             .await
             .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
@@ -329,12 +337,12 @@ impl StorageBackend for LedgerBackend {
             limit: 10000, // Reasonable page size
             page_token: None,
             consistency: self.read_consistency,
-            vault_id: self.vault_id,
+            vault_id: self.vault_raw(),
         };
 
         let result = self
             .client
-            .list_entities(self.namespace_id, opts)
+            .list_entities(self.ns_raw(), opts)
             .await
             .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
@@ -396,7 +404,7 @@ impl StorageBackend for LedgerBackend {
 
         // Execute as batch delete
         self.client
-            .write(self.namespace_id, self.vault_id, operations)
+            .write(self.ns_raw(), self.vault_raw(), operations)
             .await
             .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
@@ -425,8 +433,8 @@ impl StorageBackend for LedgerBackend {
 
         self.client
             .write(
-                self.namespace_id,
-                self.vault_id,
+                self.ns_raw(),
+                self.vault_raw(),
                 vec![Operation::set_entity_with_expiry(encoded_key, value, expires_at)],
             )
             .await

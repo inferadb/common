@@ -34,7 +34,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use inferadb_common_storage::StorageBackend;
+use inferadb_common_storage::{NamespaceId, StorageBackend, VaultId};
 use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
 use inferadb_ledger_sdk::{ClientConfig, ServerSource};
 use tokio::time::sleep;
@@ -58,13 +58,15 @@ fn ledger_endpoint() -> String {
 }
 
 /// Get the namespace ID from environment, or default.
-fn ledger_namespace_id() -> i64 {
-    env::var("LEDGER_NAMESPACE_ID").ok().and_then(|s| s.parse().ok()).unwrap_or(1)
+fn ledger_namespace_id() -> NamespaceId {
+    NamespaceId::from(
+        env::var("LEDGER_NAMESPACE_ID").ok().and_then(|s| s.parse().ok()).unwrap_or(1),
+    )
 }
 
 /// Get a unique vault ID for test isolation.
-fn unique_vault_id() -> i64 {
-    VAULT_COUNTER.fetch_add(1, Ordering::SeqCst) as i64
+fn unique_vault_id() -> VaultId {
+    VaultId::from(VAULT_COUNTER.fetch_add(1, Ordering::SeqCst) as i64)
 }
 
 /// Creates a ClientConfig for testing.
@@ -88,7 +90,7 @@ async fn create_test_backend() -> LedgerBackend {
 }
 
 /// Creates a LedgerBackend with a specific vault ID (for isolation tests).
-async fn create_backend_with_vault(vault_id: i64) -> LedgerBackend {
+async fn create_backend_with_vault(vault_id: VaultId) -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
         .client(test_client_config(&format!("test-client-vault-{}", vault_id)))
         .namespace_id(ledger_namespace_id())

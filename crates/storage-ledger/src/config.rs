@@ -3,6 +3,7 @@
 //! This module provides [`LedgerBackendConfig`] which configures the connection
 //! to Ledger and determines how keys are scoped within the Ledger namespace.
 
+use inferadb_common_storage::{NamespaceId, VaultId};
 use inferadb_ledger_sdk::{ClientConfig, ReadConsistency};
 
 /// Configuration for [`LedgerBackend`](crate::LedgerBackend).
@@ -23,6 +24,7 @@ use inferadb_ledger_sdk::{ClientConfig, ReadConsistency};
 /// # Example
 ///
 /// ```no_run
+/// use inferadb_common_storage::VaultId;
 /// use inferadb_common_storage_ledger::{ClientConfig, LedgerBackendConfig, ServerSource};
 ///
 /// let client = ClientConfig::builder()
@@ -33,7 +35,7 @@ use inferadb_ledger_sdk::{ClientConfig, ReadConsistency};
 /// let config = LedgerBackendConfig::builder()
 ///     .client(client)
 ///     .namespace_id(1)
-///     .vault_id(100)  // Optional
+///     .vault_id(VaultId::from(100))  // Optional
 ///     .build();
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
@@ -43,10 +45,10 @@ pub struct LedgerBackendConfig {
     pub(crate) client: ClientConfig,
 
     /// Namespace ID for data scoping.
-    pub(crate) namespace_id: i64,
+    pub(crate) namespace_id: NamespaceId,
 
     /// Optional vault ID for finer-grained scoping.
-    pub(crate) vault_id: Option<i64>,
+    pub(crate) vault_id: Option<VaultId>,
 
     /// Read consistency level.
     pub(crate) read_consistency: ReadConsistency,
@@ -68,8 +70,8 @@ impl LedgerBackendConfig {
     #[builder]
     pub fn new(
         client: ClientConfig,
-        namespace_id: i64,
-        vault_id: Option<i64>,
+        #[builder(into)] namespace_id: NamespaceId,
+        vault_id: Option<VaultId>,
         #[builder(default = ReadConsistency::Linearizable)] read_consistency: ReadConsistency,
     ) -> Self {
         Self { client, namespace_id, vault_id, read_consistency }
@@ -83,13 +85,13 @@ impl LedgerBackendConfig {
 
     /// Returns the namespace ID.
     #[must_use]
-    pub fn namespace_id(&self) -> i64 {
+    pub fn namespace_id(&self) -> NamespaceId {
         self.namespace_id
     }
 
     /// Returns the vault ID if configured.
     #[must_use]
-    pub fn vault_id(&self) -> Option<i64> {
+    pub fn vault_id(&self) -> Option<VaultId> {
         self.vault_id
     }
 
@@ -124,7 +126,7 @@ mod tests {
     fn test_valid_config() {
         let config = LedgerBackendConfig::builder().client(test_client()).namespace_id(1).build();
 
-        assert_eq!(config.namespace_id(), 1);
+        assert_eq!(config.namespace_id(), NamespaceId::from(1));
         assert!(config.vault_id().is_none());
     }
 
@@ -133,10 +135,10 @@ mod tests {
         let config = LedgerBackendConfig::builder()
             .client(test_client())
             .namespace_id(1)
-            .vault_id(100)
+            .vault_id(VaultId::from(100))
             .build();
 
-        assert_eq!(config.vault_id(), Some(100));
+        assert_eq!(config.vault_id(), Some(VaultId::from(100)));
     }
 
     #[test]
@@ -162,11 +164,11 @@ mod tests {
         let config = LedgerBackendConfig::builder()
             .client(test_client())
             .namespace_id(1)
-            .vault_id(100)
+            .vault_id(VaultId::from(100))
             .read_consistency(ReadConsistency::Eventual)
             .build();
 
-        assert_eq!(config.vault_id(), Some(100));
+        assert_eq!(config.vault_id(), Some(VaultId::from(100)));
         assert!(matches!(config.read_consistency(), ReadConsistency::Eventual));
     }
 
