@@ -211,6 +211,27 @@ impl LedgerBackend {
 
         result.map_err(LedgerStorageError::from)
     }
+
+    /// Computes an absolute expiration timestamp by adding `ttl_seconds` to the
+    /// current system time.
+    ///
+    /// Returns the number of seconds since the Unix epoch at which the key
+    /// should expire.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Internal`] if the system clock is set before
+    /// the Unix epoch.
+    fn compute_expiration_timestamp(ttl_seconds: u64) -> StorageResult<u64> {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() + ttl_seconds)
+            .map_err(|_| {
+                StorageError::internal(
+                    "system clock is before the Unix epoch; cannot compute expiration timestamp",
+                )
+            })
+    }
 }
 
 #[async_trait]
@@ -359,6 +380,17 @@ impl StorageBackend for LedgerBackend {
         Ok(())
     }
 
+    /// Stores a key-value pair with automatic expiration.
+    ///
+    /// Computes an absolute Unix timestamp by adding `ttl_seconds` to the
+    /// current system time. The Ledger SDK's `set_entity_with_expiry`
+    /// interprets this value as an absolute expiration timestamp in seconds
+    /// since the Unix epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Internal`] if the system clock is set before
+    /// the Unix epoch, since a valid absolute timestamp cannot be computed.
     async fn set_with_ttl(
         &self,
         key: Vec<u8>,
@@ -366,12 +398,7 @@ impl StorageBackend for LedgerBackend {
         ttl_seconds: u64,
     ) -> StorageResult<()> {
         let encoded_key = Self::encode_key(&key);
-
-        // Calculate expiration time as Unix timestamp
-        let expires_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() + ttl_seconds)
-            .unwrap_or(ttl_seconds);
+        let expires_at = Self::compute_expiration_timestamp(ttl_seconds)?;
 
         self.client
             .write(
@@ -471,5 +498,31 @@ mod tests {
         assert_eq!(common_prefix("", "anything"), "");
         assert_eq!(common_prefix("anything", ""), "");
         assert_eq!(common_prefix("", ""), "");
+    }
+
+    #[test]
+    fn test_expiration_timestamp_is_in_the_future() {
+        let ttl_seconds = 300;
+        let before =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+        let expires_at = LedgerBackend::compute_expiration_timestamp(ttl_seconds).unwrap();
+
+        let after =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+        // The expiration timestamp must be at least `before + ttl_seconds`
+        // and at most `after + ttl_seconds` (accounting for wall-clock drift
+        // between the two SystemTime::now() calls).
+        assert!(
+            expires_at >= before + ttl_seconds,
+            "expiration {expires_at} should be >= {}",
+            before + ttl_seconds,
+        );
+        assert!(
+            expires_at <= after + ttl_seconds,
+            "expiration {expires_at} should be <= {}",
+            after + ttl_seconds,
+        );
     }
 }
