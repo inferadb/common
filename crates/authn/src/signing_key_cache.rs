@@ -39,11 +39,7 @@
 //! }
 //! ```
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
@@ -65,6 +61,13 @@ pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(300);
 
 /// Default maximum cache capacity.
 pub const DEFAULT_CACHE_CAPACITY: u64 = 10_000;
+
+/// Default maximum fallback cache capacity.
+///
+/// The fallback cache stores keys without TTL for graceful degradation
+/// during Ledger outages. This capacity bound prevents unbounded memory
+/// growth in long-running services.
+pub const DEFAULT_FALLBACK_CAPACITY: u64 = 10_000;
 
 /// Cache for public signing keys fetched from Ledger.
 ///
@@ -88,16 +91,17 @@ pub const DEFAULT_CACHE_CAPACITY: u64 = 10_000;
 /// # Graceful Degradation
 ///
 /// When Ledger is unavailable (connection or timeout errors), the cache falls back
-/// to previously fetched keys stored in the fallback map. This ensures continued
-/// operation during transient Ledger outages.
+/// to previously fetched keys stored in the fallback cache. This ensures continued
+/// operation during transient Ledger outages. The fallback cache is capacity-bounded
+/// with LRU eviction to prevent unbounded memory growth.
 pub struct SigningKeyCache {
-    /// In-memory cache with TTL-based expiration.
+    /// In-memory cache with TTL-based expiration (L1).
     cache: Cache<String, Arc<DecodingKey>>,
-    /// Backend store for fetching keys from Ledger.
+    /// Backend store for fetching keys from Ledger (L2).
     key_store: Arc<dyn PublicSigningKeyStore>,
-    /// Fallback cache for graceful degradation during Ledger outages.
-    /// Stores all successfully fetched keys without TTL.
-    fallback: RwLock<HashMap<String, Arc<DecodingKey>>>,
+    /// Fallback cache for graceful degradation during Ledger outages (L3).
+    /// Capacity-bounded with LRU eviction, no TTL.
+    fallback: Cache<String, Arc<DecodingKey>>,
 }
 
 impl SigningKeyCache {
@@ -131,7 +135,7 @@ impl SigningKeyCache {
     ///
     /// * `key_store` - Backend store
     /// * `ttl` - Time-to-live for cached keys
-    /// * `max_capacity` - Maximum number of keys to cache
+    /// * `max_capacity` - Maximum number of keys to cache in L1 and fallback
     #[must_use]
     pub fn with_capacity(
         key_store: Arc<dyn PublicSigningKeyStore>,
@@ -141,7 +145,7 @@ impl SigningKeyCache {
         Self {
             cache: Cache::builder().time_to_live(ttl).max_capacity(max_capacity).build(),
             key_store,
-            fallback: RwLock::new(HashMap::new()),
+            fallback: Cache::builder().max_capacity(max_capacity).build(),
         }
     }
 
@@ -199,9 +203,7 @@ impl SigningKeyCache {
 
                 // Cache locally (both TTL cache and fallback)
                 self.cache.insert(cache_key.clone(), decoding_key.clone()).await;
-                if let Ok(mut fallback) = self.fallback.write() {
-                    fallback.insert(cache_key, decoding_key.clone());
-                }
+                self.fallback.insert(cache_key, decoding_key.clone()).await;
 
                 tracing::debug!(namespace_id, kid, "Cached signing key from Ledger");
 
@@ -212,8 +214,7 @@ impl SigningKeyCache {
                 // Check if this is a transient error (connection/timeout)
                 // where fallback is appropriate
                 if is_transient_error(&storage_error)
-                    && let Ok(fallback) = self.fallback.read()
-                    && let Some(key) = fallback.get(&cache_key)
+                    && let Some(key) = self.fallback.get(&cache_key).await
                 {
                     tracing::warn!(
                         namespace_id,
@@ -221,7 +222,7 @@ impl SigningKeyCache {
                         error = %storage_error,
                         "Ledger unavailable, using fallback cached key"
                     );
-                    return Ok(key.clone());
+                    return Ok(key);
                 }
 
                 // No fallback available or not a transient error
@@ -230,32 +231,51 @@ impl SigningKeyCache {
         }
     }
 
-    /// Invalidates a specific key from the cache.
+    /// Invalidates a specific key from all cache tiers.
     ///
+    /// Removes the key from both the L1 TTL cache and the L3 fallback cache.
     /// Call this when a key is known to be revoked or deleted.
     /// The next lookup will fetch fresh state from Ledger.
     pub async fn invalidate(&self, org_id: i64, kid: &str) {
         let cache_key = format!("{org_id}:{kid}");
         self.cache.invalidate(&cache_key).await;
-        tracing::debug!(org_id = org_id, kid = kid, "Invalidated signing key from cache");
+        self.fallback.invalidate(&cache_key).await;
+        tracing::debug!(org_id = org_id, kid = kid, "Invalidated signing key from all cache tiers");
     }
 
-    /// Clears all keys from the cache.
+    /// Clears all keys from all cache tiers.
     ///
-    /// Use sparingly - this causes a spike in Ledger fetches.
+    /// Removes all entries from both the L1 TTL cache and the L3 fallback cache.
+    /// Use sparingly - this causes a spike in Ledger fetches. Useful during
+    /// key rotation events where all cached keys should be refreshed.
     pub async fn clear_all(&self) {
-        let count = self.cache.entry_count();
+        let l1_count = self.cache.entry_count();
+        let fallback_count = self.fallback.entry_count();
         self.cache.invalidate_all();
-        tracing::warn!(cached_keys = count, "Cleared all signing keys from cache");
+        self.fallback.invalidate_all();
+        tracing::warn!(
+            l1_cached_keys = l1_count,
+            fallback_cached_keys = fallback_count,
+            "Cleared all signing keys from all cache tiers"
+        );
     }
 
-    /// Returns current cache entry count.
+    /// Returns current L1 cache entry count.
     ///
     /// Note: This count is eventually consistent. For accurate counts in tests,
     /// call `sync` first.
     #[must_use]
     pub fn entry_count(&self) -> u64 {
         self.cache.entry_count()
+    }
+
+    /// Returns current fallback cache entry count.
+    ///
+    /// Note: This count is eventually consistent. For accurate counts in tests,
+    /// call `sync` first.
+    #[must_use]
+    pub fn fallback_entry_count(&self) -> u64 {
+        self.fallback.entry_count()
     }
 
     /// Synchronizes pending cache operations.
@@ -266,6 +286,17 @@ impl SigningKeyCache {
     #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     pub async fn sync(&self) {
         self.cache.run_pending_tasks().await;
+        self.fallback.run_pending_tasks().await;
+    }
+
+    /// Clears only the L1 TTL cache, leaving the fallback cache intact.
+    ///
+    /// Used in tests to force a cache miss on L1 while preserving fallback
+    /// entries for graceful degradation testing.
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    pub async fn clear_l1(&self) {
+        self.cache.invalidate_all();
     }
 }
 
@@ -565,13 +596,15 @@ mod tests {
         }
         cache.sync().await;
         assert_eq!(cache.entry_count(), 5);
+        assert_eq!(cache.fallback_entry_count(), 5);
 
-        // Clear all
+        // Clear all tiers
         cache.clear_all().await;
 
-        // Should be empty
+        // Both L1 and fallback should be empty
         cache.sync().await;
         assert_eq!(cache.entry_count(), 0);
+        assert_eq!(cache.fallback_entry_count(), 0);
     }
 
     #[tokio::test]
@@ -733,15 +766,15 @@ mod tests {
             Duration::from_secs(60),
         );
 
-        // First call succeeds and populates fallback
+        // First call succeeds and populates both L1 and fallback
         let result1 = cache.get_decoding_key(1, "fallback-key").await;
         assert!(result1.is_ok());
 
         // Simulate Ledger connection failure
         store.set_failure(Some(StorageError::connection("network error")));
 
-        // Clear TTL cache to force Ledger lookup
-        cache.clear_all().await;
+        // Clear only L1 cache to force Ledger lookup (fallback remains)
+        cache.clear_l1().await;
         cache.sync().await;
 
         // Should use fallback cache
@@ -760,15 +793,15 @@ mod tests {
             Duration::from_secs(60),
         );
 
-        // First call succeeds and populates fallback
+        // First call succeeds and populates both L1 and fallback
         let result1 = cache.get_decoding_key(1, "timeout-key").await;
         assert!(result1.is_ok());
 
         // Simulate Ledger timeout
         store.set_failure(Some(StorageError::timeout()));
 
-        // Clear TTL cache
-        cache.clear_all().await;
+        // Clear only L1 cache (fallback remains)
+        cache.clear_l1().await;
         cache.sync().await;
 
         // Should use fallback cache
@@ -787,15 +820,15 @@ mod tests {
             Duration::from_secs(60),
         );
 
-        // First call succeeds and populates fallback
+        // First call succeeds and populates both L1 and fallback
         let result1 = cache.get_decoding_key(1, "no-fallback-key").await;
         assert!(result1.is_ok());
 
         // Simulate non-transient internal error (should NOT use fallback)
         store.set_failure(Some(StorageError::internal("db corruption")));
 
-        // Clear TTL cache
-        cache.clear_all().await;
+        // Clear only L1 cache (fallback remains, but should not be used for non-transient errors)
+        cache.clear_l1().await;
         cache.sync().await;
 
         // Should NOT use fallback - internal errors are definitive responses
@@ -849,5 +882,102 @@ mod tests {
     fn test_is_transient_error_internal() {
         let error = StorageError::internal("oops");
         assert!(!is_transient_error(&error));
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_removes_from_fallback() {
+        let store = Arc::new(FailingStore::new());
+        let key = create_valid_test_key("revoked-key");
+        store.inner.create_key(1, &key).await.expect("create_key");
+
+        let cache = SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        );
+
+        // Populate both L1 and fallback
+        let result = cache.get_decoding_key(1, "revoked-key").await;
+        assert!(result.is_ok());
+        cache.sync().await;
+        assert_eq!(cache.fallback_entry_count(), 1);
+
+        // Invalidate the key (simulating revocation)
+        cache.invalidate(1, "revoked-key").await;
+        cache.sync().await;
+
+        // Verify key is gone from both tiers
+        assert_eq!(cache.entry_count(), 0);
+        assert_eq!(cache.fallback_entry_count(), 0);
+
+        // Simulate Ledger outage — the revoked key should NOT be served from fallback
+        store.set_failure(Some(StorageError::connection("network error")));
+
+        let result = cache.get_decoding_key(1, "revoked-key").await;
+        assert!(
+            matches!(result, Err(AuthError::KeyStorageError(_))),
+            "invalidated key must not be returned from fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clear_all_removes_from_fallback() {
+        let store = Arc::new(FailingStore::new());
+        let key = create_valid_test_key("rotation-key");
+        store.inner.create_key(1, &key).await.expect("create_key");
+
+        let cache = SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        );
+
+        // Populate both tiers
+        let result = cache.get_decoding_key(1, "rotation-key").await;
+        assert!(result.is_ok());
+        cache.sync().await;
+        assert_eq!(cache.fallback_entry_count(), 1);
+
+        // Clear all tiers (key rotation event)
+        cache.clear_all().await;
+        cache.sync().await;
+
+        // Verify fallback is also empty
+        assert_eq!(cache.fallback_entry_count(), 0);
+
+        // Simulate Ledger outage — no stale keys should be available
+        store.set_failure(Some(StorageError::connection("network error")));
+
+        let result = cache.get_decoding_key(1, "rotation-key").await;
+        assert!(
+            matches!(result, Err(AuthError::KeyStorageError(_))),
+            "cleared key must not be returned from fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fallback_capacity_bounded() {
+        let store = Arc::new(MemorySigningKeyStore::new());
+
+        // Create a cache with capacity of 3
+        let cache = SigningKeyCache::with_capacity(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+            3,
+        );
+
+        // Insert 5 keys
+        for i in 0..5 {
+            let kid = format!("cap-key-{i}");
+            let key = create_valid_test_key(&kid);
+            store.create_key(1, &key).await.expect("create_key");
+            let _ = cache.get_decoding_key(1, &kid).await;
+        }
+        cache.sync().await;
+
+        // Fallback should be bounded — at most 3 entries
+        assert!(
+            cache.fallback_entry_count() <= 3,
+            "fallback should not exceed capacity of 3, got {}",
+            cache.fallback_entry_count()
+        );
     }
 }

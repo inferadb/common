@@ -50,5 +50,7 @@ pub mod validation;
 // Re-export key types for convenience
 pub use error::{AuthError, Result};
 pub use jwt::JwtClaims;
-pub use signing_key_cache::{DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, SigningKeyCache};
+pub use signing_key_cache::{
+    DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, DEFAULT_FALLBACK_CAPACITY, SigningKeyCache,
+};
 pub use validation::{ACCEPTED_ALGORITHMS, FORBIDDEN_ALGORITHMS, validate_algorithm};
