@@ -14,7 +14,7 @@ use bytes::Bytes;
 use inferadb_common_storage::{StorageError, StorageResult, Transaction};
 use inferadb_ledger_sdk::{LedgerClient, Operation, ReadConsistency, SetCondition};
 
-use crate::error::LedgerStorageError;
+use crate::{error::LedgerStorageError, keys::encode_key};
 
 /// A compare-and-set operation to be verified at commit time.
 #[derive(Debug, Clone)]
@@ -243,11 +243,6 @@ impl Transaction for LedgerTransaction {
             Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
         }
     }
-}
-
-/// Encodes a key as a hexadecimal string.
-fn encode_key(key: &[u8]) -> String {
-    hex::encode(key)
 }
 
 // Note: Transaction tests are in tests/integration.rs using MockLedgerServer

@@ -19,6 +19,7 @@ use inferadb_ledger_sdk::{
 use crate::{
     config::LedgerBackendConfig,
     error::{LedgerStorageError, Result},
+    keys::{decode_key, encode_key},
     transaction::LedgerTransaction,
 };
 
@@ -187,19 +188,6 @@ impl LedgerBackend {
         Arc::clone(&self.client)
     }
 
-    /// Encodes a key as a hexadecimal string.
-    ///
-    /// This encoding preserves byte ordering, which is essential for
-    /// correct range scan behavior.
-    fn encode_key(key: &[u8]) -> String {
-        hex::encode(key)
-    }
-
-    /// Decodes a hexadecimal key string back to bytes.
-    fn decode_key(key: &str) -> std::result::Result<Vec<u8>, LedgerStorageError> {
-        hex::decode(key).map_err(|e| LedgerStorageError::KeyEncoding(e.to_string()))
-    }
-
     /// Performs a read with the configured consistency level.
     async fn do_read(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, LedgerStorageError> {
         let result = match self.read_consistency {
@@ -239,7 +227,7 @@ impl LedgerBackend {
 #[async_trait]
 impl StorageBackend for LedgerBackend {
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
-        let encoded_key = Self::encode_key(key);
+        let encoded_key = encode_key(key);
 
         match self.do_read(&encoded_key).await {
             Ok(Some(value)) => Ok(Some(Bytes::from(value))),
@@ -249,7 +237,7 @@ impl StorageBackend for LedgerBackend {
     }
 
     async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()> {
-        let encoded_key = Self::encode_key(&key);
+        let encoded_key = encode_key(&key);
 
         self.client
             .write(
@@ -269,7 +257,7 @@ impl StorageBackend for LedgerBackend {
         expected: Option<&[u8]>,
         new_value: Vec<u8>,
     ) -> StorageResult<()> {
-        let encoded_key = Self::encode_key(key);
+        let encoded_key = encode_key(key);
 
         let condition = match expected {
             None => SetCondition::NotExists,
@@ -297,7 +285,7 @@ impl StorageBackend for LedgerBackend {
     }
 
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {
-        let encoded_key = Self::encode_key(key);
+        let encoded_key = encode_key(key);
 
         self.client
             .write(self.namespace_id, self.vault_id, vec![Operation::delete_entity(encoded_key)])
@@ -313,14 +301,14 @@ impl StorageBackend for LedgerBackend {
     {
         // Convert range bounds to hex-encoded strings
         let (start_key, start_inclusive) = match range.start_bound() {
-            Bound::Included(k) => (Some(Self::encode_key(k)), true),
-            Bound::Excluded(k) => (Some(Self::encode_key(k)), false),
+            Bound::Included(k) => (Some(encode_key(k)), true),
+            Bound::Excluded(k) => (Some(encode_key(k)), false),
             Bound::Unbounded => (None, true),
         };
 
         let (end_key, end_inclusive) = match range.end_bound() {
-            Bound::Included(k) => (Some(Self::encode_key(k)), true),
-            Bound::Excluded(k) => (Some(Self::encode_key(k)), false),
+            Bound::Included(k) => (Some(encode_key(k)), true),
+            Bound::Excluded(k) => (Some(encode_key(k)), false),
             Bound::Unbounded => (None, true),
         };
 
@@ -368,7 +356,7 @@ impl StorageBackend for LedgerBackend {
             };
 
             if after_start && before_end {
-                match Self::decode_key(&entity.key) {
+                match decode_key(&entity.key) {
                     Ok(key) => {
                         key_values.push(KeyValue {
                             key: Bytes::from(key),
@@ -403,7 +391,7 @@ impl StorageBackend for LedgerBackend {
         // Build delete operations
         let operations: Vec<_> = keys_to_delete
             .into_iter()
-            .map(|kv| Operation::delete_entity(Self::encode_key(&kv.key)))
+            .map(|kv| Operation::delete_entity(encode_key(&kv.key)))
             .collect();
 
         // Execute as batch delete
@@ -432,7 +420,7 @@ impl StorageBackend for LedgerBackend {
         value: Vec<u8>,
         ttl_seconds: u64,
     ) -> StorageResult<()> {
-        let encoded_key = Self::encode_key(&key);
+        let encoded_key = encode_key(&key);
         let expires_at = Self::compute_expiration_timestamp(ttl_seconds)?;
 
         self.client
@@ -478,8 +466,8 @@ mod tests {
     #[test]
     fn test_key_encoding_roundtrip() {
         let original = b"hello world";
-        let encoded = LedgerBackend::encode_key(original);
-        let decoded = LedgerBackend::decode_key(&encoded).unwrap();
+        let encoded = encode_key(original);
+        let decoded = decode_key(&encoded).unwrap();
 
         assert_eq!(original.as_slice(), decoded.as_slice());
     }
@@ -490,9 +478,9 @@ mod tests {
         let k2 = b"aab";
         let k3 = b"bbb";
 
-        let e1 = LedgerBackend::encode_key(k1);
-        let e2 = LedgerBackend::encode_key(k2);
-        let e3 = LedgerBackend::encode_key(k3);
+        let e1 = encode_key(k1);
+        let e2 = encode_key(k2);
+        let e3 = encode_key(k3);
 
         // Lexicographic ordering should be preserved
         assert!(e1 < e2);
@@ -503,8 +491,8 @@ mod tests {
     fn test_key_encoding_binary_keys() {
         // Test with binary data including null bytes
         let key = [0x00, 0x01, 0xFF, 0xFE, 0x00];
-        let encoded = LedgerBackend::encode_key(&key);
-        let decoded = LedgerBackend::decode_key(&encoded).unwrap();
+        let encoded = encode_key(&key);
+        let decoded = decode_key(&encoded).unwrap();
 
         assert_eq!(&key[..], decoded.as_slice());
     }
@@ -512,15 +500,15 @@ mod tests {
     #[test]
     fn test_key_encoding_empty_key() {
         let key: &[u8] = b"";
-        let encoded = LedgerBackend::encode_key(key);
-        let decoded = LedgerBackend::decode_key(&encoded).unwrap();
+        let encoded = encode_key(key);
+        let decoded = decode_key(&encoded).unwrap();
 
         assert_eq!(key, decoded.as_slice());
     }
 
     #[test]
     fn test_decode_invalid_hex() {
-        let result = LedgerBackend::decode_key("invalid-hex-gg");
+        let result = decode_key("invalid-hex-gg");
         assert!(result.is_err());
     }
 
