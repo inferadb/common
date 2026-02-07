@@ -7,6 +7,26 @@
 //! - Error rates by type
 //! - Cache hit/miss rates (for caching backends)
 //!
+//! # Memory Ordering Strategy
+//!
+//! All atomic operations use `Ordering::Relaxed`. This is intentional:
+//!
+//! - **Correctness**: Each counter is independent and monotonically increasing. `Relaxed`
+//!   guarantees atomicity of individual operations (no torn reads/writes), which is sufficient for
+//!   `fetch_add` on a single counter.
+//! - **Snapshot consistency**: `snapshot()` reads multiple counters sequentially. With `Relaxed`,
+//!   counters may appear slightly inconsistent relative to each other (e.g., `error_count` might
+//!   reflect an increment before the corresponding `get_count` is visible). This is acceptable for
+//!   telemetry — dashboards and alerting operate on time-aggregated data where sub-microsecond
+//!   ordering is irrelevant.
+//! - **Why not `Acquire`/`Release`?** Upgrading to `Acquire` loads and `Release` stores would add
+//!   memory barrier overhead (significant on ARM/aarch64) but would **not** provide multi-counter
+//!   transactional consistency. True point-in-time snapshots across 20 counters would require a
+//!   mutex, which defeats the purpose of lock-free metrics on the hot path.
+//! - **`reset()` uses `Relaxed`** because it is called infrequently (e.g., between reporting
+//!   intervals) and approximate zeroing is acceptable — a concurrent increment racing with reset
+//!   may be lost, which is fine for periodic telemetry.
+//!
 //! # Usage
 //!
 //! ```
@@ -199,6 +219,7 @@ pub struct Metrics {
     inner: Arc<MetricsInner>,
 }
 
+// All fields use `Ordering::Relaxed` — see module-level docs for rationale.
 struct MetricsInner {
     // Operation counts
     get_count: AtomicU64,
@@ -338,7 +359,12 @@ impl Metrics {
         self.inner.health_check_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Get a snapshot of current metrics
+    /// Get a snapshot of current metrics.
+    ///
+    /// Reads all counters using `Relaxed` ordering. The snapshot is approximately
+    /// consistent — individual counter values are accurate, but counters may
+    /// reflect different points in time relative to each other. See the module-level
+    /// documentation for the full ordering rationale.
     #[must_use]
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
