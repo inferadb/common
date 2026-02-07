@@ -54,17 +54,17 @@ use crate::{error::StorageResult, transaction::Transaction, types::KeyValue};
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
+/// use bytes::Bytes;
 /// use inferadb_common_storage::{StorageBackend, MemoryBackend};
 ///
-/// async fn example() {
-///     let backend = MemoryBackend::new();
-///     
-///     // Store and retrieve
-///     backend.set(b"key".to_vec(), b"value".to_vec()).await.unwrap();
-///     let value = backend.get(b"key").await.unwrap();
-///     assert_eq!(value, Some(Bytes::from("value")));
-/// }
+/// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+/// let backend = MemoryBackend::new();
+///
+/// backend.set(b"key".to_vec(), b"value".to_vec()).await.unwrap();
+/// let value = backend.get(b"key").await.unwrap();
+/// assert_eq!(value, Some(Bytes::from("value")));
+/// # });
 /// ```
 #[async_trait]
 pub trait StorageBackend: Send + Sync {

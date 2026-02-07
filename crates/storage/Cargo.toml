@@ -9,6 +9,9 @@ description = "Shared storage backend abstraction for InferaDB services"
 keywords = ["storage", "database", "key-value", "async"]
 categories = ["database", "asynchronous"]
 
+[features]
+testutil = []
+
 [lints]
 workspace = true
 

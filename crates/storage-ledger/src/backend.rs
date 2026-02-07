@@ -56,6 +56,7 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
 /// # Example
 ///
 /// ```no_run
+/// // Requires a running Ledger server.
 /// use inferadb_common_storage_ledger::{
 ///     ClientConfig, LedgerBackend, LedgerBackendConfig, ServerSource,
 /// };
@@ -135,6 +136,7 @@ impl LedgerBackend {
     /// # Example
     ///
     /// ```no_run
+    /// // Requires a running Ledger server.
     /// use inferadb_common_storage_ledger::{
     ///     ClientConfig, LedgerBackend, LedgerBackendConfig, ServerSource,
     /// };
@@ -234,6 +236,18 @@ impl LedgerBackend {
     #[must_use]
     pub fn client_arc(&self) -> Arc<LedgerClient> {
         Arc::clone(&self.client)
+    }
+
+    /// Returns the configured page size for range queries.
+    #[must_use]
+    pub fn page_size(&self) -> u32 {
+        self.page_size
+    }
+
+    /// Returns the configured maximum number of results for range queries.
+    #[must_use]
+    pub fn max_range_results(&self) -> usize {
+        self.max_range_results
     }
 
     /// Returns the namespace ID as a raw `i64` for SDK calls.

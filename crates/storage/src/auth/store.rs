@@ -23,6 +23,7 @@
 //! # Usage
 //!
 //! ```no_run
+//! // Demonstrates the trait interface; requires a concrete store implementation.
 //! use async_trait::async_trait;
 //! use inferadb_common_storage::auth::{PublicSigningKey, PublicSigningKeyStore};
 //! use inferadb_common_storage::{NamespaceId, StorageError};

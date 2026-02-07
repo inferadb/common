@@ -52,6 +52,7 @@ struct CasOperation {
 /// # Example
 ///
 /// ```no_run
+/// // Requires a running Ledger server.
 /// use inferadb_common_storage::{StorageBackend, Transaction};
 /// use inferadb_common_storage_ledger::LedgerBackend;
 ///

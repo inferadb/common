@@ -28,6 +28,7 @@
 //! # Example
 //!
 //! ```no_run
+//! // Requires a running Ledger server.
 //! use std::sync::Arc;
 //! use chrono::Utc;
 //! use inferadb_ledger_sdk::LedgerClient;
@@ -161,6 +162,7 @@ impl LedgerSigningKeyStore {
     /// # Example
     ///
     /// ```no_run
+    /// // Requires a running Ledger server.
     /// use std::sync::Arc;
     /// use inferadb_ledger_sdk::LedgerClient;
     /// use inferadb_common_storage::auth::SigningKeyMetrics;

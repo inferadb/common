@@ -10,6 +10,9 @@ readme = "README.md"
 keywords = ["jwt", "authentication", "cache", "async"]
 categories = ["authentication", "asynchronous"]
 
+[features]
+testutil = ["inferadb-common-storage/testutil", "dep:rand_core"]
+
 [lints]
 workspace = true
 
@@ -29,6 +32,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
+rand_core = { version = "0.6", features = ["getrandom"], optional = true }
 
 [dev-dependencies]
 proptest.workspace = true

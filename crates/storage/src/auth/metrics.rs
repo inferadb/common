@@ -6,7 +6,7 @@
 //!
 //! # Example
 //!
-//! ```no_run
+//! ```
 //! use std::time::Duration;
 //! use inferadb_common_storage::auth::{SigningKeyErrorKind, SigningKeyMetrics};
 //!
@@ -20,7 +20,7 @@
 //!
 //! // Get a snapshot for reporting
 //! let snapshot = metrics.snapshot();
-//! println!("Get operations: {}", snapshot.get_count);
+//! assert_eq!(snapshot.get_count, 1);
 //! ```
 
 use std::{
@@ -225,7 +225,7 @@ struct SigningKeyMetricsInner {
 ///
 /// # Example
 ///
-/// ```no_run
+/// ```
 /// use std::time::{Duration, Instant};
 /// use inferadb_common_storage::auth::{SigningKeyMetrics, SigningKeyErrorKind};
 ///
@@ -239,8 +239,10 @@ struct SigningKeyMetricsInner {
 /// // Record an error
 /// metrics.record_error(SigningKeyErrorKind::NotFound);
 ///
-/// // Log metrics periodically
-/// metrics.log_metrics();
+/// // Take a snapshot for reporting
+/// let snapshot = metrics.snapshot();
+/// assert_eq!(snapshot.get_count, 1);
+/// assert_eq!(snapshot.error_not_found, 1);
 /// ```
 #[derive(Clone)]
 pub struct SigningKeyMetrics {

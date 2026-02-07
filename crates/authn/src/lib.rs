@@ -16,6 +16,7 @@
 //! ## Example
 //!
 //! ```no_run
+//! // Requires a `PublicSigningKeyStore` implementation and a valid JWT token.
 //! use std::sync::Arc;
 //! use std::time::Duration;
 //! use inferadb_common_authn::{SigningKeyCache, jwt::verify_with_signing_key_cache};
@@ -44,6 +45,10 @@ pub mod error;
 pub mod jwt;
 /// Ledger-backed signing key cache.
 pub mod signing_key_cache;
+/// Shared test utilities for authentication testing.
+#[cfg(any(test, feature = "testutil"))]
+#[allow(clippy::expect_used)]
+pub mod testutil;
 /// Algorithm validation.
 pub mod validation;
 

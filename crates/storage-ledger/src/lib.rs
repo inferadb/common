@@ -34,6 +34,7 @@
 //! # Quick Start
 //!
 //! ```no_run
+//! // Requires a running Ledger server.
 //! use inferadb_common_storage_ledger::{
 //!     ClientConfig, LedgerBackend, LedgerBackendConfig, ServerSource,
 //! };
@@ -91,6 +92,10 @@ mod transaction;
 
 /// Authentication-related storage implementations.
 pub mod auth;
+/// Shared test utilities for Ledger backend testing.
+#[cfg(any(test, feature = "testutil"))]
+#[allow(clippy::expect_used)]
+pub mod testutil;
 
 pub use backend::LedgerBackend;
 pub use config::{

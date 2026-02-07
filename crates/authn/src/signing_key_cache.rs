@@ -24,6 +24,7 @@
 //! # Example
 //!
 //! ```no_run
+//! // Requires a `PublicSigningKeyStore` implementation (e.g., LedgerSigningKeyStore).
 //! use std::sync::Arc;
 //! use std::time::Duration;
 //! use inferadb_common_authn::SigningKeyCache;
@@ -115,6 +116,7 @@ impl SigningKeyCache {
     /// # Example
     ///
     /// ```no_run
+    /// // Requires a `PublicSigningKeyStore` implementation (e.g., LedgerSigningKeyStore).
     /// use std::sync::Arc;
     /// use std::time::Duration;
     /// use inferadb_common_authn::SigningKeyCache;
@@ -381,23 +383,16 @@ fn to_decoding_key(key: &PublicSigningKey) -> Result<DecodingKey, AuthError> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use chrono::Duration as ChronoDuration;
-    use ed25519_dalek::SigningKey;
     use inferadb_common_storage::{CertId, ClientId, auth::MemorySigningKeyStore};
-    use rand_core::OsRng;
 
     use super::*;
-
-    /// Generate a valid Ed25519 public key for testing.
-    fn generate_test_public_key() -> String {
-        let signing_key = SigningKey::generate(&mut OsRng);
-        let verifying_key = signing_key.verifying_key();
-        URL_SAFE_NO_PAD.encode(verifying_key.as_bytes())
-    }
+    use crate::testutil::generate_test_keypair;
 
     fn create_test_key(kid: &str, active: bool) -> PublicSigningKey {
+        let (_, public_key_b64) = generate_test_keypair();
         PublicSigningKey {
             kid: kid.to_string(),
-            public_key: generate_test_public_key().into(),
+            public_key: public_key_b64.into(),
             client_id: ClientId::from(1),
             cert_id: CertId::from(1),
             created_at: Utc::now(),

@@ -1342,3 +1342,438 @@ async fn test_clear_range_with_pagination() {
     let results = backend.get_range(vec![b'k', 0]..=vec![b'k', 9]).await.expect("get_range");
     assert!(results.is_empty(), "all keys should be deleted after clear_range");
 }
+
+// ============================================================================
+// Transaction Conflict and Edge Case Tests
+// ============================================================================
+
+/// Empty transaction commit on LedgerBackend is a no-op (no SDK call).
+#[tokio::test]
+async fn test_ledger_empty_transaction_commit() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    // Pre-populate to verify nothing changes
+    backend.set(b"existing".to_vec(), b"untouched".to_vec()).await.unwrap();
+
+    let txn = backend.transaction().await.unwrap();
+    txn.commit().await.expect("empty Ledger transaction should succeed");
+
+    assert_eq!(backend.get(b"existing").await.unwrap(), Some(Bytes::from("untouched")));
+}
+
+/// Mixed CAS + unconditional operations in a single LedgerBackend transaction.
+///
+/// Note: MockLedgerServer doesn't enforce CAS conditions, so this test verifies
+/// that all operation types are correctly assembled and submitted to the SDK.
+#[tokio::test]
+async fn test_ledger_mixed_cas_and_unconditional_operations() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    // Setup initial state
+    backend.set(b"cas-key".to_vec(), b"original".to_vec()).await.unwrap();
+    backend.set(b"uncond-key".to_vec(), b"old".to_vec()).await.unwrap();
+    backend.set(b"delete-me".to_vec(), b"doomed".to_vec()).await.unwrap();
+
+    let mut txn = backend.transaction().await.unwrap();
+
+    // CAS operation
+    txn.compare_and_set(b"cas-key".to_vec(), Some(b"original".to_vec()), b"cas-updated".to_vec())
+        .expect("CAS buffer");
+
+    // Unconditional set
+    txn.set(b"uncond-key".to_vec(), b"new-value".to_vec());
+
+    // Unconditional delete
+    txn.delete(b"delete-me".to_vec());
+
+    // New key via set
+    txn.set(b"brand-new".to_vec(), b"fresh".to_vec());
+
+    txn.commit().await.expect("mixed commit on Ledger");
+
+    // Verify all operations applied
+    assert_eq!(backend.get(b"cas-key").await.unwrap(), Some(Bytes::from("cas-updated")));
+    assert_eq!(backend.get(b"uncond-key").await.unwrap(), Some(Bytes::from("new-value")));
+    assert_eq!(backend.get(b"delete-me").await.unwrap(), None);
+    assert_eq!(backend.get(b"brand-new").await.unwrap(), Some(Bytes::from("fresh")));
+}
+
+/// Abort isolation on LedgerBackend: dropped transaction leaves no state.
+#[tokio::test]
+async fn test_ledger_abort_isolation() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    backend.set(b"existing".to_vec(), b"original".to_vec()).await.unwrap();
+
+    {
+        let mut txn = backend.transaction().await.unwrap();
+        txn.set(b"new-key".to_vec(), b"should-not-persist".to_vec());
+        txn.set(b"existing".to_vec(), b"overwrite".to_vec());
+        txn.delete(b"existing".to_vec());
+
+        // Read-your-writes works within the transaction
+        assert_eq!(txn.get(b"new-key").await.unwrap(), Some(Bytes::from("should-not-persist")));
+        // Drop without committing
+    }
+
+    // Backend should be completely unaffected
+    assert_eq!(
+        backend.get(b"existing").await.unwrap(),
+        Some(Bytes::from("original")),
+        "existing key should be unchanged after aborted Ledger transaction"
+    );
+    assert_eq!(
+        backend.get(b"new-key").await.unwrap(),
+        None,
+        "new key should not exist after aborted Ledger transaction"
+    );
+}
+
+/// Large transaction with many operations on LedgerBackend.
+#[tokio::test]
+async fn test_ledger_large_transaction() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    let mut txn = backend.transaction().await.unwrap();
+
+    for i in 0..200 {
+        txn.set(format!("bulk-{i:04}").into_bytes(), format!("value-{i}").into_bytes());
+    }
+
+    txn.commit().await.expect("large Ledger commit");
+
+    // Spot-check
+    assert_eq!(backend.get(b"bulk-0000").await.unwrap(), Some(Bytes::from("value-0")));
+    assert_eq!(backend.get(b"bulk-0199").await.unwrap(), Some(Bytes::from("value-199")));
+}
+
+/// LedgerBackend transaction with only CAS operations.
+#[tokio::test]
+async fn test_ledger_transaction_only_cas() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    backend.set(b"a".to_vec(), b"1".to_vec()).await.unwrap();
+
+    let mut txn = backend.transaction().await.unwrap();
+    txn.compare_and_set(b"a".to_vec(), Some(b"1".to_vec()), b"2".to_vec()).expect("CAS");
+    txn.compare_and_set(b"b".to_vec(), None, b"new".to_vec()).expect("CAS insert");
+
+    txn.commit().await.expect("CAS-only Ledger commit");
+
+    assert_eq!(backend.get(b"a").await.unwrap(), Some(Bytes::from("2")));
+    assert_eq!(backend.get(b"b").await.unwrap(), Some(Bytes::from("new")));
+}
+
+/// LedgerBackend transaction with only deletes.
+#[tokio::test]
+async fn test_ledger_transaction_only_deletes() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    backend.set(b"x".to_vec(), b"1".to_vec()).await.unwrap();
+    backend.set(b"y".to_vec(), b"2".to_vec()).await.unwrap();
+
+    let mut txn = backend.transaction().await.unwrap();
+    txn.delete(b"x".to_vec());
+    txn.delete(b"y".to_vec());
+
+    txn.commit().await.expect("delete-only Ledger commit");
+
+    assert_eq!(backend.get(b"x").await.unwrap(), None);
+    assert_eq!(backend.get(b"y").await.unwrap(), None);
+}
+
+// ============================================================================
+// TTL Boundary Condition Tests
+// ============================================================================
+//
+// Note: The MockLedgerServer does not enforce TTL expiration, so these tests
+// verify that the SDK calls succeed without errors and that the data is
+// persisted. Actual expiration behavior requires a real Ledger server.
+
+/// Zero TTL: the API call should succeed. The mock server stores the key
+/// regardless of the expiry timestamp, so we verify structural correctness.
+#[tokio::test]
+async fn test_ledger_set_with_zero_ttl() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    // Setting with Duration::ZERO should not error — compute_expiration_timestamp
+    // adds 0 seconds to the current epoch, producing a valid (past) timestamp.
+    let result =
+        backend.set_with_ttl(b"zero-ttl".to_vec(), b"ephemeral".to_vec(), Duration::ZERO).await;
+
+    assert!(
+        result.is_ok(),
+        "set_with_ttl with zero duration should succeed at the SDK level: {result:?}"
+    );
+
+    // Mock server doesn't expire, so the key is still readable.
+    let value = backend.get(b"zero-ttl").await.expect("get");
+    assert_eq!(value, Some(Bytes::from("ephemeral")));
+}
+
+/// Large TTL: verify no arithmetic overflow in compute_expiration_timestamp.
+/// Using ~100 years — large enough to exercise overflow concerns but safe
+/// for `SystemTime` addition.
+#[tokio::test]
+async fn test_ledger_set_with_large_ttl() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    let hundred_years = Duration::from_secs(100 * 365 * 24 * 3600);
+
+    backend
+        .set_with_ttl(b"long-lived".to_vec(), b"value".to_vec(), hundred_years)
+        .await
+        .expect("set_with_ttl with large TTL should succeed");
+
+    let result = backend.get(b"long-lived").await.expect("get");
+    assert_eq!(result, Some(Bytes::from("value")));
+}
+
+/// TTL replacement: set_with_ttl twice on the same key should succeed,
+/// with the second call overwriting both value and TTL.
+#[tokio::test]
+async fn test_ledger_ttl_replacement() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    backend
+        .set_with_ttl(b"replace".to_vec(), b"v1".to_vec(), Duration::from_secs(60))
+        .await
+        .expect("first set_with_ttl");
+
+    backend
+        .set_with_ttl(b"replace".to_vec(), b"v2".to_vec(), Duration::from_secs(3600))
+        .await
+        .expect("second set_with_ttl");
+
+    let result = backend.get(b"replace").await.expect("get");
+    assert_eq!(result, Some(Bytes::from("v2")), "second set_with_ttl should overwrite the value");
+}
+
+/// TTL clearing: set_with_ttl followed by set (no TTL) should succeed.
+/// On a real Ledger server, the set without TTL would remove the expiration.
+#[tokio::test]
+async fn test_ledger_set_clears_ttl() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    backend
+        .set_with_ttl(b"clearing".to_vec(), b"temp".to_vec(), Duration::from_secs(60))
+        .await
+        .expect("set_with_ttl");
+
+    // Overwrite without TTL — on a real server this removes the expiration.
+    backend.set(b"clearing".to_vec(), b"permanent".to_vec()).await.expect("set without TTL");
+
+    let result = backend.get(b"clearing").await.expect("get");
+    assert_eq!(result, Some(Bytes::from("permanent")));
+}
+
+// ============================================================================
+// Range Query Edge Case Tests
+// ============================================================================
+//
+// These tests exercise the `LedgerBackend::get_range` implementation with
+// boundary conditions that commonly cause off-by-one errors: degenerate ranges,
+// single-element ranges, unbounded ranges, and boundary inclusion/exclusion.
+
+/// Helper: populate a backend with keys "a", "b", "c", "d", "e".
+async fn populate_range_test_backend(backend: &LedgerBackend) {
+    for (key, val) in [
+        (b"a".as_slice(), b"va".as_slice()),
+        (b"b", b"vb"),
+        (b"c", b"vc"),
+        (b"d", b"vd"),
+        (b"e", b"ve"),
+    ] {
+        backend.set(key.to_vec(), val.to_vec()).await.expect("set");
+    }
+}
+
+/// `start..end` where start == end (exclusive) — degenerate empty range.
+#[tokio::test]
+async fn test_ledger_range_degenerate_exclusive() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+    populate_range_test_backend(&backend).await;
+
+    let results = backend
+        .get_range(b"c".to_vec()..b"c".to_vec())
+        .await
+        .expect("degenerate exclusive range should succeed");
+    assert!(
+        results.is_empty(),
+        "start == end (exclusive) should return empty vec, got {} results",
+        results.len()
+    );
+}
+
+/// `start..=start` (inclusive) should return exactly one key if it exists.
+#[tokio::test]
+async fn test_ledger_range_single_key_inclusive() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+    populate_range_test_backend(&backend).await;
+
+    let results = backend
+        .get_range(b"c".to_vec()..=b"c".to_vec())
+        .await
+        .expect("single key inclusive range should succeed");
+    assert_eq!(results.len(), 1, "should return exactly the one matching key");
+    assert_eq!(results[0].key, Bytes::from("c"));
+    assert_eq!(results[0].value, Bytes::from("vc"));
+}
+
+/// `start..=start` for a nonexistent key should return empty.
+#[tokio::test]
+async fn test_ledger_range_single_key_nonexistent() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+    populate_range_test_backend(&backend).await;
+
+    let results = backend
+        .get_range(b"z".to_vec()..=b"z".to_vec())
+        .await
+        .expect("nonexistent single key range should succeed");
+    assert!(results.is_empty(), "nonexistent key should return empty vec");
+}
+
+/// `..end` (unbounded start, exclusive end) should return all keys before `end`.
+#[tokio::test]
+async fn test_ledger_range_unbounded_start() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+    populate_range_test_backend(&backend).await;
+
+    let results =
+        backend.get_range(..b"c".to_vec()).await.expect("unbounded start range should succeed");
+    assert_eq!(results.len(), 2, "should return keys a, b");
+    assert_eq!(results[0].key, Bytes::from("a"));
+    assert_eq!(results[1].key, Bytes::from("b"));
+}
+
+/// `start..` (unbounded end) with prefix-compatible keys.
+///
+/// NOTE: The LedgerBackend uses a prefix-based SDK listing. When the end bound
+/// is unbounded, the prefix is set to the full hex-encoded start key. This means
+/// only keys whose hex encoding starts with the start key's hex encoding are
+/// returned. To test this correctly, we use a start key that is a byte-level
+/// prefix of other keys (e.g., `[1]` is a prefix of `[1, 0]`, `[1, 1]`, etc.),
+/// so their hex encodings also share the same prefix.
+#[tokio::test]
+async fn test_ledger_range_unbounded_end() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    // The start key [1] has hex encoding "01".
+    // Keys [1, 0] = "0100", [1, 1] = "0101", [1, 2] = "0102" all start with "01".
+    // Key [2] = "02" does NOT start with "01" and will be excluded by the SDK.
+    backend.set(vec![1, 0], b"v10".to_vec()).await.expect("set");
+    backend.set(vec![1, 1], b"v11".to_vec()).await.expect("set");
+    backend.set(vec![1, 2], b"v12".to_vec()).await.expect("set");
+    backend.set(vec![2], b"v2".to_vec()).await.expect("set");
+
+    // start = [1], unbounded end — prefix "01" matches [1, 0], [1, 1], [1, 2]
+    // but not [2] (hex "02").
+    let results = backend.get_range(vec![1]..).await.expect("unbounded end range should succeed");
+    assert_eq!(results.len(), 3, "should return 3 keys with prefix [1]");
+    assert_eq!(results[0].key.as_ref(), &[1, 0]);
+    assert_eq!(results[1].key.as_ref(), &[1, 1]);
+    assert_eq!(results[2].key.as_ref(), &[1, 2]);
+}
+
+/// `..` (fully unbounded) should return ALL keys.
+#[tokio::test]
+async fn test_ledger_range_fully_unbounded() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+    populate_range_test_backend(&backend).await;
+
+    let results = backend
+        .get_range::<std::ops::RangeFull>(..)
+        .await
+        .expect("fully unbounded range should succeed");
+    assert_eq!(results.len(), 5, "should return all 5 keys");
+}
+
+/// Both boundaries excluded: `(Excluded(a), Excluded(e))` should return b, c, d.
+#[tokio::test]
+async fn test_ledger_range_both_excluded_bounds() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+    populate_range_test_backend(&backend).await;
+
+    let results = backend
+        .get_range((Bound::Excluded(b"a".to_vec()), Bound::Excluded(b"e".to_vec())))
+        .await
+        .expect("both excluded bounds should succeed");
+    assert_eq!(results.len(), 3, "should return b, c, d");
+    assert_eq!(results[0].key, Bytes::from("b"));
+    assert_eq!(results[1].key, Bytes::from("c"));
+    assert_eq!(results[2].key, Bytes::from("d"));
+}
+
+/// Both boundaries included: `(Included(b), Included(d))` should return b, c, d.
+#[tokio::test]
+async fn test_ledger_range_both_included_bounds() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+    populate_range_test_backend(&backend).await;
+
+    let results = backend
+        .get_range((Bound::Included(b"b".to_vec()), Bound::Included(b"d".to_vec())))
+        .await
+        .expect("both included bounds should succeed");
+    assert_eq!(results.len(), 3, "should return b, c, d");
+    assert_eq!(results[0].key, Bytes::from("b"));
+    assert_eq!(results[1].key, Bytes::from("c"));
+    assert_eq!(results[2].key, Bytes::from("d"));
+}
+
+/// A range that falls entirely between existing keys should return empty.
+#[tokio::test]
+async fn test_ledger_range_between_keys() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    backend.set(b"a".to_vec(), b"va".to_vec()).await.expect("set");
+    backend.set(b"z".to_vec(), b"vz".to_vec()).await.expect("set");
+
+    let results = backend
+        .get_range(b"m".to_vec()..b"n".to_vec())
+        .await
+        .expect("range between keys should succeed");
+    assert!(results.is_empty(), "no keys exist in [m, n)");
+}
+
+/// Range results should be sorted by key.
+#[tokio::test]
+async fn test_ledger_range_results_sorted() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    // Insert in reverse order
+    for key in [b"e", b"d", b"c", b"b", b"a"] {
+        backend.set(key.to_vec(), b"v".to_vec()).await.expect("set");
+    }
+
+    let results =
+        backend.get_range(b"a".to_vec()..=b"e".to_vec()).await.expect("range should succeed");
+
+    for window in results.windows(2) {
+        assert!(
+            window[0].key < window[1].key,
+            "results should be sorted: {:?} should come before {:?}",
+            window[0].key,
+            window[1].key
+        );
+    }
+}

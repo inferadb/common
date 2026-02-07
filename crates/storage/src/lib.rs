@@ -76,7 +76,9 @@
 //!
 //! # Feature Flags
 //!
-//! This crate has no optional features. All functionality is always available.
+//! - **`testutil`**: Enables the [`testutil`] module with shared test helpers (key/value
+//!   generators, backend factories, assertion macros). Enable this in `[dev-dependencies]` for
+//!   integration tests.
 
 #![deny(unsafe_code)]
 
@@ -86,6 +88,9 @@ pub mod batch;
 pub mod error;
 pub mod memory;
 pub mod metrics;
+#[cfg(any(test, feature = "testutil"))]
+#[allow(clippy::expect_used)]
+pub mod testutil;
 pub mod transaction;
 pub mod types;
 

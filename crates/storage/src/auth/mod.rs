@@ -29,32 +29,28 @@
 //!
 //! # Example
 //!
-//! ```no_run
-//! use chrono::Utc;
+//! ```
 //! use inferadb_common_storage::auth::{
 //!     MemorySigningKeyStore, PublicSigningKey, PublicSigningKeyStore,
 //! };
 //! use inferadb_common_storage::NamespaceId;
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let store = MemorySigningKeyStore::new();
-//!     let ns = NamespaceId::from(100);
-//!     
-//!     let key = PublicSigningKey::builder()
-//!         .kid("key-abc123".to_owned())
-//!         .public_key("MCowBQYDK2VwAyEA...".to_owned())
-//!         .client_id(1001)
-//!         .cert_id(42)
-//!         .build();
-//!     
-//!     store.create_key(ns, &key).await?;
-//!     
-//!     let retrieved = store.get_key(ns, "key-abc123").await?;
-//!     assert!(retrieved.is_some());
-//!     
-//!     Ok(())
-//! }
+//! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+//! let store = MemorySigningKeyStore::new();
+//! let ns = NamespaceId::from(100);
+//!
+//! let key = PublicSigningKey::builder()
+//!     .kid("key-abc123".to_owned())
+//!     .public_key("MCowBQYDK2VwAyEA...".to_owned())
+//!     .client_id(1001)
+//!     .cert_id(42)
+//!     .build();
+//!
+//! store.create_key(ns, &key).await.unwrap();
+//!
+//! let retrieved = store.get_key(ns, "key-abc123").await.unwrap();
+//! assert!(retrieved.is_some());
+//! # });
 //! ```
 
 mod metrics;

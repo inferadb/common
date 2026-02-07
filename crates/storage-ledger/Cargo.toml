@@ -10,6 +10,9 @@ readme = "README.md"
 keywords = ["storage", "ledger", "blockchain", "database"]
 categories = ["database", "asynchronous"]
 
+[features]
+testutil = ["inferadb-common-storage/testutil"]
+
 [lints]
 workspace = true
 

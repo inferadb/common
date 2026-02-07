@@ -48,7 +48,7 @@ pub const DEFAULT_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 ///
 /// # Example
 ///
-/// ```no_run
+/// ```
 /// use std::time::Duration;
 ///
 /// use inferadb_common_storage_ledger::RetryConfig;
@@ -58,6 +58,8 @@ pub const DEFAULT_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 ///     .initial_backoff(Duration::from_millis(200))
 ///     .max_backoff(Duration::from_secs(10))
 ///     .build();
+///
+/// assert_eq!(config.max_retries(), 5);
 /// ```
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
@@ -121,7 +123,7 @@ impl Default for RetryConfig {
 ///
 /// # Example
 ///
-/// ```no_run
+/// ```
 /// use std::time::Duration;
 ///
 /// use inferadb_common_storage_ledger::TimeoutConfig;
@@ -131,6 +133,8 @@ impl Default for RetryConfig {
 ///     .write_timeout(Duration::from_secs(8))
 ///     .list_timeout(Duration::from_secs(20))
 ///     .build();
+///
+/// assert_eq!(config.read_timeout(), Duration::from_secs(3));
 /// ```
 #[derive(Debug, Clone)]
 pub struct TimeoutConfig {
@@ -204,6 +208,7 @@ impl Default for TimeoutConfig {
 /// # Example
 ///
 /// ```no_run
+/// // Requires a running Ledger server for the `ClientConfig` connection.
 /// use inferadb_common_storage::VaultId;
 /// use inferadb_common_storage_ledger::{ClientConfig, LedgerBackendConfig, ServerSource};
 ///

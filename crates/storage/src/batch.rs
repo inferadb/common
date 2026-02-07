@@ -6,10 +6,10 @@
 //!
 //! # Usage
 //!
-//! ```no_run
+//! ```
 //! use inferadb_common_storage::{MemoryBackend, batch::{BatchWriter, BatchConfig}};
 //!
-//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
 //! let backend = MemoryBackend::new();
 //! let mut writer = BatchWriter::new(backend, BatchConfig::default());
 //!
@@ -19,10 +19,9 @@
 //! writer.delete(b"old_key".to_vec());
 //!
 //! // Flush all at once
-//! let stats = writer.flush().await?;
-//! println!("Flushed {} operations in {} batches", stats.operations_count, stats.batches_count);
-//! # Ok(())
-//! # }
+//! let stats = writer.flush().await.unwrap();
+//! assert_eq!(stats.operations_count, 3);
+//! # });
 //! ```
 //!
 //! # Transaction Size Limits

@@ -12,23 +12,26 @@
 //!
 //! # Example
 //!
-//! ```ignore
-//! use inferadb_common_storage::StorageBackend;
+//! ```
+//! use inferadb_common_storage::{MemoryBackend, StorageBackend};
 //!
-//! async fn transfer(backend: &impl StorageBackend, from: &[u8], to: &[u8], amount: i64) {
-//!     let mut txn = backend.transaction().await.unwrap();
-//!     
-//!     // Read current balances
-//!     let from_balance = txn.get(from).await.unwrap();
-//!     let to_balance = txn.get(to).await.unwrap();
-//!     
-//!     // Update balances
-//!     txn.set(from.to_vec(), (from_balance - amount).to_vec());
-//!     txn.set(to.to_vec(), (to_balance + amount).to_vec());
-//!     
-//!     // Commit atomically
-//!     txn.commit().await.unwrap();
-//! }
+//! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+//! let backend = MemoryBackend::new();
+//!
+//! // Seed initial data
+//! backend.set(b"account:alice".to_vec(), b"100".to_vec()).await.unwrap();
+//! backend.set(b"account:bob".to_vec(), b"50".to_vec()).await.unwrap();
+//!
+//! // Atomic transfer via transaction
+//! let mut txn = backend.transaction().await.unwrap();
+//! txn.set(b"account:alice".to_vec(), b"80".to_vec());
+//! txn.set(b"account:bob".to_vec(), b"70".to_vec());
+//! txn.commit().await.unwrap();
+//!
+//! // Verify both writes applied atomically
+//! let alice = backend.get(b"account:alice").await.unwrap().unwrap();
+//! assert_eq!(&alice[..], b"80");
+//! # });
 //! ```
 
 use async_trait::async_trait;

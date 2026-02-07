@@ -5,6 +5,7 @@
 //! # Example
 //!
 //! ```no_run
+//! // Requires a valid JWT token string.
 //! use inferadb_common_authn::jwt::{decode_jwt_claims, decode_jwt_header};
 //!
 //! # fn example(token: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -273,6 +274,7 @@ pub fn verify_signature(
 /// # Example
 ///
 /// ```no_run
+/// // Requires a valid JWT token and a signing key registered in the cache.
 /// use inferadb_common_authn::jwt::verify_with_signing_key_cache;
 /// use inferadb_common_authn::signing_key_cache::SigningKeyCache;
 /// use inferadb_common_storage::auth::MemorySigningKeyStore;
@@ -582,91 +584,33 @@ mod tests {
 mod ledger_verification_tests {
     use std::{sync::Arc, time::Duration};
 
-    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
     use chrono::Utc;
-    use ed25519_dalek::SigningKey;
     use inferadb_common_storage::{
-        CertId, ClientId, NamespaceId,
-        auth::{MemorySigningKeyStore, PublicSigningKey, PublicSigningKeyStore},
+        NamespaceId,
+        auth::{MemorySigningKeyStore, PublicSigningKeyStore},
     };
     use jsonwebtoken::{Algorithm, EncodingKey, Header};
-    use rand_core::OsRng;
 
     use super::*;
-    use crate::signing_key_cache::SigningKeyCache;
-
-    /// Generate a test Ed25519 key pair and return (pkcs8_der, public_key_base64).
-    fn generate_test_keypair() -> (Vec<u8>, String) {
-        let signing_key = SigningKey::generate(&mut OsRng);
-        let public_key_bytes = signing_key.verifying_key().to_bytes();
-        let public_key_b64 = URL_SAFE_NO_PAD.encode(public_key_bytes);
-
-        // Create PKCS#8 DER encoding for Ed25519 private key
-        let private_bytes = signing_key.to_bytes();
-        let mut pkcs8_der = vec![
-            0x30, 0x2e, // SEQUENCE, 46 bytes
-            0x02, 0x01, 0x00, // INTEGER version 0
-            0x30, 0x05, // SEQUENCE, 5 bytes (algorithm identifier)
-            0x06, 0x03, 0x2b, 0x65, 0x70, // OID 1.3.101.112 (Ed25519)
-            0x04, 0x22, // OCTET STRING, 34 bytes
-            0x04, 0x20, // OCTET STRING, 32 bytes (the actual key)
-        ];
-        pkcs8_der.extend_from_slice(&private_bytes);
-
-        (pkcs8_der, public_key_b64)
-    }
-
-    /// Create a JWT signed with the given PKCS#8 DER key.
-    fn create_test_jwt(pkcs8_der: &[u8], kid: &str, org_id: &str) -> String {
-        let now = Utc::now().timestamp() as u64;
-        let claims = JwtClaims {
-            iss: "https://api.inferadb.com".into(),
-            sub: "client:test-client".into(),
-            aud: "https://api.inferadb.com/evaluate".into(),
-            exp: now + 3600,
-            iat: now,
-            nbf: None,
-            jti: Some("test-jti-12345".into()),
-            scope: "vault:read vault:write".into(),
-            vault_id: Some("123456789".into()),
-            org_id: Some(org_id.into()),
-        };
-
-        let mut header = Header::new(Algorithm::EdDSA);
-        header.kid = Some(kid.to_string());
-
-        let encoding_key = EncodingKey::from_ed_der(pkcs8_der);
-        jsonwebtoken::encode(&header, &claims, &encoding_key).expect("Failed to encode test JWT")
-    }
+    use crate::{
+        signing_key_cache::SigningKeyCache,
+        testutil::{
+            create_signed_jwt, create_test_signing_key, create_test_signing_key_with_pubkey,
+            generate_test_keypair,
+        },
+    };
 
     #[tokio::test]
     async fn test_verify_with_signing_key_cache_success() {
-        // Generate key pair
-        let (pkcs8_der, public_key_b64) = generate_test_keypair();
-        let kid = "test-key-001";
+        let (pkcs8_der, key) = create_test_signing_key("test-key-001");
         let org_id = NamespaceId::from(12345);
 
-        // Create store and cache
         let store = Arc::new(MemorySigningKeyStore::new());
         let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
 
-        // Register the public key
-        let public_key = PublicSigningKey {
-            kid: kid.to_string(),
-            public_key: public_key_b64.into(),
-            client_id: ClientId::from(1),
-            cert_id: CertId::from(1),
-            created_at: Utc::now(),
-            valid_from: Utc::now() - chrono::Duration::hours(1),
-            valid_until: None,
-            active: true,
-            revoked_at: None,
-            revocation_reason: None,
-        };
-        store.create_key(org_id, &public_key).await.unwrap();
+        store.create_key(org_id, &key).await.unwrap();
 
-        // Create and verify JWT
-        let token = create_test_jwt(&pkcs8_der, kid, &org_id.to_string());
+        let token = create_signed_jwt(&pkcs8_der, "test-key-001", &org_id.to_string());
         let claims = verify_with_signing_key_cache(&token, &cache).await.unwrap();
 
         assert_eq!(claims.org_id, Some(org_id.to_string()));
@@ -675,17 +619,14 @@ mod ledger_verification_tests {
 
     #[tokio::test]
     async fn test_verify_with_signing_key_cache_key_not_found() {
-        // Generate key pair
         let (pkcs8_der, _) = generate_test_keypair();
         let kid = "nonexistent-key";
         let org_id = NamespaceId::from(12345);
 
-        // Create store and cache (without registering the key)
         let store = Arc::new(MemorySigningKeyStore::new());
         let cache = SigningKeyCache::new(store, Duration::from_secs(300));
 
-        // Create JWT
-        let token = create_test_jwt(&pkcs8_der, kid, &org_id.to_string());
+        let token = create_signed_jwt(&pkcs8_der, kid, &org_id.to_string());
         let result = verify_with_signing_key_cache(&token, &cache).await;
 
         assert!(matches!(result, Err(AuthError::KeyNotFound { .. })));
@@ -693,32 +634,18 @@ mod ledger_verification_tests {
 
     #[tokio::test]
     async fn test_verify_with_signing_key_cache_key_revoked() {
-        // Generate key pair
         let (pkcs8_der, public_key_b64) = generate_test_keypair();
         let kid = "revoked-key";
         let org_id = NamespaceId::from(12345);
 
-        // Create store and cache
         let store = Arc::new(MemorySigningKeyStore::new());
         let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
 
-        // Register a revoked key
-        let public_key = PublicSigningKey {
-            kid: kid.to_string(),
-            public_key: public_key_b64.into(),
-            client_id: ClientId::from(1),
-            cert_id: CertId::from(1),
-            created_at: Utc::now(),
-            valid_from: Utc::now() - chrono::Duration::hours(1),
-            valid_until: None,
-            active: true,
-            revoked_at: Some(Utc::now()),
-            revocation_reason: None,
-        };
+        let mut public_key = create_test_signing_key_with_pubkey(kid, &public_key_b64);
+        public_key.revoked_at = Some(Utc::now());
         store.create_key(org_id, &public_key).await.unwrap();
 
-        // Create JWT
-        let token = create_test_jwt(&pkcs8_der, kid, &org_id.to_string());
+        let token = create_signed_jwt(&pkcs8_der, kid, &org_id.to_string());
         let result = verify_with_signing_key_cache(&token, &cache).await;
 
         assert!(matches!(result, Err(AuthError::KeyRevoked { .. })));
@@ -726,11 +653,9 @@ mod ledger_verification_tests {
 
     #[tokio::test]
     async fn test_verify_with_signing_key_cache_invalid_org_id() {
-        // Generate key pair
         let (pkcs8_der, _) = generate_test_keypair();
         let kid = "test-key";
 
-        // Create store and cache
         let store = Arc::new(MemorySigningKeyStore::new());
         let cache = SigningKeyCache::new(store, Duration::from_secs(300));
 
@@ -762,10 +687,8 @@ mod ledger_verification_tests {
 
     #[tokio::test]
     async fn test_verify_with_signing_key_cache_missing_kid() {
-        // Generate key pair
         let (pkcs8_der, _) = generate_test_keypair();
 
-        // Create store and cache
         let store = Arc::new(MemorySigningKeyStore::new());
         let cache = SigningKeyCache::new(store, Duration::from_secs(300));
 
