@@ -578,6 +578,7 @@ mod ledger_verification_tests {
             valid_until: None,
             active: true,
             revoked_at: None,
+            revocation_reason: None,
         };
         store.create_key(org_id, &public_key).await.unwrap();
 
@@ -629,6 +630,7 @@ mod ledger_verification_tests {
             valid_until: None,
             active: true,
             revoked_at: Some(Utc::now()),
+            revocation_reason: None,
         };
         store.create_key(org_id, &public_key).await.unwrap();
 

@@ -332,7 +332,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         &self,
         namespace_id: NamespaceId,
         kid: &str,
-        _reason: Option<&str>,
+        reason: Option<&str>,
     ) -> StorageResult<()> {
         let map_key = Self::make_key(namespace_id, kid);
         let mut keys = self.keys.write();
@@ -343,6 +343,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         if key.revoked_at.is_none() {
             key.revoked_at = Some(Utc::now());
             key.active = false;
+            key.revocation_reason = reason.map(String::from);
         }
         Ok(())
     }
@@ -549,6 +550,7 @@ mod tests {
 
         assert!(!retrieved.active);
         assert!(retrieved.revoked_at.is_some());
+        assert_eq!(retrieved.revocation_reason.as_deref(), Some("compromised"));
     }
 
     #[tokio::test]
@@ -664,5 +666,70 @@ mod tests {
         let result = cloned.get_key(NamespaceId::from(100), "shared").await.expect("get via clone");
 
         assert!(result.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_revoke_key_stores_reason() {
+        let store = MemorySigningKeyStore::new();
+        let key = make_test_key("reason-test");
+        let namespace_id = NamespaceId::from(100);
+
+        store.create_key(namespace_id, &key).await.expect("create");
+
+        store.revoke_key(namespace_id, "reason-test", Some("compromised")).await.expect("revoke");
+
+        let retrieved = store.get_key(namespace_id, "reason-test").await.expect("get");
+        let retrieved = retrieved.expect("exists");
+
+        assert!(!retrieved.active);
+        assert!(retrieved.revoked_at.is_some());
+        assert_eq!(retrieved.revocation_reason.as_deref(), Some("compromised"));
+    }
+
+    #[tokio::test]
+    async fn test_revoke_key_without_reason() {
+        let store = MemorySigningKeyStore::new();
+        let key = make_test_key("no-reason");
+        let namespace_id = NamespaceId::from(100);
+
+        store.create_key(namespace_id, &key).await.expect("create");
+
+        store.revoke_key(namespace_id, "no-reason", None).await.expect("revoke");
+
+        let retrieved = store.get_key(namespace_id, "no-reason").await.expect("get");
+        let retrieved = retrieved.expect("exists");
+
+        assert!(!retrieved.active);
+        assert!(retrieved.revoked_at.is_some());
+        assert!(retrieved.revocation_reason.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_revoke_key_idempotent_preserves_reason() {
+        let store = MemorySigningKeyStore::new();
+        let key = make_test_key("idempotent-reason");
+        let namespace_id = NamespaceId::from(100);
+
+        store.create_key(namespace_id, &key).await.expect("create");
+
+        // First revocation with a reason
+        store
+            .revoke_key(namespace_id, "idempotent-reason", Some("compromised"))
+            .await
+            .expect("first revoke");
+
+        let first = store.get_key(namespace_id, "idempotent-reason").await.expect("get");
+        let first = first.expect("exists");
+        assert_eq!(first.revocation_reason.as_deref(), Some("compromised"));
+
+        // Second revocation with a different reason — original should be preserved
+        store
+            .revoke_key(namespace_id, "idempotent-reason", Some("different reason"))
+            .await
+            .expect("second revoke");
+
+        let second = store.get_key(namespace_id, "idempotent-reason").await.expect("get");
+        let second = second.expect("exists");
+        assert_eq!(second.revocation_reason.as_deref(), Some("compromised"));
     }
 }

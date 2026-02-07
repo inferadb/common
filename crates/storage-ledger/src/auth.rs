@@ -406,7 +406,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         &self,
         namespace_id: NamespaceId,
         kid: &str,
-        _reason: Option<&str>,
+        reason: Option<&str>,
     ) -> StorageResult<()> {
         let start = Instant::now();
         let storage_key = Self::storage_key(kid);
@@ -423,6 +423,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
             if key.revoked_at.is_none() {
                 key.revoked_at = Some(Utc::now());
                 key.active = false;
+                key.revocation_reason = reason.map(String::from);
             }
 
             let value = Self::serialize_key(&key)?;
@@ -548,6 +549,52 @@ mod tests {
         assert_eq!(key.client_id, deserialized.client_id);
         assert_eq!(key.cert_id, deserialized.cert_id);
         assert_eq!(key.active, deserialized.active);
+        assert!(deserialized.revocation_reason.is_none());
+    }
+
+    #[test]
+    fn test_serialization_round_trip_with_revocation_reason() {
+        let now = Utc::now();
+        let key = PublicSigningKey::builder()
+            .kid("revoked-key".to_owned())
+            .public_key("MCowBQYDK2VwAyEAtest".to_owned())
+            .client_id(12345)
+            .cert_id(42)
+            .created_at(now)
+            .valid_from(now)
+            .revoked_at(now)
+            .revocation_reason("compromised".to_owned())
+            .active(false)
+            .build();
+
+        let bytes = LedgerSigningKeyStore::serialize_key(&key).expect("serialize");
+        let deserialized = LedgerSigningKeyStore::deserialize_key(&bytes).expect("deserialize");
+
+        assert_eq!(deserialized.revocation_reason.as_deref(), Some("compromised"));
+        assert_eq!(deserialized.revoked_at, Some(now));
+        assert!(!deserialized.active);
+    }
+
+    #[test]
+    fn test_deserialization_backward_compatible_without_revocation_reason() {
+        // Simulate JSON stored before revocation_reason field existed
+        let legacy_json = r#"{
+            "kid": "legacy-key",
+            "public_key": "MCowBQYDK2VwAyEAtest",
+            "client_id": 12345,
+            "cert_id": 42,
+            "created_at": "2024-01-15T10:30:00Z",
+            "valid_from": "2024-01-15T10:30:00Z",
+            "valid_until": null,
+            "active": true,
+            "revoked_at": null
+        }"#;
+
+        let deserialized = LedgerSigningKeyStore::deserialize_key(legacy_json.as_bytes())
+            .expect("legacy JSON should deserialize");
+
+        assert_eq!(deserialized.kid, "legacy-key");
+        assert!(deserialized.revocation_reason.is_none());
     }
 
     #[test]

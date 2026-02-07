@@ -128,6 +128,19 @@ pub struct PublicSigningKey {
     /// A revoked key is never used for validation regardless of
     /// other fields.
     pub revoked_at: Option<DateTime<Utc>>,
+
+    /// Reason for revocation (if revoked).
+    ///
+    /// Stores a human-readable reason for why the key was revoked
+    /// (e.g., "compromised", "key rotation", "administrative action").
+    /// This field is set alongside `revoked_at` during revocation and
+    /// supports enterprise compliance requirements (SOC 2, ISO 27001)
+    /// for auditable key lifecycle events.
+    ///
+    /// Uses `#[serde(default)]` for backward compatibility: existing
+    /// stored keys without this field deserialize with `None`.
+    #[serde(default)]
+    pub revocation_reason: Option<String>,
 }
 
 #[cfg(test)]
@@ -193,9 +206,11 @@ mod tests {
             .client_id(1001)
             .cert_id(42)
             .revoked_at(revoked)
+            .revocation_reason("compromised".to_owned())
             .build();
 
         assert_eq!(key.revoked_at, Some(revoked));
+        assert_eq!(key.revocation_reason.as_deref(), Some("compromised"));
     }
 
     #[test]
@@ -212,6 +227,7 @@ mod tests {
             .valid_until(expiry)
             .active(false)
             .revoked_at(now)
+            .revocation_reason("key rotation".to_owned())
             .build();
 
         assert_eq!(key.kid, "full-key");
@@ -223,6 +239,7 @@ mod tests {
         assert_eq!(key.valid_until, Some(expiry));
         assert!(!key.active);
         assert_eq!(key.revoked_at, Some(now));
+        assert_eq!(key.revocation_reason.as_deref(), Some("key rotation"));
     }
 
     fn create_test_key() -> PublicSigningKey {
@@ -280,6 +297,7 @@ mod tests {
             .valid_until(now + Duration::days(365))
             .active(false)
             .revoked_at(now + Duration::hours(1))
+            .revocation_reason("compromised".to_owned())
             .build();
 
         let json = serde_json::to_string(&key).expect("serialization should succeed");
@@ -289,11 +307,20 @@ mod tests {
         assert_eq!(key, deserialized);
         assert!(deserialized.valid_until.is_some());
         assert!(deserialized.revoked_at.is_some());
+        assert_eq!(deserialized.revocation_reason.as_deref(), Some("compromised"));
     }
 
     #[test]
     fn test_json_field_names() {
-        let key = create_test_key();
+        let now = Utc::now();
+        let key = PublicSigningKey::builder()
+            .kid("test-key-001".to_owned())
+            .public_key("MCowBQYDK2VwAyEAabcdefghijklmnopqrstuvwxyz12".to_owned())
+            .client_id(1001)
+            .cert_id(42)
+            .revoked_at(now)
+            .revocation_reason("test".to_owned())
+            .build();
         let json = serde_json::to_string(&key).expect("serialization should succeed");
 
         // Verify field names are snake_case as expected
@@ -306,6 +333,7 @@ mod tests {
         assert!(json.contains("\"valid_until\":"));
         assert!(json.contains("\"active\":"));
         assert!(json.contains("\"revoked_at\":"));
+        assert!(json.contains("\"revocation_reason\":"));
     }
 
     #[test]
@@ -367,5 +395,58 @@ mod tests {
 
         // Keys with different content are not equal
         assert_ne!(key1, key3);
+    }
+
+    #[test]
+    fn test_backward_compatible_deserialization_without_revocation_reason() {
+        // Simulate JSON from an older version that doesn't have the revocation_reason field
+        let json = r#"{
+            "kid": "legacy-key-001",
+            "public_key": "dGVzdC1wdWJsaWMta2V5LWJhc2U2NA",
+            "client_id": 9999,
+            "cert_id": 8888,
+            "created_at": "2024-01-15T10:30:00Z",
+            "valid_from": "2024-01-15T10:30:00Z",
+            "valid_until": "2025-01-15T10:30:00Z",
+            "active": true,
+            "revoked_at": null
+        }"#;
+
+        let key: PublicSigningKey = serde_json::from_str(json)
+            .expect("old JSON without revocation_reason should deserialize");
+
+        assert_eq!(key.kid, "legacy-key-001");
+        assert!(key.revocation_reason.is_none());
+    }
+
+    #[test]
+    fn test_revocation_reason_serialization_roundtrip() {
+        let now = Utc::now();
+        let key = PublicSigningKey::builder()
+            .kid("revoked-key".to_owned())
+            .public_key("MCowBQYDK2VwAyEAtest".to_owned())
+            .client_id(1001)
+            .cert_id(42)
+            .revoked_at(now)
+            .revocation_reason("compromised - emergency rotation".to_owned())
+            .build();
+
+        let json = serde_json::to_string(&key).expect("serialization should succeed");
+        let deserialized: PublicSigningKey =
+            serde_json::from_str(&json).expect("deserialization should succeed");
+
+        assert_eq!(
+            deserialized.revocation_reason.as_deref(),
+            Some("compromised - emergency rotation")
+        );
+        assert_eq!(key, deserialized);
+    }
+
+    #[test]
+    fn test_revocation_reason_none_when_not_revoked() {
+        let key = create_test_key();
+
+        assert!(key.revoked_at.is_none());
+        assert!(key.revocation_reason.is_none());
     }
 }

@@ -400,6 +400,7 @@ mod tests {
             valid_until: Some(Utc::now() + ChronoDuration::days(365)),
             active,
             revoked_at: None,
+            revocation_reason: None,
         }
     }
 
