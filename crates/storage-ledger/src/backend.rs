@@ -19,10 +19,10 @@ use inferadb_ledger_sdk::{
 };
 
 use crate::{
-    config::{LedgerBackendConfig, RetryConfig},
+    config::{LedgerBackendConfig, RetryConfig, TimeoutConfig},
     error::{LedgerStorageError, Result},
     keys::{decode_key, encode_key},
-    retry::with_retry,
+    retry::{with_retry, with_retry_timeout},
     transaction::LedgerTransaction,
 };
 
@@ -101,6 +101,9 @@ pub struct LedgerBackend {
 
     /// Retry configuration for transient failures.
     retry_config: RetryConfig,
+
+    /// Per-operation timeout configuration.
+    timeout_config: TimeoutConfig,
 }
 
 impl std::fmt::Debug for LedgerBackend {
@@ -154,6 +157,7 @@ impl LedgerBackend {
         let page_size = config.page_size();
         let max_range_results = config.max_range_results();
         let retry_config = config.retry_config().clone();
+        let timeout_config = config.timeout_config().clone();
 
         let client = LedgerClient::new(config.into_client_config())
             .await
@@ -167,6 +171,7 @@ impl LedgerBackend {
             page_size,
             max_range_results,
             retry_config,
+            timeout_config,
         })
     }
 
@@ -196,6 +201,7 @@ impl LedgerBackend {
             page_size: DEFAULT_PAGE_SIZE,
             max_range_results: DEFAULT_MAX_RANGE_RESULTS,
             retry_config: RetryConfig::default(),
+            timeout_config: TimeoutConfig::default(),
         }
     }
 
@@ -277,30 +283,42 @@ impl StorageBackend for LedgerBackend {
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
         let encoded_key = encode_key(key);
 
-        with_retry(&self.retry_config, None, "get", || async {
-            match self.do_read(&encoded_key).await {
-                Ok(Some(value)) => Ok(Some(Bytes::from(value))),
-                Ok(None) => Ok(None),
-                Err(e) => Err(StorageError::from(e)),
-            }
-        })
+        with_retry_timeout(
+            &self.retry_config,
+            self.timeout_config.read_timeout,
+            None,
+            "get",
+            || async {
+                match self.do_read(&encoded_key).await {
+                    Ok(Some(value)) => Ok(Some(Bytes::from(value))),
+                    Ok(None) => Ok(None),
+                    Err(e) => Err(StorageError::from(e)),
+                }
+            },
+        )
         .await
     }
 
     async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()> {
         let encoded_key = encode_key(&key);
 
-        with_retry(&self.retry_config, None, "set", || async {
-            self.client
-                .write(
-                    self.ns_raw(),
-                    self.vault_raw(),
-                    vec![Operation::set_entity(encoded_key.clone(), value.clone())],
-                )
-                .await
-                .map(|_| ())
-                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
-        })
+        with_retry_timeout(
+            &self.retry_config,
+            self.timeout_config.write_timeout,
+            None,
+            "set",
+            || async {
+                self.client
+                    .write(
+                        self.ns_raw(),
+                        self.vault_raw(),
+                        vec![Operation::set_entity(encoded_key.clone(), value.clone())],
+                    )
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+            },
+        )
         .await
     }
 
@@ -320,44 +338,56 @@ impl StorageBackend for LedgerBackend {
         use inferadb_ledger_sdk::SdkError;
         use tonic::Code;
 
-        with_retry(&self.retry_config, None, "compare_and_set", || async {
-            match self
-                .client
-                .write(
-                    self.ns_raw(),
-                    self.vault_raw(),
-                    vec![Operation::set_entity_if(
-                        encoded_key.clone(),
-                        new_value.clone(),
-                        condition.clone(),
-                    )],
-                )
-                .await
-            {
-                Ok(_) => Ok(()),
-                Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
-                    Err(StorageError::Conflict)
-                },
-                Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
-            }
-        })
+        with_retry_timeout(
+            &self.retry_config,
+            self.timeout_config.write_timeout,
+            None,
+            "compare_and_set",
+            || async {
+                match self
+                    .client
+                    .write(
+                        self.ns_raw(),
+                        self.vault_raw(),
+                        vec![Operation::set_entity_if(
+                            encoded_key.clone(),
+                            new_value.clone(),
+                            condition.clone(),
+                        )],
+                    )
+                    .await
+                {
+                    Ok(_) => Ok(()),
+                    Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
+                        Err(StorageError::Conflict)
+                    },
+                    Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
+                }
+            },
+        )
         .await
     }
 
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {
         let encoded_key = encode_key(key);
 
-        with_retry(&self.retry_config, None, "delete", || async {
-            self.client
-                .write(
-                    self.ns_raw(),
-                    self.vault_raw(),
-                    vec![Operation::delete_entity(encoded_key.clone())],
-                )
-                .await
-                .map(|_| ())
-                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
-        })
+        with_retry_timeout(
+            &self.retry_config,
+            self.timeout_config.write_timeout,
+            None,
+            "delete",
+            || async {
+                self.client
+                    .write(
+                        self.ns_raw(),
+                        self.vault_raw(),
+                        vec![Operation::delete_entity(encoded_key.clone())],
+                    )
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+            },
+        )
         .await
     }
 
@@ -388,87 +418,92 @@ impl StorageBackend for LedgerBackend {
             (None, None) => String::new(),
         };
 
-        // Paginate through results using page_token.
-        let mut all_key_values = Vec::new();
-        let mut page_token: Option<String> = None;
+        // Paginate through results using page_token, bounded by list timeout.
+        let list_timeout = self.timeout_config.list_timeout;
+        tokio::time::timeout(list_timeout, async {
+            let mut all_key_values = Vec::new();
+            let mut page_token: Option<String> = None;
 
-        loop {
-            let current_page_token = page_token.take();
-            let prefix_clone = prefix.clone();
+            loop {
+                let current_page_token = page_token.take();
+                let prefix_clone = prefix.clone();
 
-            let result = with_retry(&self.retry_config, None, "get_range", || async {
-                let opts = ListEntitiesOpts {
-                    key_prefix: prefix_clone.clone(),
-                    at_height: None,
-                    include_expired: false,
-                    limit: self.page_size,
-                    page_token: current_page_token.clone(),
-                    consistency: self.read_consistency,
-                    vault_id: self.vault_raw(),
-                };
+                let result = with_retry(&self.retry_config, None, "get_range_page", || async {
+                    let opts = ListEntitiesOpts {
+                        key_prefix: prefix_clone.clone(),
+                        at_height: None,
+                        include_expired: false,
+                        limit: self.page_size,
+                        page_token: current_page_token.clone(),
+                        consistency: self.read_consistency,
+                        vault_id: self.vault_raw(),
+                    };
 
-                self.client
-                    .list_entities(self.ns_raw(), opts)
-                    .await
-                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
-            })
-            .await?;
+                    self.client
+                        .list_entities(self.ns_raw(), opts)
+                        .await
+                        .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+                })
+                .await?;
 
-            // Filter results to match exact range bounds
-            for entity in &result.items {
-                let after_start = match &start_key {
-                    Some(start) if start_inclusive => &entity.key >= start,
-                    Some(start) => &entity.key > start,
-                    None => true,
-                };
+                // Filter results to match exact range bounds
+                for entity in &result.items {
+                    let after_start = match &start_key {
+                        Some(start) if start_inclusive => &entity.key >= start,
+                        Some(start) => &entity.key > start,
+                        None => true,
+                    };
 
-                let before_end = match &end_key {
-                    Some(end) if end_inclusive => &entity.key <= end,
-                    Some(end) => &entity.key < end,
-                    None => true,
-                };
+                    let before_end = match &end_key {
+                        Some(end) if end_inclusive => &entity.key <= end,
+                        Some(end) => &entity.key < end,
+                        None => true,
+                    };
 
-                if after_start && before_end {
-                    match decode_key(&entity.key) {
-                        Ok(key) => {
-                            all_key_values.push(KeyValue {
-                                key: Bytes::from(key),
-                                value: Bytes::from(entity.value.clone()),
-                            });
-                        },
-                        Err(e) => {
-                            tracing::warn!(key = entity.key, "Failed to decode key: {}", e);
-                            // Skip malformed keys
-                        },
+                    if after_start && before_end {
+                        match decode_key(&entity.key) {
+                            Ok(key) => {
+                                all_key_values.push(KeyValue {
+                                    key: Bytes::from(key),
+                                    value: Bytes::from(entity.value.clone()),
+                                });
+                            },
+                            Err(e) => {
+                                tracing::warn!(key = entity.key, "Failed to decode key: {}", e);
+                                // Skip malformed keys
+                            },
+                        }
                     }
+                }
+
+                // Check safety bound before continuing to the next page
+                if all_key_values.len() > self.max_range_results {
+                    return Err(StorageError::Internal {
+                        message: format!(
+                            "range query exceeded safety limit of {} results (got {}); \
+                         increase max_range_results in LedgerBackendConfig if this is expected",
+                            self.max_range_results,
+                            all_key_values.len(),
+                        ),
+                        source: None,
+                    });
+                }
+
+                // Continue to next page or break
+                if result.has_next_page() {
+                    page_token = result.next_page_token;
+                } else {
+                    break;
                 }
             }
 
-            // Check safety bound before continuing to the next page
-            if all_key_values.len() > self.max_range_results {
-                return Err(StorageError::Internal {
-                    message: format!(
-                        "range query exceeded safety limit of {} results (got {}); \
-                         increase max_range_results in LedgerBackendConfig if this is expected",
-                        self.max_range_results,
-                        all_key_values.len(),
-                    ),
-                    source: None,
-                });
-            }
+            // Sort by key to ensure consistent ordering
+            all_key_values.sort_by(|a, b| a.key.cmp(&b.key));
 
-            // Continue to next page or break
-            if result.has_next_page() {
-                page_token = result.next_page_token;
-            } else {
-                break;
-            }
-        }
-
-        // Sort by key to ensure consistent ordering
-        all_key_values.sort_by(|a, b| a.key.cmp(&b.key));
-
-        Ok(all_key_values)
+            Ok(all_key_values)
+        })
+        .await
+        .unwrap_or(Err(StorageError::Timeout))
     }
 
     async fn clear_range<R>(&self, range: R) -> StorageResult<()>
@@ -488,14 +523,20 @@ impl StorageBackend for LedgerBackend {
             .map(|kv| Operation::delete_entity(encode_key(&kv.key)))
             .collect();
 
-        // Execute as batch delete with retry
-        with_retry(&self.retry_config, None, "clear_range", || async {
-            self.client
-                .write(self.ns_raw(), self.vault_raw(), operations.clone())
-                .await
-                .map(|_| ())
-                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
-        })
+        // Execute as batch delete with retry and timeout
+        with_retry_timeout(
+            &self.retry_config,
+            self.timeout_config.list_timeout,
+            None,
+            "clear_range",
+            || async {
+                self.client
+                    .write(self.ns_raw(), self.vault_raw(), operations.clone())
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+            },
+        )
         .await
     }
 
@@ -519,21 +560,27 @@ impl StorageBackend for LedgerBackend {
         let encoded_key = encode_key(&key);
         let expires_at = Self::compute_expiration_timestamp(ttl_seconds)?;
 
-        with_retry(&self.retry_config, None, "set_with_ttl", || async {
-            self.client
-                .write(
-                    self.ns_raw(),
-                    self.vault_raw(),
-                    vec![Operation::set_entity_with_expiry(
-                        encoded_key.clone(),
-                        value.clone(),
-                        expires_at,
-                    )],
-                )
-                .await
-                .map(|_| ())
-                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
-        })
+        with_retry_timeout(
+            &self.retry_config,
+            self.timeout_config.write_timeout,
+            None,
+            "set_with_ttl",
+            || async {
+                self.client
+                    .write(
+                        self.ns_raw(),
+                        self.vault_raw(),
+                        vec![Operation::set_entity_with_expiry(
+                            encoded_key.clone(),
+                            value.clone(),
+                            expires_at,
+                        )],
+                    )
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+            },
+        )
         .await
     }
 
@@ -550,16 +597,22 @@ impl StorageBackend for LedgerBackend {
     async fn health_check(&self) -> StorageResult<()> {
         // health_check() returns bool: true = healthy, false = degraded but available
         // It returns Err for unavailable
-        with_retry(&self.retry_config, None, "health_check", || async {
-            self.client
-                .health_check()
-                .await
-                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
+        with_retry_timeout(
+            &self.retry_config,
+            self.timeout_config.read_timeout,
+            None,
+            "health_check",
+            || async {
+                self.client
+                    .health_check()
+                    .await
+                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
-            // If we get here, the service is either healthy or degraded (both are OK for this
-            // check)
-            Ok(())
-        })
+                // If we get here, the service is either healthy or degraded (both are OK for
+                // this check)
+                Ok(())
+            },
+        )
         .await
     }
 }

@@ -94,8 +94,9 @@ pub mod auth;
 
 pub use backend::LedgerBackend;
 pub use config::{
-    DEFAULT_INITIAL_BACKOFF, DEFAULT_MAX_BACKOFF, DEFAULT_MAX_RANGE_RESULTS, DEFAULT_MAX_RETRIES,
-    DEFAULT_PAGE_SIZE, LedgerBackendConfig, RetryConfig,
+    DEFAULT_INITIAL_BACKOFF, DEFAULT_LIST_TIMEOUT, DEFAULT_MAX_BACKOFF, DEFAULT_MAX_RANGE_RESULTS,
+    DEFAULT_MAX_RETRIES, DEFAULT_PAGE_SIZE, DEFAULT_READ_TIMEOUT, DEFAULT_WRITE_TIMEOUT,
+    LedgerBackendConfig, RetryConfig, TimeoutConfig,
 };
 pub use error::{LedgerStorageError, Result};
 // Re-export SDK types needed to build LedgerBackendConfig

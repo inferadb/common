@@ -343,6 +343,12 @@ impl LedgerBackendConfig {
         &self.retry_config
     }
 
+    /// Returns the timeout configuration.
+    #[must_use]
+    pub fn timeout_config(&self) -> &TimeoutConfig {
+        &self.timeout_config
+    }
+
     /// Returns the SDK client configuration for building a client.
     pub(crate) fn into_client_config(self) -> ClientConfig {
         self.client
@@ -441,5 +447,43 @@ mod tests {
 
         assert_eq!(config.page_size(), 500);
         assert_eq!(config.max_range_results(), 50_000);
+    }
+
+    #[test]
+    fn test_timeout_defaults() {
+        let config = LedgerBackendConfig::builder().client(test_client()).namespace_id(1).build();
+
+        let tc = config.timeout_config();
+        assert_eq!(tc.read_timeout(), DEFAULT_READ_TIMEOUT);
+        assert_eq!(tc.write_timeout(), DEFAULT_WRITE_TIMEOUT);
+        assert_eq!(tc.list_timeout(), DEFAULT_LIST_TIMEOUT);
+    }
+
+    #[test]
+    fn test_custom_timeout_config() {
+        let timeout = TimeoutConfig::builder()
+            .read_timeout(Duration::from_secs(2))
+            .write_timeout(Duration::from_secs(4))
+            .list_timeout(Duration::from_secs(15))
+            .build();
+
+        let config = LedgerBackendConfig::builder()
+            .client(test_client())
+            .namespace_id(1)
+            .timeout_config(timeout)
+            .build();
+
+        let tc = config.timeout_config();
+        assert_eq!(tc.read_timeout(), Duration::from_secs(2));
+        assert_eq!(tc.write_timeout(), Duration::from_secs(4));
+        assert_eq!(tc.list_timeout(), Duration::from_secs(15));
+    }
+
+    #[test]
+    fn test_timeout_config_default_impl() {
+        let tc = TimeoutConfig::default();
+        assert_eq!(tc.read_timeout(), Duration::from_secs(5));
+        assert_eq!(tc.write_timeout(), Duration::from_secs(10));
+        assert_eq!(tc.list_timeout(), Duration::from_secs(30));
     }
 }

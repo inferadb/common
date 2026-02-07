@@ -96,6 +96,29 @@ where
         .unwrap_or_else(|| StorageError::internal("retry loop completed without result or error")))
 }
 
+/// Executes `operation` with retry **and** an overall timeout.
+///
+/// This wraps [`with_retry`] with `tokio::time::timeout`, bounding the
+/// total wall-clock time of the operation including all retry attempts
+/// and backoff sleeps.
+///
+/// Returns `StorageError::Timeout` if the deadline is exceeded.
+pub(crate) async fn with_retry_timeout<F, Fut, T>(
+    config: &RetryConfig,
+    timeout: Duration,
+    metrics: Option<&Metrics>,
+    operation_name: &str,
+    operation: F,
+) -> StorageResult<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = StorageResult<T>>,
+{
+    tokio::time::timeout(timeout, with_retry(config, metrics, operation_name, operation))
+        .await
+        .unwrap_or(Err(StorageError::Timeout))
+}
+
 /// Computes the backoff duration for the given attempt number.
 ///
 /// Uses exponential backoff with jitter:
@@ -326,5 +349,58 @@ mod tests {
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.retry_count, 2); // 2 retry attempts
         assert_eq!(snapshot.retry_exhausted_count, 1); // exhausted
+    }
+
+    #[tokio::test]
+    async fn test_timeout_triggers_on_slow_operation() {
+        let config =
+            RetryConfig::builder().max_retries(0).initial_backoff(Duration::from_millis(1)).build();
+
+        let result: StorageResult<i32> =
+            with_retry_timeout(&config, Duration::from_millis(50), None, "test_op", || async {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                Ok(42)
+            })
+            .await;
+
+        assert!(matches!(result, Err(StorageError::Timeout)));
+    }
+
+    #[tokio::test]
+    async fn test_timeout_allows_fast_operation() {
+        let config = RetryConfig::default();
+
+        let result =
+            with_retry_timeout(&config, Duration::from_secs(5), None, "test_op", || async {
+                Ok::<_, StorageError>(42)
+            })
+            .await;
+
+        assert_eq!(result.ok(), Some(42));
+    }
+
+    #[tokio::test]
+    async fn test_timeout_bounds_retries() {
+        // Retries with backoff would take longer than the timeout,
+        // so the timeout should fire before retries exhaust.
+        let config = RetryConfig::builder()
+            .max_retries(100)
+            .initial_backoff(Duration::from_secs(1))
+            .max_backoff(Duration::from_secs(5))
+            .build();
+
+        let call_count = AtomicU32::new(0);
+
+        let result: StorageResult<i32> =
+            with_retry_timeout(&config, Duration::from_millis(100), None, "test_op", || {
+                call_count.fetch_add(1, Ordering::Relaxed);
+                async { Err(StorageError::Timeout) }
+            })
+            .await;
+
+        assert!(matches!(result, Err(StorageError::Timeout)));
+        // Should not have exhausted all 100 retries — timeout should fire first
+        let calls = call_count.load(Ordering::Relaxed);
+        assert!(calls < 100, "expected timeout to fire before all retries, got {calls} calls");
     }
 }
