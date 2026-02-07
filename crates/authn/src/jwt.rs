@@ -70,9 +70,11 @@ pub struct JwtClaims {
 }
 
 impl JwtClaims {
-    /// Extract organization ID from claims.
+    /// Require the organization ID from claims, returning an error if absent.
     ///
-    /// Per the Management API specification, the organization ID is stored in the `org_id` claim.
+    /// Use this when the `org_id` claim is mandatory for the operation (e.g., JWT verification
+    /// where the org ID is needed to look up the signing key). For optional access, use
+    /// [`org_id`](Self::org_id) instead.
     ///
     /// # Returns
     ///
@@ -81,16 +83,12 @@ impl JwtClaims {
     /// # Errors
     ///
     /// Returns `AuthError::MissingClaim` if the `org_id` claim is missing or empty.
-    pub fn extract_org_id(&self) -> Result<String, AuthError> {
-        // Extract org_id claim (Management API client JWTs - per spec)
-        // The org_id claim contains the organization ID (Snowflake ID as string)
-        if let Some(ref org_id) = self.org_id
-            && !org_id.is_empty()
-        {
-            return Ok(org_id.clone());
-        }
-
-        Err(AuthError::MissingClaim("org_id".into()))
+    pub fn require_org_id(&self) -> Result<String, AuthError> {
+        self.org_id
+            .as_ref()
+            .filter(|id| !id.is_empty())
+            .cloned()
+            .ok_or_else(|| AuthError::MissingClaim("org_id".into()))
     }
 
     /// Parse scopes from space-separated string.
@@ -107,11 +105,13 @@ impl JwtClaims {
         self.vault_id.clone()
     }
 
-    /// Extract organization ID (Snowflake ID) from claims.
+    /// Get the organization ID from claims, if present.
     ///
-    /// Returns None if not present.
+    /// Returns the raw `org_id` claim value without validation. Use
+    /// [`require_org_id`](Self::require_org_id) when the org ID is mandatory and you want an
+    /// error on absence.
     #[must_use]
-    pub fn extract_organization(&self) -> Option<String> {
+    pub fn org_id(&self) -> Option<String> {
         self.org_id.clone()
     }
 }
@@ -309,7 +309,7 @@ pub async fn verify_with_signing_key_cache(
 
     // 2. Decode claims without verification to extract organization ID
     let claims = decode_jwt_claims(token)?;
-    let org_id_str = claims.extract_org_id()?;
+    let org_id_str = claims.require_org_id()?;
     let org_id =
         inferadb_common_storage::NamespaceId::from(org_id_str.parse::<i64>().map_err(|_| {
             AuthError::InvalidTokenFormat(format!(
@@ -348,7 +348,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_extract_org_id_from_org_id_claim() {
+    fn test_require_org_id_present() {
         let claims = JwtClaims {
             iss: "https://api.inferadb.com".into(),
             sub: "client:test-client".into(),
@@ -362,11 +362,11 @@ mod tests {
             org_id: Some("987654321".into()),
         };
 
-        assert_eq!(claims.extract_org_id().unwrap(), "987654321");
+        assert_eq!(claims.require_org_id().unwrap(), "987654321");
     }
 
     #[test]
-    fn test_extract_org_id_missing() {
+    fn test_require_org_id_missing() {
         let claims = JwtClaims {
             iss: "https://auth.example.com".into(),
             sub: "test".into(),
@@ -380,11 +380,11 @@ mod tests {
             org_id: None,
         };
 
-        assert!(claims.extract_org_id().is_err());
+        assert!(claims.require_org_id().is_err());
     }
 
     #[test]
-    fn test_extract_org_id_empty() {
+    fn test_require_org_id_empty() {
         let claims = JwtClaims {
             iss: "https://api.inferadb.com".into(),
             sub: "client:test-client".into(),
@@ -398,7 +398,43 @@ mod tests {
             org_id: Some("".into()),
         };
 
-        assert!(claims.extract_org_id().is_err());
+        assert!(claims.require_org_id().is_err());
+    }
+
+    #[test]
+    fn test_org_id_present() {
+        let claims = JwtClaims {
+            iss: "https://api.inferadb.com".into(),
+            sub: "client:test-client".into(),
+            aud: "https://api.inferadb.com/evaluate".into(),
+            exp: 1000000000,
+            iat: 1000000000,
+            nbf: None,
+            jti: None,
+            scope: "vault:read vault:write".into(),
+            vault_id: Some("123456789".into()),
+            org_id: Some("987654321".into()),
+        };
+
+        assert_eq!(claims.org_id(), Some("987654321".to_owned()));
+    }
+
+    #[test]
+    fn test_org_id_absent() {
+        let claims = JwtClaims {
+            iss: "https://auth.example.com".into(),
+            sub: "test".into(),
+            aud: "test".into(),
+            exp: 1000000000,
+            iat: 1000000000,
+            nbf: None,
+            jti: None,
+            scope: "inferadb.check".into(),
+            vault_id: None,
+            org_id: None,
+        };
+
+        assert_eq!(claims.org_id(), None);
     }
 
     #[test]
