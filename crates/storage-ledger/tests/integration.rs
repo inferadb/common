@@ -493,7 +493,8 @@ mod signing_key_store {
     };
     use inferadb_common_storage_ledger::auth::LedgerSigningKeyStore;
     use inferadb_ledger_sdk::{
-        ClientConfig, LedgerClient, ReadConsistency, ServerSource, mock::MockLedgerServer,
+        ClientConfig, LedgerClient, Operation, ReadConsistency, ServerSource,
+        mock::MockLedgerServer,
     };
 
     async fn create_signing_key_store(server: &MockLedgerServer) -> LedgerSigningKeyStore {
@@ -866,6 +867,98 @@ mod signing_key_store {
 
         assert!(kids.contains(&"now-valid-key"));
         assert!(!kids.contains(&"future-key"));
+    }
+
+    #[tokio::test]
+    async fn test_malformed_key_increments_deserialization_error_metric() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let config = ClientConfig::builder()
+            .servers(ServerSource::from_static([server.endpoint()]))
+            .client_id("deser-error-test")
+            .build()
+            .expect("valid config");
+
+        let client = Arc::new(LedgerClient::new(config).await.expect("client"));
+        let metrics = SigningKeyMetrics::new();
+        let store = LedgerSigningKeyStore::new(Arc::clone(&client)).with_metrics(metrics.clone());
+
+        let namespace_id = NamespaceId::from(100);
+
+        // Write a valid key first
+        let valid_key = create_test_key("valid-key");
+        store.create_key(namespace_id, &valid_key).await.expect("create valid key");
+
+        // Write malformed data directly using the raw client,
+        // bypassing the serialize_key path to simulate corruption
+        client
+            .write(
+                namespace_id.into(),
+                None,
+                vec![Operation::set_entity(
+                    "signing-keys/corrupted-key".to_string(),
+                    b"this is not valid JSON".to_vec(),
+                )],
+            )
+            .await
+            .expect("write malformed data");
+
+        // list_active_keys should succeed, returning only the valid key
+        let active_keys = store
+            .list_active_keys(namespace_id)
+            .await
+            .expect("list should succeed despite malformed entry");
+
+        assert_eq!(active_keys.len(), 1);
+        assert_eq!(active_keys[0].kid, "valid-key");
+
+        // The deserialization error should be recorded in metrics
+        let snapshot = metrics.snapshot();
+        assert_eq!(
+            snapshot.deserialization_errors(),
+            1,
+            "malformed key should increment deserialization error counter"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_malformed_key_does_not_panic() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let config = ClientConfig::builder()
+            .servers(ServerSource::from_static([server.endpoint()]))
+            .client_id("no-panic-test")
+            .build()
+            .expect("valid config");
+
+        let client = Arc::new(LedgerClient::new(config).await.expect("client"));
+        let store = LedgerSigningKeyStore::new(Arc::clone(&client));
+
+        let namespace_id = NamespaceId::from(200);
+
+        // Write multiple malformed entries with various corruption patterns
+        let malformed_entries = vec![
+            ("signing-keys/empty", b"".to_vec()),
+            ("signing-keys/truncated-json", b"{\"kid\": \"tru".to_vec()),
+            ("signing-keys/wrong-type", b"[\"not\", \"an\", \"object\"]".to_vec()),
+        ];
+
+        for (key, value) in malformed_entries {
+            client
+                .write(
+                    namespace_id.into(),
+                    None,
+                    vec![Operation::set_entity(key.to_string(), value)],
+                )
+                .await
+                .expect("write malformed data");
+        }
+
+        // Should succeed with empty list (no valid keys), no panics
+        let active_keys = store
+            .list_active_keys(namespace_id)
+            .await
+            .expect("list should not panic on malformed data");
+
+        assert!(active_keys.is_empty(), "no valid keys should be returned from all-malformed data");
     }
 }
 

@@ -174,6 +174,19 @@ impl SigningKeyMetricsSnapshot {
             self.list_latency_us as f64 / self.list_count as f64
         }
     }
+
+    /// Returns the count of deserialization errors encountered during key listing.
+    ///
+    /// Non-zero values indicate keys in storage that could not be parsed,
+    /// possibly due to schema migration or data corruption. Operators should
+    /// alert on this counter and investigate the affected keys.
+    ///
+    /// This is a convenience accessor over `error_serialization` scoped to
+    /// the deserialization direction.
+    #[must_use]
+    pub fn deserialization_errors(&self) -> u64 {
+        self.error_serialization
+    }
 }
 
 /// Inner storage for atomic counters.
@@ -686,5 +699,23 @@ mod tests {
 
         let snapshot = metrics.snapshot();
         assert!((snapshot.avg_list_latency_us() - 200.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_deserialization_errors_accessor() {
+        let metrics = SigningKeyMetrics::new();
+
+        // No errors initially
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.deserialization_errors(), 0);
+
+        // Record serialization errors (which covers deserialization)
+        metrics.record_error(SigningKeyErrorKind::Serialization);
+        metrics.record_error(SigningKeyErrorKind::Serialization);
+        metrics.record_error(SigningKeyErrorKind::NotFound); // Different kind
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.deserialization_errors(), 2, "only serialization errors should count");
+        assert_eq!(snapshot.error_serialization, 2);
     }
 }

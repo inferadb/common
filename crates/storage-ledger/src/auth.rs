@@ -344,11 +344,13 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
                             }
                         },
                         Err(e) => {
-                            tracing::warn!(
+                            tracing::error!(
                                 key = entity.key,
                                 error = %e,
-                                "Failed to deserialize signing key, skipping"
+                                "Failed to deserialize signing key, skipping — \
+                                 investigate possible schema migration or data corruption"
                             );
+                            self.record_error(SigningKeyErrorKind::Serialization);
                         },
                     }
                 }
