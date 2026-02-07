@@ -748,4 +748,167 @@ mod tests {
         let value = backend.get(b"key").await.unwrap();
         assert_eq!(value, Some(Bytes::from("value")));
     }
+
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        /// Strategy for generating a sorted, deduplicated set of keys.
+        fn arb_sorted_keys() -> impl Strategy<Value = Vec<Vec<u8>>> {
+            proptest::collection::vec(proptest::collection::vec(any::<u8>(), 1..16), 0..30)
+                .prop_map(|mut keys| {
+                    keys.sort();
+                    keys.dedup();
+                    keys
+                })
+        }
+
+        proptest! {
+            /// All keys returned by `get_range` must fall within the requested bounds.
+            #[test]
+            fn range_query_returns_keys_within_bounds(
+                keys in arb_sorted_keys(),
+                start_idx in 0..30usize,
+                end_idx in 0..30usize,
+            ) {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+
+                rt.block_on(async {
+                    let backend = MemoryBackend::new();
+                    for key in &keys {
+                        backend.set(key.clone(), b"v".to_vec()).await.unwrap();
+                    }
+
+                    if keys.is_empty() {
+                        return Ok(());
+                    }
+                    let idx_a = start_idx.min(keys.len() - 1);
+                    let idx_b = end_idx.min(keys.len() - 1);
+                    // Ensure start <= end
+                    let (start_key, end_key) = if idx_a <= idx_b {
+                        (keys[idx_a].clone(), keys[idx_b].clone())
+                    } else {
+                        (keys[idx_b].clone(), keys[idx_a].clone())
+                    };
+
+                    let results = backend
+                        .get_range(start_key.clone()..end_key.clone())
+                        .await
+                        .unwrap();
+
+                    for kv in &results {
+                        let k = kv.key.to_vec();
+                        prop_assert!(k >= start_key, "key {:?} < start {:?}", k, start_key);
+                        prop_assert!(k < end_key, "key {:?} >= end {:?}", k, end_key);
+                    }
+
+                    Ok(())
+                })?;
+            }
+
+            /// `get_range` with an empty range (start == end, exclusive) must
+            /// return an empty vec.
+            #[test]
+            fn empty_range_returns_empty(
+                keys in arb_sorted_keys(),
+                boundary in proptest::collection::vec(any::<u8>(), 1..16),
+            ) {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+
+                rt.block_on(async {
+                    let backend = MemoryBackend::new();
+                    for key in &keys {
+                        backend.set(key.clone(), b"v".to_vec()).await.unwrap();
+                    }
+
+                    // start == end (exclusive) => empty range
+                    let results = backend
+                        .get_range(boundary.clone()..boundary.clone())
+                        .await
+                        .unwrap();
+                    prop_assert!(results.is_empty(), "start==end should return empty");
+
+                    Ok(())
+                })?;
+            }
+
+            /// The count of keys returned by `get_range` must equal the count of
+            /// stored keys that fall within the bounds.
+            #[test]
+            fn range_query_count_matches_expected(
+                keys in arb_sorted_keys(),
+                a in proptest::collection::vec(any::<u8>(), 1..8),
+                b in proptest::collection::vec(any::<u8>(), 1..8),
+            ) {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+
+                rt.block_on(async {
+                    let backend = MemoryBackend::new();
+                    for key in &keys {
+                        backend.set(key.clone(), b"v".to_vec()).await.unwrap();
+                    }
+
+                    // Ensure start <= end to avoid BTreeMap panic
+                    let (start, end) = if a <= b {
+                        (a, b)
+                    } else {
+                        (b, a)
+                    };
+
+                    let results = backend.get_range(start.clone()..end.clone()).await.unwrap();
+                    let expected_count = keys
+                        .iter()
+                        .filter(|k| **k >= start && **k < end)
+                        .count();
+                    prop_assert_eq!(results.len(), expected_count);
+
+                    Ok(())
+                })?;
+            }
+
+            /// Results from `get_range` must be sorted by key.
+            #[test]
+            fn range_query_results_are_sorted(
+                keys in arb_sorted_keys(),
+                a in proptest::collection::vec(any::<u8>(), 1..8),
+                b in proptest::collection::vec(any::<u8>(), 1..8),
+            ) {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+
+                rt.block_on(async {
+                    let backend = MemoryBackend::new();
+                    for key in &keys {
+                        backend.set(key.clone(), b"v".to_vec()).await.unwrap();
+                    }
+
+                    // Ensure start <= end to avoid BTreeMap panic
+                    let (start, end) = if a <= b {
+                        (a, b)
+                    } else {
+                        (b, a)
+                    };
+
+                    let results = backend.get_range(start..end).await.unwrap();
+                    for pair in results.windows(2) {
+                        prop_assert!(pair[0].key <= pair[1].key);
+                    }
+
+                    Ok(())
+                })?;
+            }
+        }
+    }
 }

@@ -728,4 +728,53 @@ mod tests {
             after + ttl_secs,
         );
     }
+
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        proptest! {
+            /// The common prefix length must never exceed either string's length,
+            /// and the prefix at that length must actually be shared.
+            #[test]
+            fn common_prefix_len_is_shared_prefix(
+                a in "[a-f0-9]{0,64}",
+                b in "[a-f0-9]{0,64}",
+            ) {
+                let len = common_prefix_len(&a, &b);
+                prop_assert!(len <= a.len());
+                prop_assert!(len <= b.len());
+                prop_assert_eq!(&a[..len], &b[..len]);
+            }
+
+            /// The prefix must be maximal: if both strings have at least one more byte
+            /// after the prefix, those bytes must differ.
+            #[test]
+            fn common_prefix_len_is_maximal(
+                a in "[a-f0-9]{1,64}",
+                b in "[a-f0-9]{1,64}",
+            ) {
+                let len = common_prefix_len(&a, &b);
+                if len < a.len() && len < b.len() {
+                    prop_assert_ne!(a.as_bytes()[len], b.as_bytes()[len]);
+                }
+            }
+
+            /// Identical strings must have a common prefix equal to the full length.
+            #[test]
+            fn common_prefix_len_of_identical_strings(s in "[a-f0-9]{0,64}") {
+                prop_assert_eq!(common_prefix_len(&s, &s), s.len());
+            }
+
+            /// common_prefix_len must be symmetric.
+            #[test]
+            fn common_prefix_len_is_symmetric(
+                a in "[a-f0-9]{0,64}",
+                b in "[a-f0-9]{0,64}",
+            ) {
+                prop_assert_eq!(common_prefix_len(&a, &b), common_prefix_len(&b, &a));
+            }
+        }
+    }
 }

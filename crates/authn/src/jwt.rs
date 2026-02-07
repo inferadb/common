@@ -41,7 +41,7 @@ use crate::{error::AuthError, signing_key_cache::SigningKeyCache, validation::va
 ///   "scope": "vault:read vault:write"
 /// }
 /// ```
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JwtClaims {
     /// Issuer - Should be the Management API URL (e.g., `https://api.inferadb.com`).
     pub iss: String,
@@ -491,6 +491,89 @@ mod tests {
 
         let result = decode_jwt_claims("too.many.parts.here");
         assert!(result.is_err());
+    }
+
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        /// Strategy for generating valid `JwtClaims` instances with arbitrary field values.
+        fn arb_jwt_claims() -> impl Strategy<Value = JwtClaims> {
+            (
+                "[a-zA-Z0-9:/._-]{1,64}",                                 // iss
+                "[a-zA-Z0-9:_-]{1,64}",                                   // sub
+                "[a-zA-Z0-9:/._-]{1,64}",                                 // aud
+                1_000_000_000u64..2_000_000_000u64,                       // exp
+                1_000_000_000u64..2_000_000_000u64,                       // iat
+                proptest::option::of(1_000_000_000u64..2_000_000_000u64), // nbf
+                proptest::option::of("[a-zA-Z0-9-]{1,64}"),               // jti
+                "[a-z:_ ]{1,64}",                                         // scope
+                proptest::option::of("[0-9]{1,20}"),                      // vault_id
+                proptest::option::of("[0-9]{1,20}"),                      // org_id
+            )
+                .prop_map(
+                    |(iss, sub, aud, exp, iat, nbf, jti, scope, vault_id, org_id)| JwtClaims {
+                        iss,
+                        sub,
+                        aud,
+                        exp,
+                        iat,
+                        nbf,
+                        jti,
+                        scope,
+                        vault_id,
+                        org_id,
+                    },
+                )
+        }
+
+        proptest! {
+            /// Serializing then deserializing any valid `JwtClaims` must produce
+            /// an identical struct.
+            #[test]
+            fn jwt_claims_serde_round_trip(claims in arb_jwt_claims()) {
+                let json = serde_json::to_string(&claims).expect("serialize should succeed");
+                let deserialized: JwtClaims =
+                    serde_json::from_str(&json).expect("deserialize should succeed");
+                prop_assert_eq!(deserialized, claims);
+            }
+
+            /// Serialized claims must always be valid JSON.
+            #[test]
+            fn jwt_claims_serialize_produces_valid_json(claims in arb_jwt_claims()) {
+                let json = serde_json::to_string(&claims).expect("serialize should succeed");
+                let parsed: serde_json::Value =
+                    serde_json::from_str(&json).expect("output must be valid JSON");
+                // Required fields must always be present
+                prop_assert!(parsed.get("iss").is_some());
+                prop_assert!(parsed.get("sub").is_some());
+                prop_assert!(parsed.get("aud").is_some());
+                prop_assert!(parsed.get("exp").is_some());
+                prop_assert!(parsed.get("iat").is_some());
+                prop_assert!(parsed.get("scope").is_some());
+            }
+
+            /// Optional fields with `skip_serializing_if = "Option::is_none"` must not
+            /// appear in the JSON when they are `None`.
+            #[test]
+            fn jwt_claims_none_fields_omitted(claims in arb_jwt_claims()) {
+                let json = serde_json::to_string(&claims).expect("serialize should succeed");
+                let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+                if claims.nbf.is_none() {
+                    prop_assert!(parsed.get("nbf").is_none());
+                }
+                if claims.jti.is_none() {
+                    prop_assert!(parsed.get("jti").is_none());
+                }
+                if claims.vault_id.is_none() {
+                    prop_assert!(parsed.get("vault_id").is_none());
+                }
+                if claims.org_id.is_none() {
+                    prop_assert!(parsed.get("org_id").is_none());
+                }
+            }
+        }
     }
 }
 

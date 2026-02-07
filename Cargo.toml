@@ -60,6 +60,7 @@ moka = { version = "0.12", features = ["future"] }
 
 # Testing
 rand = "0.9"
+proptest = "1"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

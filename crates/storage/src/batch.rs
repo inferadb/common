@@ -608,4 +608,125 @@ mod tests {
         assert_eq!(stats.total_bytes, 0);
         assert_eq!(stats.duration, std::time::Duration::ZERO);
     }
+
+    mod proptests {
+        use proptest::prelude::*;
+
+        use super::*;
+
+        /// Generate a random `BatchOperation`.
+        fn arb_batch_operation() -> impl Strategy<Value = BatchOperation> {
+            prop_oneof![
+                // Set with key 1..64 bytes, value 0..512 bytes
+                (
+                    proptest::collection::vec(any::<u8>(), 1..64),
+                    proptest::collection::vec(any::<u8>(), 0..512),
+                )
+                    .prop_map(|(key, value)| BatchOperation::Set { key, value }),
+                // Delete with key 1..64 bytes
+                proptest::collection::vec(any::<u8>(), 1..64)
+                    .prop_map(|key| BatchOperation::Delete { key }),
+            ]
+        }
+
+        /// Create a `BatchWriter` backed by `MemoryBackend` inside a tokio runtime
+        /// (required because `MemoryBackend::new()` spawns a background task).
+        fn make_writer(config: BatchConfig) -> BatchWriter<MemoryBackend> {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            let backend = rt.block_on(async { MemoryBackend::new() });
+            BatchWriter::new(backend, config)
+        }
+
+        /// Populate a writer with the given operations.
+        fn populate(writer: &mut BatchWriter<MemoryBackend>, ops: &[BatchOperation]) {
+            for op in ops {
+                match op {
+                    BatchOperation::Set { key, value } => {
+                        writer.set(key.clone(), value.clone());
+                    },
+                    BatchOperation::Delete { key } => {
+                        writer.delete(key.clone());
+                    },
+                }
+            }
+        }
+
+        proptest! {
+            /// The union of all sub-batches must equal the original operations list.
+            /// No operations should be dropped or duplicated during splitting.
+            #[test]
+            fn split_preserves_all_operations(
+                ops in proptest::collection::vec(arb_batch_operation(), 0..100),
+                max_batch_size in 1..50usize,
+                max_batch_bytes in 100..2000usize,
+            ) {
+                let mut writer = make_writer(BatchConfig::new(max_batch_size, max_batch_bytes));
+                populate(&mut writer, &ops);
+
+                let batches = writer.split_into_batches();
+                let total: usize = batches.iter().map(|b| b.len()).sum();
+                prop_assert_eq!(total, ops.len());
+            }
+
+            /// Each sub-batch must respect the configured size limits,
+            /// unless a single operation exceeds the limit (in which case it gets its own batch).
+            #[test]
+            fn split_respects_byte_limit(
+                ops in proptest::collection::vec(arb_batch_operation(), 1..50),
+                max_batch_bytes in 100..5000usize,
+            ) {
+                let mut writer = make_writer(BatchConfig::new(usize::MAX, max_batch_bytes));
+                populate(&mut writer, &ops);
+
+                let batches = writer.split_into_batches();
+                for batch in &batches {
+                    let batch_bytes: usize = batch.iter().map(|op| op.size_bytes()).sum();
+                    // If batch has more than one operation, it must be within limit
+                    if batch.len() > 1 {
+                        prop_assert!(
+                            batch_bytes <= max_batch_bytes,
+                            "batch of {} ops has {} bytes, limit is {}",
+                            batch.len(),
+                            batch_bytes,
+                            max_batch_bytes,
+                        );
+                    }
+                }
+            }
+
+            /// Each sub-batch must respect the configured operation count limit.
+            #[test]
+            fn split_respects_count_limit(
+                ops in proptest::collection::vec(arb_batch_operation(), 1..100),
+                max_batch_size in 1..20usize,
+            ) {
+                let mut writer = make_writer(BatchConfig::new(max_batch_size, usize::MAX));
+                populate(&mut writer, &ops);
+
+                let batches = writer.split_into_batches();
+                for batch in &batches {
+                    prop_assert!(
+                        batch.len() <= max_batch_size,
+                        "batch has {} ops, limit is {}",
+                        batch.len(),
+                        max_batch_size,
+                    );
+                }
+            }
+
+            /// An empty writer must produce zero batches.
+            #[test]
+            fn empty_writer_produces_no_batches(
+                max_batch_size in 1..100usize,
+                max_batch_bytes in 100..10000usize,
+            ) {
+                let writer = make_writer(BatchConfig::new(max_batch_size, max_batch_bytes));
+                let batches = writer.split_into_batches();
+                prop_assert!(batches.is_empty());
+            }
+        }
+    }
 }
