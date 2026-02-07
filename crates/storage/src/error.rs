@@ -43,7 +43,14 @@ pub type StorageResult<T> = Result<T, StorageError>;
 ///
 /// Errors preserve their source chain via the `#[source]` attribute, enabling
 /// debugging tools to display the full error context.
+///
+/// # Non-exhaustive
+///
+/// This enum is marked `#[non_exhaustive]` — new variants may be added in
+/// future minor releases without a semver-breaking change. Downstream match
+/// expressions must include a wildcard arm (`_ =>`).
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum StorageError {
     /// The requested key was not found in the storage backend.
     ///

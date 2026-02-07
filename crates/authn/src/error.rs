@@ -6,7 +6,14 @@
 use thiserror::Error;
 
 /// Authentication and authorization errors.
+///
+/// # Non-exhaustive
+///
+/// This enum is marked `#[non_exhaustive]` — new variants may be added in
+/// future minor releases without a semver-breaking change. Downstream match
+/// expressions must include a wildcard arm (`_ =>`).
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum AuthError {
     /// Malformed JWT - cannot be decoded.
     #[error("Invalid token format: {0}")]

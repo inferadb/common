@@ -19,7 +19,14 @@ pub type Result<T> = std::result::Result<T, LedgerStorageError>;
 /// This error type wraps SDK errors and provides additional context
 /// for storage-layer failures. The error chain is preserved when
 /// converting to [`StorageError`].
+///
+/// # Non-exhaustive
+///
+/// This enum is marked `#[non_exhaustive]` — new variants may be added in
+/// future minor releases without a semver-breaking change. Downstream match
+/// expressions must include a wildcard arm (`_ =>`).
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum LedgerStorageError {
     /// Error from the Ledger SDK.
     #[error("Ledger SDK error: {0}")]
