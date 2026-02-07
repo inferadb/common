@@ -69,6 +69,9 @@ pub struct MetricsSnapshot {
     /// Total GET_RANGE latency in microseconds
     #[builder(default)]
     pub get_range_latency_us: u64,
+    /// Total CLEAR_RANGE latency in microseconds
+    #[builder(default)]
+    pub clear_range_latency_us: u64,
     /// Total TRANSACTION latency in microseconds
     #[builder(default)]
     pub transaction_latency_us: u64,
@@ -76,6 +79,9 @@ pub struct MetricsSnapshot {
     /// Total errors
     #[builder(default)]
     pub error_count: u64,
+    /// CLEAR_RANGE operation errors
+    #[builder(default)]
+    pub clear_range_error_count: u64,
     /// Transaction conflicts
     #[builder(default)]
     pub conflict_count: u64,
@@ -128,6 +134,16 @@ impl MetricsSnapshot {
             0.0
         } else {
             self.get_range_latency_us as f64 / self.get_range_count as f64
+        }
+    }
+
+    /// Calculate average CLEAR_RANGE latency in microseconds
+    #[must_use]
+    pub fn avg_clear_range_latency_us(&self) -> f64 {
+        if self.clear_range_count == 0 {
+            0.0
+        } else {
+            self.clear_range_latency_us as f64 / self.clear_range_count as f64
         }
     }
 
@@ -197,10 +213,12 @@ struct MetricsInner {
     set_latency_us: AtomicU64,
     delete_latency_us: AtomicU64,
     get_range_latency_us: AtomicU64,
+    clear_range_latency_us: AtomicU64,
     transaction_latency_us: AtomicU64,
 
     // Errors
     error_count: AtomicU64,
+    clear_range_error_count: AtomicU64,
     conflict_count: AtomicU64,
     timeout_count: AtomicU64,
 
@@ -229,8 +247,10 @@ impl Metrics {
                 set_latency_us: AtomicU64::new(0),
                 delete_latency_us: AtomicU64::new(0),
                 get_range_latency_us: AtomicU64::new(0),
+                clear_range_latency_us: AtomicU64::new(0),
                 transaction_latency_us: AtomicU64::new(0),
                 error_count: AtomicU64::new(0),
+                clear_range_error_count: AtomicU64::new(0),
                 conflict_count: AtomicU64::new(0),
                 timeout_count: AtomicU64::new(0),
                 cache_hits: AtomicU64::new(0),
@@ -268,8 +288,13 @@ impl Metrics {
     /// Record a CLEAR_RANGE operation
     pub fn record_clear_range(&self, duration: Duration) {
         self.inner.clear_range_count.fetch_add(1, Ordering::Relaxed);
-        // Reuse get_range latency bucket for now
-        self.inner.get_range_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.clear_range_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+    }
+
+    /// Record a CLEAR_RANGE error
+    pub fn record_clear_range_error(&self) {
+        self.inner.clear_range_error_count.fetch_add(1, Ordering::Relaxed);
+        self.inner.error_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record a TRANSACTION operation
@@ -327,8 +352,10 @@ impl Metrics {
             set_latency_us: self.inner.set_latency_us.load(Ordering::Relaxed),
             delete_latency_us: self.inner.delete_latency_us.load(Ordering::Relaxed),
             get_range_latency_us: self.inner.get_range_latency_us.load(Ordering::Relaxed),
+            clear_range_latency_us: self.inner.clear_range_latency_us.load(Ordering::Relaxed),
             transaction_latency_us: self.inner.transaction_latency_us.load(Ordering::Relaxed),
             error_count: self.inner.error_count.load(Ordering::Relaxed),
+            clear_range_error_count: self.inner.clear_range_error_count.load(Ordering::Relaxed),
             conflict_count: self.inner.conflict_count.load(Ordering::Relaxed),
             timeout_count: self.inner.timeout_count.load(Ordering::Relaxed),
             cache_hits: self.inner.cache_hits.load(Ordering::Relaxed),
@@ -350,8 +377,10 @@ impl Metrics {
         self.inner.set_latency_us.store(0, Ordering::Relaxed);
         self.inner.delete_latency_us.store(0, Ordering::Relaxed);
         self.inner.get_range_latency_us.store(0, Ordering::Relaxed);
+        self.inner.clear_range_latency_us.store(0, Ordering::Relaxed);
         self.inner.transaction_latency_us.store(0, Ordering::Relaxed);
         self.inner.error_count.store(0, Ordering::Relaxed);
+        self.inner.clear_range_error_count.store(0, Ordering::Relaxed);
         self.inner.conflict_count.store(0, Ordering::Relaxed);
         self.inner.timeout_count.store(0, Ordering::Relaxed);
         self.inner.cache_hits.store(0, Ordering::Relaxed);
@@ -373,10 +402,12 @@ impl Metrics {
             set_count = snapshot.set_count,
             delete_count = snapshot.delete_count,
             get_range_count = snapshot.get_range_count,
+            clear_range_count = snapshot.clear_range_count,
             transaction_count = snapshot.transaction_count,
             avg_get_latency_us = snapshot.avg_get_latency_us(),
             avg_set_latency_us = snapshot.avg_set_latency_us(),
             avg_delete_latency_us = snapshot.avg_delete_latency_us(),
+            avg_clear_range_latency_us = snapshot.avg_clear_range_latency_us(),
             avg_transaction_latency_us = snapshot.avg_transaction_latency_us(),
             error_count = snapshot.error_count,
             error_rate = snapshot.error_rate(),
@@ -537,8 +568,9 @@ mod tests {
 
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.clear_range_count, 2);
-        // clear_range shares get_range_latency_us bucket
-        assert_eq!(snapshot.get_range_latency_us, 1000);
+        assert_eq!(snapshot.clear_range_latency_us, 1000);
+        // Latency no longer leaks into get_range bucket
+        assert_eq!(snapshot.get_range_latency_us, 0);
     }
 
     #[test]
@@ -706,5 +738,66 @@ mod tests {
         assert_eq!(snapshot.get_count, 10);
         assert_eq!(snapshot.set_count, 5);
         assert_eq!(snapshot.error_count, 2);
+    }
+
+    #[test]
+    fn test_record_clear_range_error() {
+        let metrics = Metrics::new();
+
+        metrics.record_clear_range_error();
+        metrics.record_clear_range_error();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.clear_range_error_count, 2);
+        // clear_range errors also increment the global error count
+        assert_eq!(snapshot.error_count, 2);
+    }
+
+    #[test]
+    fn test_avg_clear_range_latency() {
+        let metrics = Metrics::new();
+
+        metrics.record_clear_range(Duration::from_micros(300));
+        metrics.record_clear_range(Duration::from_micros(500));
+
+        let snapshot = metrics.snapshot();
+        assert!((snapshot.avg_clear_range_latency_us() - 400.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_avg_clear_range_latency_zero_count() {
+        let snapshot = MetricsSnapshot::default();
+        assert!((snapshot.avg_clear_range_latency_us() - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_clear_range_metrics_isolation() {
+        let metrics = Metrics::new();
+
+        // Record both get_range and clear_range
+        metrics.record_get_range(Duration::from_micros(100));
+        metrics.record_clear_range(Duration::from_micros(500));
+
+        let snapshot = metrics.snapshot();
+        // Each operation's latency is tracked independently
+        assert_eq!(snapshot.get_range_latency_us, 100);
+        assert_eq!(snapshot.clear_range_latency_us, 500);
+        assert_eq!(snapshot.get_range_count, 1);
+        assert_eq!(snapshot.clear_range_count, 1);
+    }
+
+    #[test]
+    fn test_clear_range_metrics_reset() {
+        let metrics = Metrics::new();
+
+        metrics.record_clear_range(Duration::from_micros(500));
+        metrics.record_clear_range_error();
+
+        metrics.reset();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.clear_range_count, 0);
+        assert_eq!(snapshot.clear_range_latency_us, 0);
+        assert_eq!(snapshot.clear_range_error_count, 0);
     }
 }
