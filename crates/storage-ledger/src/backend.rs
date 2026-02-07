@@ -7,6 +7,7 @@
 use std::{
     ops::{Bound, RangeBounds},
     sync::Arc,
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -256,20 +257,22 @@ impl LedgerBackend {
         result.map_err(LedgerStorageError::from)
     }
 
-    /// Computes an absolute expiration timestamp by adding `ttl_seconds` to the
+    /// Computes an absolute expiration timestamp by adding `ttl` to the
     /// current system time.
     ///
     /// Returns the number of seconds since the Unix epoch at which the key
-    /// should expire.
+    /// should expire. The `Duration` is converted to whole seconds at this
+    /// boundary — sub-second precision is truncated since the Ledger SDK
+    /// only supports second-granularity expiration.
     ///
     /// # Errors
     ///
     /// Returns [`StorageError::Internal`] if the system clock is set before
     /// the Unix epoch.
-    fn compute_expiration_timestamp(ttl_seconds: u64) -> StorageResult<u64> {
+    fn compute_expiration_timestamp(ttl: Duration) -> StorageResult<u64> {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() + ttl_seconds)
+            .map(|d| d.as_secs() + ttl.as_secs())
             .map_err(|_| {
                 StorageError::internal(
                     "system clock is before the Unix epoch; cannot compute expiration timestamp",
@@ -542,23 +545,18 @@ impl StorageBackend for LedgerBackend {
 
     /// Stores a key-value pair with automatic expiration.
     ///
-    /// Computes an absolute Unix timestamp by adding `ttl_seconds` to the
+    /// Computes an absolute Unix timestamp by adding the `ttl` duration to the
     /// current system time. The Ledger SDK's `set_entity_with_expiry`
     /// interprets this value as an absolute expiration timestamp in seconds
-    /// since the Unix epoch.
+    /// since the Unix epoch. Sub-second precision in `ttl` is truncated.
     ///
     /// # Errors
     ///
     /// Returns [`StorageError::Internal`] if the system clock is set before
     /// the Unix epoch, since a valid absolute timestamp cannot be computed.
-    async fn set_with_ttl(
-        &self,
-        key: Vec<u8>,
-        value: Vec<u8>,
-        ttl_seconds: u64,
-    ) -> StorageResult<()> {
+    async fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> StorageResult<()> {
         let encoded_key = encode_key(&key);
-        let expires_at = Self::compute_expiration_timestamp(ttl_seconds)?;
+        let expires_at = Self::compute_expiration_timestamp(ttl)?;
 
         with_retry_timeout(
             &self.retry_config,
@@ -684,27 +682,28 @@ mod tests {
 
     #[test]
     fn test_expiration_timestamp_is_in_the_future() {
-        let ttl_seconds = 300;
+        let ttl = Duration::from_secs(300);
         let before =
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
 
-        let expires_at = LedgerBackend::compute_expiration_timestamp(ttl_seconds).unwrap();
+        let expires_at = LedgerBackend::compute_expiration_timestamp(ttl).unwrap();
 
         let after =
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
 
-        // The expiration timestamp must be at least `before + ttl_seconds`
-        // and at most `after + ttl_seconds` (accounting for wall-clock drift
+        let ttl_secs = ttl.as_secs();
+        // The expiration timestamp must be at least `before + ttl_secs`
+        // and at most `after + ttl_secs` (accounting for wall-clock drift
         // between the two SystemTime::now() calls).
         assert!(
-            expires_at >= before + ttl_seconds,
+            expires_at >= before + ttl_secs,
             "expiration {expires_at} should be >= {}",
-            before + ttl_seconds,
+            before + ttl_secs,
         );
         assert!(
-            expires_at <= after + ttl_seconds,
+            expires_at <= after + ttl_secs,
             "expiration {expires_at} should be <= {}",
-            after + ttl_seconds,
+            after + ttl_secs,
         );
     }
 }

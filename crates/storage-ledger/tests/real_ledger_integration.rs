@@ -327,7 +327,7 @@ async fn test_real_ledger_ttl() {
 
     // Set with short TTL (2 seconds)
     backend
-        .set_with_ttl(b"ttl-key".to_vec(), b"expires-soon".to_vec(), 2)
+        .set_with_ttl(b"ttl-key".to_vec(), b"expires-soon".to_vec(), Duration::from_secs(2))
         .await
         .expect("set_with_ttl should succeed");
 

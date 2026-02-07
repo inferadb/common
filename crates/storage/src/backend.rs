@@ -25,7 +25,7 @@
 //!
 //! See [`MemoryBackend`](crate::MemoryBackend) for a reference implementation.
 
-use std::ops::RangeBounds;
+use std::{ops::RangeBounds, time::Duration};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -160,21 +160,19 @@ pub trait StorageBackend: Send + Sync {
 
     /// Stores a key-value pair with automatic expiration.
     ///
-    /// The key will be automatically deleted after the specified TTL.
+    /// The key will be automatically deleted after the specified TTL duration.
     /// Not all backends support TTL natively; some may implement it
     /// via background cleanup tasks.
+    ///
+    /// The backend converts `ttl` to the appropriate internal representation
+    /// at the implementation boundary (e.g., seconds for the Ledger SDK).
     ///
     /// # Arguments
     ///
     /// * `key` - The key to store
     /// * `value` - The value to associate with the key
-    /// * `ttl_seconds` - Time-to-live in seconds
-    async fn set_with_ttl(
-        &self,
-        key: Vec<u8>,
-        value: Vec<u8>,
-        ttl_seconds: u64,
-    ) -> StorageResult<()>;
+    /// * `ttl` - Time-to-live duration after which the key expires
+    async fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> StorageResult<()>;
 
     /// Begins a new transaction.
     ///

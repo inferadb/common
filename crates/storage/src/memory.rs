@@ -318,16 +318,11 @@ impl StorageBackend for MemoryBackend {
         Ok(())
     }
 
-    async fn set_with_ttl(
-        &self,
-        key: Vec<u8>,
-        value: Vec<u8>,
-        ttl_seconds: u64,
-    ) -> StorageResult<()> {
+    async fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> StorageResult<()> {
         let mut data = self.data.write();
         let mut ttl_data = self.ttl_data.write();
 
-        let expiry = Instant::now() + Duration::from_secs(ttl_seconds);
+        let expiry = Instant::now() + ttl;
 
         data.insert(key.clone(), Bytes::from(value));
         ttl_data.insert(key, expiry);
@@ -505,7 +500,10 @@ mod tests {
     async fn test_ttl() {
         let backend = MemoryBackend::new();
 
-        backend.set_with_ttl(b"temp".to_vec(), b"value".to_vec(), 1).await.unwrap();
+        backend
+            .set_with_ttl(b"temp".to_vec(), b"value".to_vec(), Duration::from_secs(1))
+            .await
+            .unwrap();
 
         // Should exist immediately
         let value = backend.get(b"temp").await.unwrap();
@@ -567,7 +565,10 @@ mod tests {
         let backend = MemoryBackend::new();
 
         // Set with TTL
-        backend.set_with_ttl(b"key".to_vec(), b"temp".to_vec(), 1).await.unwrap();
+        backend
+            .set_with_ttl(b"key".to_vec(), b"temp".to_vec(), Duration::from_secs(1))
+            .await
+            .unwrap();
 
         // Overwrite without TTL
         backend.set(b"key".to_vec(), b"permanent".to_vec()).await.unwrap();
@@ -667,7 +668,10 @@ mod tests {
         let backend = MemoryBackend::new();
 
         // Set a key with TTL
-        backend.set_with_ttl(b"key".to_vec(), b"value1".to_vec(), 3600).await.unwrap();
+        backend
+            .set_with_ttl(b"key".to_vec(), b"value1".to_vec(), Duration::from_secs(3600))
+            .await
+            .unwrap();
 
         // CAS should succeed and clear the TTL
         backend
@@ -688,7 +692,10 @@ mod tests {
         let backend = MemoryBackend::new();
 
         // Set a key with a very short TTL
-        backend.set_with_ttl(b"ttl_key".to_vec(), b"value".to_vec(), 1).await.unwrap();
+        backend
+            .set_with_ttl(b"ttl_key".to_vec(), b"value".to_vec(), Duration::from_secs(1))
+            .await
+            .unwrap();
 
         // Shut down the cleanup task
         backend.shutdown();

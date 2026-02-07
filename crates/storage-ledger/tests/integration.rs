@@ -5,7 +5,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::ops::Bound;
+use std::{ops::Bound, time::Duration};
 
 use bytes::Bytes;
 use inferadb_common_storage::{StorageBackend, StorageError, VaultId};
@@ -260,7 +260,7 @@ async fn test_set_with_ttl() {
 
     // Set with TTL
     backend
-        .set_with_ttl(b"ephemeral".to_vec(), b"temp".to_vec(), 3600)
+        .set_with_ttl(b"ephemeral".to_vec(), b"temp".to_vec(), Duration::from_secs(3600))
         .await
         .expect("set_with_ttl should succeed");
 
