@@ -54,7 +54,10 @@ use parking_lot::RwLock;
 use tokio::time::sleep;
 
 use crate::{
-    backend::StorageBackend, error::StorageResult, transaction::Transaction, types::KeyValue,
+    backend::StorageBackend,
+    error::{StorageError, StorageResult},
+    transaction::Transaction,
+    types::KeyValue,
 };
 
 /// In-memory storage backend using [`BTreeMap`].
@@ -173,6 +176,35 @@ impl StorageBackend for MemoryBackend {
             let mut ttl_guard = self.ttl_data.write();
             ttl_guard.remove(&key);
         }
+
+        Ok(())
+    }
+
+    async fn compare_and_set(
+        &self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        new_value: Vec<u8>,
+    ) -> StorageResult<()> {
+        let mut data = self.data.write();
+
+        let current = if self.is_expired(key) { None } else { data.get(key).cloned() };
+
+        let matches = match (expected, &current) {
+            (None, None) => true,
+            (Some(exp), Some(cur)) => exp == &cur[..],
+            _ => false,
+        };
+
+        if !matches {
+            return Err(StorageError::Conflict);
+        }
+
+        data.insert(key.to_vec(), Bytes::from(new_value));
+
+        // Clear any existing TTL on this key
+        let mut ttl_guard = self.ttl_data.write();
+        ttl_guard.remove(key);
 
         Ok(())
     }
@@ -515,5 +547,87 @@ mod tests {
         backend.set(b"key".to_vec(), b"value".to_vec()).await.unwrap();
         let value = backend.get(b"key").await.unwrap();
         assert_eq!(value, Some(Bytes::from("value")));
+    }
+
+    #[tokio::test]
+    async fn test_compare_and_set_success() {
+        let backend = MemoryBackend::new();
+
+        // Set an initial value
+        backend.set(b"key".to_vec(), b"value1".to_vec()).await.unwrap();
+
+        // CAS with correct expected value succeeds
+        backend
+            .compare_and_set(b"key", Some(b"value1".as_slice()), b"value2".to_vec())
+            .await
+            .unwrap();
+
+        let value = backend.get(b"key").await.unwrap();
+        assert_eq!(value, Some(Bytes::from("value2")));
+    }
+
+    #[tokio::test]
+    async fn test_compare_and_set_conflict() {
+        let backend = MemoryBackend::new();
+
+        // Set an initial value
+        backend.set(b"key".to_vec(), b"value1".to_vec()).await.unwrap();
+
+        // CAS with wrong expected value returns Conflict
+        let result =
+            backend.compare_and_set(b"key", Some(b"wrong".as_slice()), b"value2".to_vec()).await;
+
+        assert!(matches!(result, Err(StorageError::Conflict)));
+
+        // Original value unchanged
+        let value = backend.get(b"key").await.unwrap();
+        assert_eq!(value, Some(Bytes::from("value1")));
+    }
+
+    #[tokio::test]
+    async fn test_compare_and_set_insert_if_absent() {
+        let backend = MemoryBackend::new();
+
+        // CAS on nonexistent key with expected: None succeeds (insert-if-absent)
+        backend.compare_and_set(b"new_key", None, b"value".to_vec()).await.unwrap();
+
+        let value = backend.get(b"new_key").await.unwrap();
+        assert_eq!(value, Some(Bytes::from("value")));
+    }
+
+    #[tokio::test]
+    async fn test_compare_and_set_nonexistent_key_with_expected_some() {
+        let backend = MemoryBackend::new();
+
+        // CAS on nonexistent key with expected: Some should fail
+        let result =
+            backend.compare_and_set(b"missing", Some(b"value".as_slice()), b"new".to_vec()).await;
+
+        assert!(matches!(result, Err(StorageError::Conflict)));
+
+        // Key still doesn't exist
+        let value = backend.get(b"missing").await.unwrap();
+        assert_eq!(value, None);
+    }
+
+    #[tokio::test]
+    async fn test_compare_and_set_clears_ttl() {
+        let backend = MemoryBackend::new();
+
+        // Set a key with TTL
+        backend.set_with_ttl(b"key".to_vec(), b"value1".to_vec(), 3600).await.unwrap();
+
+        // CAS should succeed and clear the TTL
+        backend
+            .compare_and_set(b"key", Some(b"value1".as_slice()), b"value2".to_vec())
+            .await
+            .unwrap();
+
+        let value = backend.get(b"key").await.unwrap();
+        assert_eq!(value, Some(Bytes::from("value2")));
+
+        // Verify TTL was cleared (key persists in ttl_data check)
+        let ttl_data = backend.ttl_data.read();
+        assert!(!ttl_data.contains_key(&b"key".to_vec()));
     }
 }

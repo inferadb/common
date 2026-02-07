@@ -91,6 +91,31 @@ pub trait StorageBackend: Send + Sync {
     /// * `value` - The value to associate with the key
     async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()>;
 
+    /// Atomically sets a key's value if it matches the expected current value.
+    ///
+    /// This operation reads the current value and conditionally updates it in a
+    /// single atomic step. It is useful for optimistic concurrency control,
+    /// distributed locks, and leader election without the overhead of a full
+    /// transaction.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to update
+    /// * `expected` - The expected current value. Pass `None` to require the key does not exist
+    ///   (insert-if-absent).
+    /// * `new_value` - The value to store if the precondition holds
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::Conflict`] when the current value does not match
+    /// `expected`.
+    async fn compare_and_set(
+        &self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        new_value: Vec<u8>,
+    ) -> StorageResult<()>;
+
     /// Deletes a key.
     ///
     /// If the key doesn't exist, this is a no-op (returns `Ok(())`).

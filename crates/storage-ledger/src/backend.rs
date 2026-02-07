@@ -12,7 +12,9 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use inferadb_common_storage::{KeyValue, StorageBackend, StorageError, StorageResult, Transaction};
-use inferadb_ledger_sdk::{LedgerClient, ListEntitiesOpts, Operation, ReadConsistency};
+use inferadb_ledger_sdk::{
+    LedgerClient, ListEntitiesOpts, Operation, ReadConsistency, SetCondition,
+};
 
 use crate::{
     config::LedgerBackendConfig,
@@ -259,6 +261,39 @@ impl StorageBackend for LedgerBackend {
             .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
         Ok(())
+    }
+
+    async fn compare_and_set(
+        &self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        new_value: Vec<u8>,
+    ) -> StorageResult<()> {
+        let encoded_key = Self::encode_key(key);
+
+        let condition = match expected {
+            None => SetCondition::NotExists,
+            Some(expected_value) => SetCondition::ValueEquals(expected_value.to_vec()),
+        };
+
+        use inferadb_ledger_sdk::SdkError;
+        use tonic::Code;
+
+        match self
+            .client
+            .write(
+                self.namespace_id,
+                self.vault_id,
+                vec![Operation::set_entity_if(encoded_key, new_value, condition)],
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
+                Err(StorageError::Conflict)
+            },
+            Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
+        }
     }
 
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {

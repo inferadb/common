@@ -85,6 +85,7 @@
 mod backend;
 mod config;
 mod error;
+mod keys;
 mod transaction;
 
 /// Authentication-related storage implementations.
