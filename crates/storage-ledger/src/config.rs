@@ -6,6 +6,13 @@
 use inferadb_common_storage::{NamespaceId, VaultId};
 use inferadb_ledger_sdk::{ClientConfig, ReadConsistency};
 
+/// Default number of entities fetched per page during range queries.
+pub const DEFAULT_PAGE_SIZE: u32 = 10_000;
+
+/// Default upper safety bound on the total number of results returned
+/// by a single `get_range` call across all pages.
+pub const DEFAULT_MAX_RANGE_RESULTS: usize = 100_000;
+
 /// Configuration for [`LedgerBackend`](crate::LedgerBackend).
 ///
 /// This configuration determines how the backend connects to Ledger and
@@ -52,6 +59,20 @@ pub struct LedgerBackendConfig {
 
     /// Read consistency level.
     pub(crate) read_consistency: ReadConsistency,
+
+    /// Maximum number of entities per page when fetching range results.
+    ///
+    /// This controls the `limit` field sent to the Ledger SDK's
+    /// `list_entities` call. Defaults to `10_000`.
+    pub(crate) page_size: u32,
+
+    /// Upper safety bound on total results returned by a single `get_range`
+    /// call across all pages.
+    ///
+    /// If a range query accumulates more results than this limit, the
+    /// operation returns [`StorageError::Internal`] rather than silently
+    /// truncating. Defaults to `100_000`.
+    pub(crate) max_range_results: usize,
 }
 
 #[bon::bon]
@@ -67,14 +88,18 @@ impl LedgerBackendConfig {
     ///
     /// * `vault_id` - Vault ID for finer-grained scoping within the namespace.
     /// * `read_consistency` - Read consistency level (default: Linearizable).
+    /// * `page_size` - Number of entities per page for range queries (default: 10,000).
+    /// * `max_range_results` - Safety cap on total range results (default: 100,000).
     #[builder]
     pub fn new(
         client: ClientConfig,
         #[builder(into)] namespace_id: NamespaceId,
         vault_id: Option<VaultId>,
         #[builder(default = ReadConsistency::Linearizable)] read_consistency: ReadConsistency,
+        #[builder(default = DEFAULT_PAGE_SIZE)] page_size: u32,
+        #[builder(default = DEFAULT_MAX_RANGE_RESULTS)] max_range_results: usize,
     ) -> Self {
-        Self { client, namespace_id, vault_id, read_consistency }
+        Self { client, namespace_id, vault_id, read_consistency, page_size, max_range_results }
     }
 
     /// Returns the SDK client configuration.
@@ -99,6 +124,18 @@ impl LedgerBackendConfig {
     #[must_use]
     pub fn read_consistency(&self) -> ReadConsistency {
         self.read_consistency
+    }
+
+    /// Returns the page size for range queries.
+    #[must_use]
+    pub fn page_size(&self) -> u32 {
+        self.page_size
+    }
+
+    /// Returns the maximum number of results a single range query may return.
+    #[must_use]
+    pub fn max_range_results(&self) -> usize {
+        self.max_range_results
     }
 
     /// Returns the SDK client configuration for building a client.
@@ -178,5 +215,26 @@ mod tests {
 
         // Verify we can access the client config
         let _client = config.client();
+    }
+
+    #[test]
+    fn test_pagination_defaults() {
+        let config = LedgerBackendConfig::builder().client(test_client()).namespace_id(1).build();
+
+        assert_eq!(config.page_size(), DEFAULT_PAGE_SIZE);
+        assert_eq!(config.max_range_results(), DEFAULT_MAX_RANGE_RESULTS);
+    }
+
+    #[test]
+    fn test_custom_pagination_config() {
+        let config = LedgerBackendConfig::builder()
+            .client(test_client())
+            .namespace_id(1)
+            .page_size(500)
+            .max_range_results(50_000)
+            .build();
+
+        assert_eq!(config.page_size(), 500);
+        assert_eq!(config.max_range_results(), 50_000);
     }
 }

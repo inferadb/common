@@ -91,6 +91,12 @@ pub struct LedgerBackend {
 
     /// Read consistency level.
     read_consistency: ReadConsistency,
+
+    /// Number of entities fetched per page during range queries.
+    page_size: u32,
+
+    /// Upper safety bound on total results from a single range query.
+    max_range_results: usize,
 }
 
 impl std::fmt::Debug for LedgerBackend {
@@ -141,18 +147,33 @@ impl LedgerBackend {
         let namespace_id = config.namespace_id();
         let vault_id = config.vault_id();
         let read_consistency = config.read_consistency();
+        let page_size = config.page_size();
+        let max_range_results = config.max_range_results();
 
         let client = LedgerClient::new(config.into_client_config())
             .await
             .map_err(LedgerStorageError::from)?;
 
-        Ok(Self { client: Arc::new(client), namespace_id, vault_id, read_consistency })
+        Ok(Self {
+            client: Arc::new(client),
+            namespace_id,
+            vault_id,
+            read_consistency,
+            page_size,
+            max_range_results,
+        })
     }
 
     /// Creates a backend from an existing SDK client.
     ///
     /// This is useful when you want to share a client across multiple
     /// backend instances or when you need more control over client lifecycle.
+    ///
+    /// Uses default pagination settings ([`DEFAULT_PAGE_SIZE`] and
+    /// [`DEFAULT_MAX_RANGE_RESULTS`]).
+    ///
+    /// [`DEFAULT_PAGE_SIZE`]: crate::config::DEFAULT_PAGE_SIZE
+    /// [`DEFAULT_MAX_RANGE_RESULTS`]: crate::config::DEFAULT_MAX_RANGE_RESULTS
     #[must_use]
     pub fn from_client(
         client: Arc<LedgerClient>,
@@ -160,7 +181,15 @@ impl LedgerBackend {
         vault_id: Option<VaultId>,
         read_consistency: ReadConsistency,
     ) -> Self {
-        Self { client, namespace_id, vault_id, read_consistency }
+        use crate::config::{DEFAULT_MAX_RANGE_RESULTS, DEFAULT_PAGE_SIZE};
+        Self {
+            client,
+            namespace_id,
+            vault_id,
+            read_consistency,
+            page_size: DEFAULT_PAGE_SIZE,
+            max_range_results: DEFAULT_MAX_RANGE_RESULTS,
+        }
     }
 
     /// Returns the namespace ID.
@@ -330,59 +359,82 @@ impl StorageBackend for LedgerBackend {
             (None, None) => String::new(),
         };
 
-        let opts = ListEntitiesOpts {
-            key_prefix: prefix,
-            at_height: None,
-            include_expired: false,
-            limit: 10000, // Reasonable page size
-            page_token: None,
-            consistency: self.read_consistency,
-            vault_id: self.vault_raw(),
-        };
+        // Paginate through results using page_token.
+        let mut all_key_values = Vec::new();
+        let mut page_token: Option<String> = None;
 
-        let result = self
-            .client
-            .list_entities(self.ns_raw(), opts)
-            .await
-            .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
-
-        // Filter results to match exact range bounds
-        let mut key_values = Vec::new();
-        for entity in result.items {
-            // Check start bound
-            let after_start = match &start_key {
-                Some(start) if start_inclusive => &entity.key >= start,
-                Some(start) => &entity.key > start,
-                None => true,
+        loop {
+            let opts = ListEntitiesOpts {
+                key_prefix: prefix.clone(),
+                at_height: None,
+                include_expired: false,
+                limit: self.page_size,
+                page_token: page_token.take(),
+                consistency: self.read_consistency,
+                vault_id: self.vault_raw(),
             };
 
-            // Check end bound
-            let before_end = match &end_key {
-                Some(end) if end_inclusive => &entity.key <= end,
-                Some(end) => &entity.key < end,
-                None => true,
-            };
+            let result = self
+                .client
+                .list_entities(self.ns_raw(), opts)
+                .await
+                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
-            if after_start && before_end {
-                match decode_key(&entity.key) {
-                    Ok(key) => {
-                        key_values.push(KeyValue {
-                            key: Bytes::from(key),
-                            value: Bytes::from(entity.value),
-                        });
-                    },
-                    Err(e) => {
-                        tracing::warn!(key = entity.key, "Failed to decode key: {}", e);
-                        // Skip malformed keys
-                    },
+            // Filter results to match exact range bounds
+            for entity in &result.items {
+                let after_start = match &start_key {
+                    Some(start) if start_inclusive => &entity.key >= start,
+                    Some(start) => &entity.key > start,
+                    None => true,
+                };
+
+                let before_end = match &end_key {
+                    Some(end) if end_inclusive => &entity.key <= end,
+                    Some(end) => &entity.key < end,
+                    None => true,
+                };
+
+                if after_start && before_end {
+                    match decode_key(&entity.key) {
+                        Ok(key) => {
+                            all_key_values.push(KeyValue {
+                                key: Bytes::from(key),
+                                value: Bytes::from(entity.value.clone()),
+                            });
+                        },
+                        Err(e) => {
+                            tracing::warn!(key = entity.key, "Failed to decode key: {}", e);
+                            // Skip malformed keys
+                        },
+                    }
                 }
+            }
+
+            // Check safety bound before continuing to the next page
+            if all_key_values.len() > self.max_range_results {
+                return Err(StorageError::Internal {
+                    message: format!(
+                        "range query exceeded safety limit of {} results (got {}); \
+                         increase max_range_results in LedgerBackendConfig if this is expected",
+                        self.max_range_results,
+                        all_key_values.len(),
+                    ),
+                    source: None,
+                });
+            }
+
+            // Continue to next page or break
+            if result.has_next_page() {
+                page_token = result.next_page_token;
+            } else {
+                break;
             }
         }
 
         // Sort by key to ensure consistent ordering
-        key_values.sort_by(|a, b| a.key.cmp(&b.key));
+        all_key_values.sort_by(|a, b| a.key.cmp(&b.key));
 
-        Ok(key_values)
+        Ok(all_key_values)
     }
 
     async fn clear_range<R>(&self, range: R) -> StorageResult<()>

@@ -1049,3 +1049,111 @@ mod transaction_tests {
         assert!(value.is_none());
     }
 }
+
+// ============================================================================
+// Pagination Tests
+// ============================================================================
+
+/// Creates a backend with custom pagination settings.
+async fn create_paginated_backend(
+    server: &MockLedgerServer,
+    page_size: u32,
+    max_range_results: usize,
+) -> LedgerBackend {
+    let config = LedgerBackendConfig::builder()
+        .client(test_client_config(server, "test-pagination"))
+        .namespace_id(1)
+        .vault_id(VaultId::from(0))
+        .page_size(page_size)
+        .max_range_results(max_range_results)
+        .build();
+
+    LedgerBackend::new(config).await.expect("backend creation should succeed")
+}
+
+#[tokio::test]
+async fn test_get_range_paginates_across_multiple_pages() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    // Use a small page_size to force multiple pages
+    let backend = create_paginated_backend(&server, 3, 100).await;
+
+    // Insert 10 keys
+    for i in 0u8..10 {
+        backend
+            .set(vec![b'k', i], format!("value-{i}").into_bytes())
+            .await
+            .expect("set should succeed");
+    }
+
+    // Range query should return all 10 across multiple pages
+    let results = backend.get_range(vec![b'k', 0]..=vec![b'k', 9]).await.expect("get_range");
+    assert_eq!(results.len(), 10, "should return all 10 keys across multiple pages");
+
+    // Verify ordering
+    for (i, kv) in results.iter().enumerate() {
+        assert_eq!(kv.key.as_ref(), &[b'k', i as u8]);
+    }
+}
+
+#[tokio::test]
+async fn test_get_range_exceeds_safety_limit() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    // Safety limit of 5, but we'll insert 10 keys
+    let backend = create_paginated_backend(&server, 3, 5).await;
+
+    for i in 0u8..10 {
+        backend
+            .set(vec![b'k', i], format!("value-{i}").into_bytes())
+            .await
+            .expect("set should succeed");
+    }
+
+    // Range query should fail because we exceed max_range_results
+    let result = backend.get_range(vec![b'k', 0]..=vec![b'k', 9]).await;
+    assert!(result.is_err(), "should error when exceeding safety limit");
+
+    let err = result.unwrap_err();
+    assert!(
+        matches!(&err, StorageError::Internal { message, .. } if message.contains("safety limit")),
+        "error should mention safety limit, got: {err}",
+    );
+}
+
+#[tokio::test]
+async fn test_get_range_within_safety_limit() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    // Safety limit of 10, inserting exactly 10
+    let backend = create_paginated_backend(&server, 3, 10).await;
+
+    for i in 0u8..10 {
+        backend
+            .set(vec![b'k', i], format!("value-{i}").into_bytes())
+            .await
+            .expect("set should succeed");
+    }
+
+    // Exactly at the limit should succeed (we use > not >=)
+    let results = backend.get_range(vec![b'k', 0]..=vec![b'k', 9]).await.expect("get_range");
+    assert_eq!(results.len(), 10, "should succeed when exactly at the safety limit");
+}
+
+#[tokio::test]
+async fn test_clear_range_with_pagination() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    // Small page size to exercise pagination in clear_range (which delegates to get_range)
+    let backend = create_paginated_backend(&server, 3, 100).await;
+
+    for i in 0u8..10 {
+        backend
+            .set(vec![b'k', i], format!("value-{i}").into_bytes())
+            .await
+            .expect("set should succeed");
+    }
+
+    // Clear the range — should paginate internally
+    backend.clear_range(vec![b'k', 0]..=vec![b'k', 9]).await.expect("clear_range should succeed");
+
+    // Verify all keys are deleted
+    let results = backend.get_range(vec![b'k', 0]..=vec![b'k', 9]).await.expect("get_range");
+    assert!(results.is_empty(), "all keys should be deleted after clear_range");
+}

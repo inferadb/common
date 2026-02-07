@@ -92,7 +92,7 @@ mod transaction;
 pub mod auth;
 
 pub use backend::LedgerBackend;
-pub use config::LedgerBackendConfig;
+pub use config::{DEFAULT_MAX_RANGE_RESULTS, DEFAULT_PAGE_SIZE, LedgerBackendConfig};
 pub use error::{LedgerStorageError, Result};
 // Re-export SDK types needed to build LedgerBackendConfig
 pub use inferadb_ledger_sdk::{ClientConfig, ReadConsistency, ServerSource};
