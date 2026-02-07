@@ -28,6 +28,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tonic.workspace = true
 tracing.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 snafu = "0.8"

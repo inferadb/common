@@ -19,9 +19,10 @@ use inferadb_ledger_sdk::{
 };
 
 use crate::{
-    config::LedgerBackendConfig,
+    config::{LedgerBackendConfig, RetryConfig},
     error::{LedgerStorageError, Result},
     keys::{decode_key, encode_key},
+    retry::with_retry,
     transaction::LedgerTransaction,
 };
 
@@ -97,6 +98,9 @@ pub struct LedgerBackend {
 
     /// Upper safety bound on total results from a single range query.
     max_range_results: usize,
+
+    /// Retry configuration for transient failures.
+    retry_config: RetryConfig,
 }
 
 impl std::fmt::Debug for LedgerBackend {
@@ -149,6 +153,7 @@ impl LedgerBackend {
         let read_consistency = config.read_consistency();
         let page_size = config.page_size();
         let max_range_results = config.max_range_results();
+        let retry_config = config.retry_config().clone();
 
         let client = LedgerClient::new(config.into_client_config())
             .await
@@ -161,6 +166,7 @@ impl LedgerBackend {
             read_consistency,
             page_size,
             max_range_results,
+            retry_config,
         })
     }
 
@@ -189,6 +195,7 @@ impl LedgerBackend {
             read_consistency,
             page_size: DEFAULT_PAGE_SIZE,
             max_range_results: DEFAULT_MAX_RANGE_RESULTS,
+            retry_config: RetryConfig::default(),
         }
     }
 
@@ -270,22 +277,31 @@ impl StorageBackend for LedgerBackend {
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
         let encoded_key = encode_key(key);
 
-        match self.do_read(&encoded_key).await {
-            Ok(Some(value)) => Ok(Some(Bytes::from(value))),
-            Ok(None) => Ok(None),
-            Err(e) => Err(StorageError::from(e)),
-        }
+        with_retry(&self.retry_config, None, "get", || async {
+            match self.do_read(&encoded_key).await {
+                Ok(Some(value)) => Ok(Some(Bytes::from(value))),
+                Ok(None) => Ok(None),
+                Err(e) => Err(StorageError::from(e)),
+            }
+        })
+        .await
     }
 
     async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()> {
         let encoded_key = encode_key(&key);
 
-        self.client
-            .write(self.ns_raw(), self.vault_raw(), vec![Operation::set_entity(encoded_key, value)])
-            .await
-            .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
-
-        Ok(())
+        with_retry(&self.retry_config, None, "set", || async {
+            self.client
+                .write(
+                    self.ns_raw(),
+                    self.vault_raw(),
+                    vec![Operation::set_entity(encoded_key.clone(), value.clone())],
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+        })
+        .await
     }
 
     async fn compare_and_set(
@@ -304,32 +320,45 @@ impl StorageBackend for LedgerBackend {
         use inferadb_ledger_sdk::SdkError;
         use tonic::Code;
 
-        match self
-            .client
-            .write(
-                self.ns_raw(),
-                self.vault_raw(),
-                vec![Operation::set_entity_if(encoded_key, new_value, condition)],
-            )
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
-                Err(StorageError::Conflict)
-            },
-            Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
-        }
+        with_retry(&self.retry_config, None, "compare_and_set", || async {
+            match self
+                .client
+                .write(
+                    self.ns_raw(),
+                    self.vault_raw(),
+                    vec![Operation::set_entity_if(
+                        encoded_key.clone(),
+                        new_value.clone(),
+                        condition.clone(),
+                    )],
+                )
+                .await
+            {
+                Ok(_) => Ok(()),
+                Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
+                    Err(StorageError::Conflict)
+                },
+                Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
+            }
+        })
+        .await
     }
 
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {
         let encoded_key = encode_key(key);
 
-        self.client
-            .write(self.ns_raw(), self.vault_raw(), vec![Operation::delete_entity(encoded_key)])
-            .await
-            .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
-
-        Ok(())
+        with_retry(&self.retry_config, None, "delete", || async {
+            self.client
+                .write(
+                    self.ns_raw(),
+                    self.vault_raw(),
+                    vec![Operation::delete_entity(encoded_key.clone())],
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+        })
+        .await
     }
 
     async fn get_range<R>(&self, range: R) -> StorageResult<Vec<KeyValue>>
@@ -364,21 +393,26 @@ impl StorageBackend for LedgerBackend {
         let mut page_token: Option<String> = None;
 
         loop {
-            let opts = ListEntitiesOpts {
-                key_prefix: prefix.clone(),
-                at_height: None,
-                include_expired: false,
-                limit: self.page_size,
-                page_token: page_token.take(),
-                consistency: self.read_consistency,
-                vault_id: self.vault_raw(),
-            };
+            let current_page_token = page_token.take();
+            let prefix_clone = prefix.clone();
 
-            let result = self
-                .client
-                .list_entities(self.ns_raw(), opts)
-                .await
-                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
+            let result = with_retry(&self.retry_config, None, "get_range", || async {
+                let opts = ListEntitiesOpts {
+                    key_prefix: prefix_clone.clone(),
+                    at_height: None,
+                    include_expired: false,
+                    limit: self.page_size,
+                    page_token: current_page_token.clone(),
+                    consistency: self.read_consistency,
+                    vault_id: self.vault_raw(),
+                };
+
+                self.client
+                    .list_entities(self.ns_raw(), opts)
+                    .await
+                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+            })
+            .await?;
 
             // Filter results to match exact range bounds
             for entity in &result.items {
@@ -441,7 +475,7 @@ impl StorageBackend for LedgerBackend {
     where
         R: RangeBounds<Vec<u8>> + Send,
     {
-        // First, get all keys in the range
+        // First, get all keys in the range (retried per-page internally)
         let keys_to_delete = self.get_range(range).await?;
 
         if keys_to_delete.is_empty() {
@@ -454,13 +488,15 @@ impl StorageBackend for LedgerBackend {
             .map(|kv| Operation::delete_entity(encode_key(&kv.key)))
             .collect();
 
-        // Execute as batch delete
-        self.client
-            .write(self.ns_raw(), self.vault_raw(), operations)
-            .await
-            .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
-
-        Ok(())
+        // Execute as batch delete with retry
+        with_retry(&self.retry_config, None, "clear_range", || async {
+            self.client
+                .write(self.ns_raw(), self.vault_raw(), operations.clone())
+                .await
+                .map(|_| ())
+                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+        })
+        .await
     }
 
     /// Stores a key-value pair with automatic expiration.
@@ -483,16 +519,22 @@ impl StorageBackend for LedgerBackend {
         let encoded_key = encode_key(&key);
         let expires_at = Self::compute_expiration_timestamp(ttl_seconds)?;
 
-        self.client
-            .write(
-                self.ns_raw(),
-                self.vault_raw(),
-                vec![Operation::set_entity_with_expiry(encoded_key, value, expires_at)],
-            )
-            .await
-            .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
-
-        Ok(())
+        with_retry(&self.retry_config, None, "set_with_ttl", || async {
+            self.client
+                .write(
+                    self.ns_raw(),
+                    self.vault_raw(),
+                    vec![Operation::set_entity_with_expiry(
+                        encoded_key.clone(),
+                        value.clone(),
+                        expires_at,
+                    )],
+                )
+                .await
+                .map(|_| ())
+                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+        })
+        .await
     }
 
     async fn transaction(&self) -> StorageResult<Box<dyn Transaction>> {
@@ -508,13 +550,17 @@ impl StorageBackend for LedgerBackend {
     async fn health_check(&self) -> StorageResult<()> {
         // health_check() returns bool: true = healthy, false = degraded but available
         // It returns Err for unavailable
-        self.client
-            .health_check()
-            .await
-            .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
+        with_retry(&self.retry_config, None, "health_check", || async {
+            self.client
+                .health_check()
+                .await
+                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
-        // If we get here, the service is either healthy or degraded (both are OK for this check)
-        Ok(())
+            // If we get here, the service is either healthy or degraded (both are OK for this
+            // check)
+            Ok(())
+        })
+        .await
     }
 }
 

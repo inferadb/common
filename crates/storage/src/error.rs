@@ -180,4 +180,17 @@ impl StorageError {
     pub fn timeout() -> Self {
         Self::Timeout
     }
+
+    /// Returns `true` if this error is transient and the operation may
+    /// succeed on retry.
+    ///
+    /// Transient errors indicate the storage backend is temporarily
+    /// unavailable (network partition, timeout, rate limiting) but may
+    /// recover. Non-transient errors (not found, conflict, serialization,
+    /// internal logic errors) represent definitive failures that will not
+    /// resolve by retrying the same operation.
+    #[must_use]
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Self::Connection { .. } | Self::Timeout)
+    }
 }

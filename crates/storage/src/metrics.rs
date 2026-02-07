@@ -116,6 +116,13 @@ pub struct MetricsSnapshot {
     #[builder(default)]
     pub cache_misses: u64,
 
+    /// Total retry attempts across all operations
+    #[builder(default)]
+    pub retry_count: u64,
+    /// Operations where all retry attempts were exhausted
+    #[builder(default)]
+    pub retry_exhausted_count: u64,
+
     /// TTL operations count
     #[builder(default)]
     pub ttl_operations: u64,
@@ -247,6 +254,10 @@ struct MetricsInner {
     cache_hits: AtomicU64,
     cache_misses: AtomicU64,
 
+    // Retry
+    retry_count: AtomicU64,
+    retry_exhausted_count: AtomicU64,
+
     // Other
     ttl_operations: AtomicU64,
     health_check_count: AtomicU64,
@@ -276,6 +287,8 @@ impl Metrics {
                 timeout_count: AtomicU64::new(0),
                 cache_hits: AtomicU64::new(0),
                 cache_misses: AtomicU64::new(0),
+                retry_count: AtomicU64::new(0),
+                retry_exhausted_count: AtomicU64::new(0),
                 ttl_operations: AtomicU64::new(0),
                 health_check_count: AtomicU64::new(0),
             }),
@@ -359,6 +372,22 @@ impl Metrics {
         self.inner.health_check_count.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record a retry attempt.
+    ///
+    /// Called each time a transient failure triggers a retry. The count
+    /// tracks individual retry attempts, not operations that were retried.
+    pub fn record_retry(&self) {
+        self.inner.retry_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a retry-exhausted event.
+    ///
+    /// Called when all retry attempts have been exhausted and the operation
+    /// fails permanently. This is a subset of `error_count`.
+    pub fn record_retry_exhausted(&self) {
+        self.inner.retry_exhausted_count.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Get a snapshot of current metrics.
     ///
     /// Reads all counters using `Relaxed` ordering. The snapshot is approximately
@@ -386,6 +415,8 @@ impl Metrics {
             timeout_count: self.inner.timeout_count.load(Ordering::Relaxed),
             cache_hits: self.inner.cache_hits.load(Ordering::Relaxed),
             cache_misses: self.inner.cache_misses.load(Ordering::Relaxed),
+            retry_count: self.inner.retry_count.load(Ordering::Relaxed),
+            retry_exhausted_count: self.inner.retry_exhausted_count.load(Ordering::Relaxed),
             ttl_operations: self.inner.ttl_operations.load(Ordering::Relaxed),
             health_check_count: self.inner.health_check_count.load(Ordering::Relaxed),
         }
@@ -411,6 +442,8 @@ impl Metrics {
         self.inner.timeout_count.store(0, Ordering::Relaxed);
         self.inner.cache_hits.store(0, Ordering::Relaxed);
         self.inner.cache_misses.store(0, Ordering::Relaxed);
+        self.inner.retry_count.store(0, Ordering::Relaxed);
+        self.inner.retry_exhausted_count.store(0, Ordering::Relaxed);
         self.inner.ttl_operations.store(0, Ordering::Relaxed);
         self.inner.health_check_count.store(0, Ordering::Relaxed);
     }
@@ -439,6 +472,8 @@ impl Metrics {
             error_rate = snapshot.error_rate(),
             conflict_count = snapshot.conflict_count,
             conflict_rate = snapshot.conflict_rate(),
+            retry_count = snapshot.retry_count,
+            retry_exhausted_count = snapshot.retry_exhausted_count,
             cache_hit_rate = snapshot.cache_hit_rate(),
             "Storage metrics snapshot"
         );

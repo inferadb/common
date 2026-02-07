@@ -86,13 +86,17 @@ mod backend;
 mod config;
 mod error;
 mod keys;
+mod retry;
 mod transaction;
 
 /// Authentication-related storage implementations.
 pub mod auth;
 
 pub use backend::LedgerBackend;
-pub use config::{DEFAULT_MAX_RANGE_RESULTS, DEFAULT_PAGE_SIZE, LedgerBackendConfig};
+pub use config::{
+    DEFAULT_INITIAL_BACKOFF, DEFAULT_MAX_BACKOFF, DEFAULT_MAX_RANGE_RESULTS, DEFAULT_MAX_RETRIES,
+    DEFAULT_PAGE_SIZE, LedgerBackendConfig, RetryConfig,
+};
 pub use error::{LedgerStorageError, Result};
 // Re-export SDK types needed to build LedgerBackendConfig
 pub use inferadb_ledger_sdk::{ClientConfig, ReadConsistency, ServerSource};
