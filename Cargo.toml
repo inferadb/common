@@ -18,7 +18,7 @@ inferadb-ledger-sdk = ">=0.1.0-0"
 
 # Async
 async-trait = "0.1"
-tokio = { version = "1", features = ["time", "sync", "rt"] }
+tokio = { version = "1", features = ["time", "sync", "rt", "macros"] }
 
 # Data types
 bytes = "1"
