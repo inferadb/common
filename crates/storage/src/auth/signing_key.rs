@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::types::{CertId, ClientId};
 
@@ -77,7 +78,11 @@ pub struct PublicSigningKey {
     ///
     /// The key should be encoded without the "=" padding characters.
     /// For example, a 32-byte key encodes to 43 characters.
-    pub public_key: String,
+    ///
+    /// Wrapped in [`Zeroizing`] to ensure the key material is securely
+    /// zeroed from memory when this struct is dropped.
+    #[builder(into)]
+    pub public_key: Zeroizing<String>,
 
     /// Client ID that owns this key (Snowflake ID).
     ///
@@ -231,7 +236,7 @@ mod tests {
             .build();
 
         assert_eq!(key.kid, "full-key");
-        assert_eq!(key.public_key, "MCowBQYDK2VwAyEAfull");
+        assert_eq!(*key.public_key, "MCowBQYDK2VwAyEAfull");
         assert_eq!(key.client_id, ClientId::from(5555));
         assert_eq!(key.cert_id, CertId::from(999));
         assert_eq!(key.created_at, now);
@@ -354,7 +359,7 @@ mod tests {
             serde_json::from_str(json).expect("deserialization should succeed");
 
         assert_eq!(key.kid, "known-key-123");
-        assert_eq!(key.public_key, "dGVzdC1wdWJsaWMta2V5LWJhc2U2NA");
+        assert_eq!(*key.public_key, "dGVzdC1wdWJsaWMta2V5LWJhc2U2NA");
         assert_eq!(key.client_id, ClientId::from(9999));
         assert_eq!(key.cert_id, CertId::from(8888));
         assert!(key.active);

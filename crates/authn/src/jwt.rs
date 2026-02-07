@@ -570,7 +570,7 @@ mod ledger_verification_tests {
         // Register the public key
         let public_key = PublicSigningKey {
             kid: kid.to_string(),
-            public_key: public_key_b64,
+            public_key: public_key_b64.into(),
             client_id: ClientId::from(1),
             cert_id: CertId::from(1),
             created_at: Utc::now(),
@@ -622,7 +622,7 @@ mod ledger_verification_tests {
         // Register a revoked key
         let public_key = PublicSigningKey {
             kid: kid.to_string(),
-            public_key: public_key_b64,
+            public_key: public_key_b64.into(),
             client_id: ClientId::from(1),
             cert_id: CertId::from(1),
             created_at: Utc::now(),

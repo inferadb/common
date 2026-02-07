@@ -45,7 +45,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
 use ed25519_dalek::{PUBLIC_KEY_LENGTH, VerifyingKey};
 use inferadb_common_storage::{
-    NamespaceId, StorageError,
+    NamespaceId, StorageError, Zeroizing,
     auth::{PublicSigningKey, PublicSigningKeyStore},
 };
 use jsonwebtoken::DecodingKey;
@@ -346,10 +346,13 @@ fn validate_key_state(key: &PublicSigningKey) -> Result<(), AuthError> {
 ///
 /// The public key is expected to be base64url-encoded (no padding) Ed25519 key.
 fn to_decoding_key(key: &PublicSigningKey) -> Result<DecodingKey, AuthError> {
-    // Decode base64url public key
-    let public_key_bytes = URL_SAFE_NO_PAD
-        .decode(&key.public_key)
-        .map_err(|e| AuthError::InvalidPublicKey(format!("base64 decode: {e}")))?;
+    // Decode base64url public key into a Zeroizing wrapper to ensure
+    // the raw key bytes are scrubbed from memory when dropped.
+    let public_key_bytes: Zeroizing<Vec<u8>> = Zeroizing::new(
+        URL_SAFE_NO_PAD
+            .decode(key.public_key.as_bytes())
+            .map_err(|e| AuthError::InvalidPublicKey(format!("base64 decode: {e}")))?,
+    );
 
     // Verify key length (Ed25519 public keys are 32 bytes)
     if public_key_bytes.len() != PUBLIC_KEY_LENGTH {
@@ -359,8 +362,10 @@ fn to_decoding_key(key: &PublicSigningKey) -> Result<DecodingKey, AuthError> {
         )));
     }
 
-    // Validate it's a valid Ed25519 key by parsing it
-    let key_bytes: [u8; PUBLIC_KEY_LENGTH] = public_key_bytes
+    // Validate it's a valid Ed25519 key by parsing it.
+    // The fixed-size array is stack-allocated and zeroed when it goes out of scope
+    // via the Zeroizing wrapper on the source Vec.
+    let key_bytes: [u8; PUBLIC_KEY_LENGTH] = public_key_bytes[..PUBLIC_KEY_LENGTH]
         .try_into()
         .map_err(|_| AuthError::InvalidPublicKey("failed to convert bytes".to_string()))?;
 
@@ -392,7 +397,7 @@ mod tests {
     fn create_test_key(kid: &str, active: bool) -> PublicSigningKey {
         PublicSigningKey {
             kid: kid.to_string(),
-            public_key: generate_test_public_key(),
+            public_key: generate_test_public_key().into(),
             client_id: ClientId::from(1),
             cert_id: CertId::from(1),
             created_at: Utc::now(),
@@ -490,7 +495,7 @@ mod tests {
     async fn test_invalid_public_key_format() {
         let store = Arc::new(MemorySigningKeyStore::new());
         let mut key = create_test_key("bad-key", true);
-        key.public_key = "not-valid-base64!!!".to_string();
+        key.public_key = "not-valid-base64!!!".to_string().into();
         store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
 
         let cache = SigningKeyCache::new(
@@ -666,7 +671,7 @@ mod tests {
     #[test]
     fn test_to_decoding_key_invalid_base64() {
         let mut key = create_test_key("bad", true);
-        key.public_key = "not-valid!!!".to_string();
+        key.public_key = "not-valid!!!".to_string().into();
         let result = to_decoding_key(&key);
         assert!(matches!(result, Err(AuthError::InvalidPublicKey(_))));
     }
@@ -674,7 +679,7 @@ mod tests {
     #[test]
     fn test_to_decoding_key_wrong_length() {
         let mut key = create_test_key("short", true);
-        key.public_key = "AAAA".to_string(); // Too short
+        key.public_key = "AAAA".to_string().into(); // Too short
         let result = to_decoding_key(&key);
         assert!(matches!(result, Err(AuthError::InvalidPublicKey(_))));
     }

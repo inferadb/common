@@ -97,3 +97,4 @@ pub use memory::MemoryBackend;
 pub use metrics::{Metrics, MetricsCollector, MetricsSnapshot};
 pub use transaction::Transaction;
 pub use types::{CertId, ClientId, KeyValue, NamespaceId, VaultId};
+pub use zeroize::Zeroizing;
