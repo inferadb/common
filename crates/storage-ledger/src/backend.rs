@@ -27,9 +27,12 @@ use crate::{
     transaction::LedgerTransaction,
 };
 
-/// Returns the longest common prefix of two strings.
-fn common_prefix(a: &str, b: &str) -> String {
-    a.chars().zip(b.chars()).take_while(|(ca, cb)| ca == cb).map(|(c, _)| c).collect()
+/// Returns the byte length of the longest common prefix of two strings.
+///
+/// Since keys are hex-encoded (ASCII only), the byte length equals the character count,
+/// making it safe to slice with `&s[..len]`.
+fn common_prefix_len(a: &str, b: &str) -> usize {
+    a.bytes().zip(b.bytes()).take_while(|(ca, cb)| ca == cb).count()
 }
 
 /// Ledger-backed implementation of [`StorageBackend`].
@@ -414,10 +417,19 @@ impl StorageBackend for LedgerBackend {
         // Find common prefix between start and end for efficient scanning.
         // For range queries, we use the longest common prefix of start and end
         // to minimize the number of entities returned by the server.
+        //
+        // Uses common_prefix_len to compute the prefix length without allocating,
+        // then slices into one of the existing strings to build the prefix.
         let prefix = match (&start_key, &end_key) {
-            (Some(start), Some(end)) => common_prefix(start, end),
+            (Some(start), Some(end)) => {
+                let len = common_prefix_len(start, end);
+                start[..len].to_owned()
+            },
             (Some(start), None) => start.clone(),
-            (None, Some(end)) => common_prefix("", end),
+            (None, Some(_)) => {
+                // common_prefix_len("", end) is always 0, so prefix is empty
+                String::new()
+            },
             (None, None) => String::new(),
         };
 
@@ -448,6 +460,11 @@ impl StorageBackend for LedgerBackend {
                         .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
                 })
                 .await?;
+
+                // Pre-allocate on the first page to reduce reallocations
+                if all_key_values.is_empty() {
+                    all_key_values.reserve(result.items.len());
+                }
 
                 // Filter results to match exact range bounds
                 for entity in &result.items {
@@ -670,14 +687,19 @@ mod tests {
     }
 
     #[test]
-    fn test_common_prefix() {
-        assert_eq!(common_prefix("abc", "abd"), "ab");
-        assert_eq!(common_prefix("hello", "help"), "hel");
-        assert_eq!(common_prefix("abc", "xyz"), "");
-        assert_eq!(common_prefix("same", "same"), "same");
-        assert_eq!(common_prefix("", "anything"), "");
-        assert_eq!(common_prefix("anything", ""), "");
-        assert_eq!(common_prefix("", ""), "");
+    fn test_common_prefix_len() {
+        assert_eq!(common_prefix_len("abc", "abd"), 2);
+        assert_eq!(common_prefix_len("hello", "help"), 3);
+        assert_eq!(common_prefix_len("abc", "xyz"), 0);
+        assert_eq!(common_prefix_len("same", "same"), 4);
+        assert_eq!(common_prefix_len("", "anything"), 0);
+        assert_eq!(common_prefix_len("anything", ""), 0);
+        assert_eq!(common_prefix_len("", ""), 0);
+        // Verify that slicing with the returned length produces the expected prefix
+        let a = "abcdef";
+        let b = "abcxyz";
+        let len = common_prefix_len(a, b);
+        assert_eq!(&a[..len], "abc");
     }
 
     #[test]
