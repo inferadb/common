@@ -826,7 +826,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1331,7 +1331,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.2",
  "tokio",
  "tower-service",
  "tracing",
@@ -1487,12 +1487,29 @@ dependencies = [
  "base64",
  "chrono",
  "ed25519-dalek",
- "inferadb-common-storage",
+ "inferadb-common-storage 0.1.0-dev.20260207",
  "jsonwebtoken",
  "moka",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "inferadb-common-storage"
+version = "0.1.0-dev.20260207"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5553a6771417691ef676baf2bed5591c1b4521ced2a782360b2b15468ef0c528"
+dependencies = [
+ "async-trait",
+ "bon",
+ "bytes",
+ "chrono",
+ "parking_lot",
+ "serde",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -1524,7 +1541,7 @@ dependencies = [
  "bytes",
  "chrono",
  "hex",
- "inferadb-common-storage",
+ "inferadb-common-storage 0.1.0-dev.20260207",
  "inferadb-ledger-sdk",
  "serde",
  "serde_json",
@@ -1537,8 +1554,11 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-raft"
-version = "0.1.0"
+version = "0.1.0-dev.20260207.48"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a5a9da74e8c5d435df89d8e89cead2e7ad06d1a385eeafc604a4a858bb5b2e7"
 dependencies = [
+ "arc-swap",
  "base64",
  "bon",
  "bytes",
@@ -1579,7 +1599,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-sdk"
-version = "0.1.0"
+version = "0.1.0-dev.20260207.48"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34bd8175f1e3fe8def8bf9f18b1b2c227e51b583a9b0de2586dfa771b0e6bb07"
 dependencies = [
  "backon",
  "bon",
@@ -1589,6 +1611,7 @@ dependencies = [
  "hickory-resolver",
  "inferadb-ledger-raft",
  "inferadb-ledger-types",
+ "metrics",
  "opentelemetry",
  "parking_lot",
  "prost",
@@ -1609,7 +1632,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-state"
-version = "0.1.0"
+version = "0.1.0-dev.20260207.48"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f020986de21c7e55c1e0c851779c7afff5ed24446e984fb963564334b230ace3"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1634,7 +1659,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-store"
-version = "0.1.0"
+version = "0.1.0-dev.20260207.48"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71ade437fbe6a59f6f6d2268085d5344cdd68324749de6ca5fb1a6372521dd4e"
 dependencies = [
  "arc-swap",
  "bon",
@@ -1647,7 +1674,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-types"
-version = "0.1.0"
+version = "0.1.0-dev.20260207.48"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14eb33699f2f1ccc519e8e955ce2aed4e1ceb3c5a0cd5489416d45ae8316d435"
 dependencies = [
  "bon",
  "chrono",
@@ -1817,9 +1846,9 @@ dependencies = [
 
 [[package]]
 name = "memchr"
-version = "2.7.6"
+version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
+checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "metrics"
@@ -2388,7 +2417,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.2",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2425,9 +2454,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2725,7 +2754,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3138,7 +3167,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3800,7 +3829,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
