@@ -69,7 +69,9 @@ use inferadb_common_storage::{
         SigningKeyMetrics,
     },
 };
-use inferadb_ledger_sdk::{LedgerClient, ListEntitiesOpts, Operation, ReadConsistency};
+use inferadb_ledger_sdk::{
+    LedgerClient, ListEntitiesOpts, Operation, ReadConsistency, SetCondition,
+};
 use tonic::Code;
 
 use crate::LedgerStorageError;
@@ -97,12 +99,23 @@ use crate::LedgerStorageError;
 /// [`LedgerSigningKeyStore::with_metrics`]. Metrics include operation counts,
 /// latencies, and error rates.
 ///
+/// # Concurrency
+///
+/// Write operations (`revoke_key`, `deactivate_key`, `activate_key`, `delete_key`)
+/// use optimistic locking via compare-and-set (CAS). Each operation reads the
+/// current value, modifies it, and writes back conditioned on the value being
+/// unchanged. If a concurrent writer modified the key between the read and write,
+/// the operation returns [`StorageError::Conflict`].
+///
+/// Callers should retry the full operation on `Conflict`. Since each operation
+/// re-reads the current value, the retry naturally picks up the latest state.
+///
 /// # Error Handling
 ///
 /// Operations convert Ledger SDK errors to [`StorageError`] variants:
 /// - Connection failures → `StorageError::Connection`
 /// - Key not found → `StorageError::NotFound`
-/// - Duplicate key → `StorageError::Conflict`
+/// - Duplicate key or CAS failure → `StorageError::Conflict`
 /// - Serialization issues → `StorageError::Serialization`
 #[derive(Clone)]
 pub struct LedgerSigningKeyStore {
@@ -216,6 +229,83 @@ impl LedgerSigningKeyStore {
     fn record_error(&self, kind: SigningKeyErrorKind) {
         if let Some(metrics) = &self.metrics {
             metrics.record_error(kind);
+        }
+    }
+
+    /// Performs a conditional write using optimistic locking.
+    ///
+    /// The write is conditioned on the current value matching `expected_value`.
+    /// If the value has been modified since it was read (by a concurrent writer),
+    /// this returns [`StorageError::Conflict`].
+    ///
+    /// Callers should retry the full read-modify-write cycle on conflict.
+    async fn cas_write(
+        &self,
+        namespace_id: NamespaceId,
+        storage_key: String,
+        new_value: Vec<u8>,
+        expected_value: Vec<u8>,
+    ) -> StorageResult<()> {
+        use inferadb_ledger_sdk::SdkError;
+
+        match self
+            .client
+            .write(
+                namespace_id.into(),
+                None,
+                vec![Operation::set_entity_if(
+                    storage_key,
+                    new_value,
+                    SetCondition::ValueEquals(expected_value),
+                )],
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
+                Err(StorageError::Conflict)
+            },
+            Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
+        }
+    }
+
+    /// Performs a conditional delete using optimistic locking.
+    ///
+    /// Uses a two-operation atomic batch: a CAS precondition check
+    /// (`set_entity_if` with the current value) followed by a `delete_entity`.
+    /// If the value has been modified since it was read, the entire batch
+    /// fails with [`StorageError::Conflict`].
+    async fn cas_delete(
+        &self,
+        namespace_id: NamespaceId,
+        storage_key: String,
+        expected_value: Vec<u8>,
+    ) -> StorageResult<()> {
+        use inferadb_ledger_sdk::SdkError;
+
+        match self
+            .client
+            .write(
+                namespace_id.into(),
+                None,
+                vec![
+                    // Precondition: value must match what we read
+                    Operation::set_entity_if(
+                        storage_key.clone(),
+                        expected_value.clone(),
+                        SetCondition::ValueEquals(expected_value),
+                    ),
+                    // Delete the entity (atomic with the precondition)
+                    Operation::delete_entity(storage_key),
+                ],
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
+                Err(StorageError::Conflict)
+            },
+            Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
         }
     }
 
@@ -385,11 +475,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
             let value = Self::serialize_key(&key)?;
 
-            self.client
-                .write(namespace_id.into(), None, vec![Operation::set_entity(storage_key, value)])
-                .await
-                .map(|_| ())
-                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+            self.cas_write(namespace_id, storage_key, value, bytes).await
         }
         .await;
 
@@ -430,11 +516,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
             let value = Self::serialize_key(&key)?;
 
-            self.client
-                .write(namespace_id.into(), None, vec![Operation::set_entity(storage_key, value)])
-                .await
-                .map(|_| ())
-                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+            self.cas_write(namespace_id, storage_key, value, bytes).await
         }
         .await;
 
@@ -472,11 +554,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
             let value = Self::serialize_key(&key)?;
 
-            self.client
-                .write(namespace_id.into(), None, vec![Operation::set_entity(storage_key, value)])
-                .await
-                .map(|_| ())
-                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+            self.cas_write(namespace_id, storage_key, value, bytes).await
         }
         .await;
 
@@ -496,16 +574,12 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         let storage_key = Self::storage_key(kid);
 
         let result = async {
-            // Check if key exists
-            if self.do_read(namespace_id, &storage_key).await?.is_none() {
-                return Err(StorageError::not_found(format!("Key not found: {kid}")));
-            }
+            let bytes = self
+                .do_read(namespace_id, &storage_key)
+                .await?
+                .ok_or_else(|| StorageError::not_found(format!("Key not found: {kid}")))?;
 
-            self.client
-                .write(namespace_id.into(), None, vec![Operation::delete_entity(storage_key)])
-                .await
-                .map(|_| ())
-                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+            self.cas_delete(namespace_id, storage_key, bytes).await
         }
         .await;
 

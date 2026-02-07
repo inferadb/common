@@ -616,3 +616,84 @@ async fn test_real_ledger_many_keys() {
 
     assert_eq!(results.len(), count, "should find all {} keys", count);
 }
+
+// ============================================================================
+// Optimistic Locking / Conflict Detection Tests
+// ============================================================================
+
+/// Tests that concurrent `revoke_key` calls on the same key are handled correctly.
+///
+/// With optimistic locking (CAS), if both callers read the same version of the key,
+/// one will succeed and the other will receive `StorageError::Conflict`. If they
+/// serialize naturally (one completes before the other reads), both may succeed.
+#[tokio::test]
+async fn test_real_ledger_concurrent_revoke_conflict() {
+    if !should_run() {
+        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
+        return;
+    }
+
+    use std::sync::Arc;
+
+    use chrono::Utc;
+    use inferadb_common_storage::{
+        ClientId, StorageError,
+        auth::{PublicSigningKey, PublicSigningKeyStore},
+    };
+    use inferadb_common_storage_ledger::auth::LedgerSigningKeyStore;
+    use inferadb_ledger_sdk::LedgerClient;
+
+    let config = test_client_config("conflict-test");
+    let client = Arc::new(LedgerClient::new(config).await.expect("client"));
+
+    let namespace_id = ledger_namespace_id();
+    let now = Utc::now();
+
+    // Create a unique key for this test run
+    let kid = format!("conflict-race-{}", Utc::now().timestamp_millis());
+    let key = PublicSigningKey::builder()
+        .kid(kid.clone())
+        .public_key("MCowBQYDK2VwAyEAtest_public_key".to_owned())
+        .client_id(ClientId::from(12345))
+        .cert_id(42)
+        .created_at(now)
+        .valid_from(now)
+        .build();
+
+    let setup_store = LedgerSigningKeyStore::new(Arc::clone(&client));
+    setup_store.create_key(namespace_id, &key).await.expect("create");
+
+    // Launch two concurrent revocations from independent store instances
+    let store_a = LedgerSigningKeyStore::new(Arc::clone(&client));
+    let store_b = LedgerSigningKeyStore::new(Arc::clone(&client));
+
+    let kid_a = kid.clone();
+    let handle_a =
+        tokio::spawn(
+            async move { store_a.revoke_key(namespace_id, &kid_a, Some("reason A")).await },
+        );
+
+    let kid_b = kid;
+    let handle_b =
+        tokio::spawn(
+            async move { store_b.revoke_key(namespace_id, &kid_b, Some("reason B")).await },
+        );
+
+    let result_a = handle_a.await.expect("join a");
+    let result_b = handle_b.await.expect("join b");
+
+    // At least one must succeed
+    let successes = u32::from(result_a.is_ok()) + u32::from(result_b.is_ok());
+    let conflicts = u32::from(matches!(result_a, Err(StorageError::Conflict)))
+        + u32::from(matches!(result_b, Err(StorageError::Conflict)));
+
+    assert!(
+        successes >= 1,
+        "at least one revocation must succeed, got: a={result_a:?}, b={result_b:?}"
+    );
+    // Every result must be either Ok or Conflict — no other error is acceptable
+    assert!(
+        successes + conflicts == 2,
+        "results must be success or conflict, got: a={result_a:?}, b={result_b:?}"
+    );
+}

@@ -960,6 +960,98 @@ mod signing_key_store {
 
         assert!(active_keys.is_empty(), "no valid keys should be returned from all-malformed data");
     }
+
+    // ========================================================================
+    // Optimistic Locking Tests (mock server)
+    // ========================================================================
+    //
+    // NOTE: The mock server does not enforce `SetCondition::ValueEquals`, so
+    // true conflict detection is tested in `real_ledger_integration.rs`.
+    // These tests verify that write operations continue to work correctly
+    // after the CAS migration.
+
+    /// Verifies that idempotent revocations preserve the original reason
+    /// when the key was already revoked.
+    #[tokio::test]
+    async fn test_optimistic_locking_revoke_preserves_reason() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+        let namespace_id = NamespaceId::from(100);
+
+        let key = create_test_key("cas-revoke");
+        store.create_key(namespace_id, &key).await.expect("create");
+
+        // First revoke with reason
+        store
+            .revoke_key(namespace_id, "cas-revoke", Some("compromise"))
+            .await
+            .expect("first revoke");
+
+        // Second revoke (idempotent) — should succeed and preserve original reason
+        store
+            .revoke_key(namespace_id, "cas-revoke", Some("different reason"))
+            .await
+            .expect("idempotent revoke should succeed");
+
+        let retrieved =
+            store.get_key(namespace_id, "cas-revoke").await.expect("get").expect("key exists");
+        assert_eq!(
+            retrieved.revocation_reason.as_deref(),
+            Some("compromise"),
+            "original revocation reason must be preserved"
+        );
+    }
+
+    /// Verifies that deactivate still works through the CAS path.
+    #[tokio::test]
+    async fn test_optimistic_locking_deactivate_succeeds() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+        let namespace_id = NamespaceId::from(100);
+
+        let key = create_test_key("cas-deactivate");
+        store.create_key(namespace_id, &key).await.expect("create");
+
+        store.deactivate_key(namespace_id, "cas-deactivate").await.expect("deactivate via CAS");
+
+        let retrieved =
+            store.get_key(namespace_id, "cas-deactivate").await.expect("get").expect("key exists");
+        assert!(!retrieved.active, "key should be inactive after deactivation");
+    }
+
+    /// Verifies that activate still works through the CAS path.
+    #[tokio::test]
+    async fn test_optimistic_locking_activate_succeeds() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+        let namespace_id = NamespaceId::from(100);
+
+        let key = create_test_key("cas-activate");
+        store.create_key(namespace_id, &key).await.expect("create");
+        store.deactivate_key(namespace_id, "cas-activate").await.expect("deactivate");
+
+        store.activate_key(namespace_id, "cas-activate").await.expect("activate via CAS");
+
+        let retrieved =
+            store.get_key(namespace_id, "cas-activate").await.expect("get").expect("key exists");
+        assert!(retrieved.active, "key should be active after activation");
+    }
+
+    /// Verifies that delete still works through the CAS path.
+    #[tokio::test]
+    async fn test_optimistic_locking_delete_succeeds() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+        let namespace_id = NamespaceId::from(100);
+
+        let key = create_test_key("cas-delete");
+        store.create_key(namespace_id, &key).await.expect("create");
+
+        store.delete_key(namespace_id, "cas-delete").await.expect("delete via CAS");
+
+        let retrieved = store.get_key(namespace_id, "cas-delete").await.expect("get");
+        assert!(retrieved.is_none(), "key should be deleted");
+    }
 }
 
 // ============================================================================
