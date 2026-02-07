@@ -295,14 +295,24 @@ impl StorageBackend for MemoryBackend {
     where
         R: RangeBounds<Vec<u8>> + Send,
     {
+        // Phase 1: Collect keys to remove under a read lock, allowing concurrent
+        // reads and writes to proceed during the scan.
+        let keys_to_remove: Vec<Vec<u8>> = {
+            let data = self.data.read();
+            data.range(range).map(|(k, _)| k.clone()).collect()
+        };
+
+        if keys_to_remove.is_empty() {
+            return Ok(());
+        }
+
+        // Phase 2: Acquire both write locks in a fixed order (data → ttl_data)
+        // and batch-remove all keys in a single critical section.
         let mut data = self.data.write();
-
-        let keys_to_remove: Vec<Vec<u8>> = data.range(range).map(|(k, _)| k.clone()).collect();
-
-        for key in keys_to_remove {
-            data.remove(&key);
-            let mut ttl_guard = self.ttl_data.write();
-            ttl_guard.remove(&key);
+        let mut ttl_guard = self.ttl_data.write();
+        for key in &keys_to_remove {
+            data.remove(key);
+            ttl_guard.remove(key);
         }
 
         Ok(())
