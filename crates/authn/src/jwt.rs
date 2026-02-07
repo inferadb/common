@@ -266,7 +266,7 @@ pub fn verify_signature(
 ///
 /// Returns an error if:
 /// - The JWT is malformed or missing required fields (`kid`, `org_id`)
-/// - The algorithm is not supported (only EdDSA is allowed for Ledger keys)
+/// - The algorithm is not in [`crate::validation::ACCEPTED_ALGORITHMS`] (only EdDSA)
 /// - The key cannot be found in Ledger or is inactive/revoked/expired
 /// - The signature is invalid
 ///
@@ -303,17 +303,9 @@ pub async fn verify_with_signing_key_cache(
         .kid
         .ok_or_else(|| AuthError::InvalidTokenFormat("JWT header missing 'kid' field".into()))?;
 
-    // Validate algorithm (only EdDSA for Ledger keys)
+    // Validate algorithm — only EdDSA is accepted (see ACCEPTED_ALGORITHMS)
     let alg_str = format!("{:?}", header.alg);
     validate_algorithm(&alg_str)?;
-
-    // EdDSA is required for Ledger-backed keys
-    if header.alg != Algorithm::EdDSA {
-        return Err(AuthError::UnsupportedAlgorithm(format!(
-            "Ledger-backed keys only support EdDSA, got {:?}",
-            header.alg
-        )));
-    }
 
     // 2. Decode claims without verification to extract organization ID
     let claims = decode_jwt_claims(token)?;

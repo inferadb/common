@@ -18,25 +18,33 @@ use crate::error::AuthError;
 /// - `none`: No signature verification (trivially bypassable)
 /// - `HS256`, `HS384`, `HS512`: Symmetric algorithms (shared secret vulnerability)
 ///
-/// Only asymmetric algorithms (EdDSA, RS256) are allowed.
+/// Only EdDSA (Ed25519) is currently supported.
 pub const FORBIDDEN_ALGORITHMS: &[&str] = &["none", "HS256", "HS384", "HS512"];
 
 /// Accepted JWT algorithms.
 ///
-/// These are the only algorithms accepted:
-/// - `EdDSA`: Ed25519 signatures (recommended, fastest, most secure)
-/// - `RS256`: RSA-SHA256 signatures (legacy support)
+/// Currently only EdDSA (Ed25519) is supported end-to-end. The verification
+/// pipeline in [`crate::jwt::verify_with_signing_key_cache`] only handles
+/// EdDSA keys from the Ledger-backed signing key store.
 ///
-/// This list is intentionally not configurable to ensure consistent security
-/// across all deployments. The management API uses EdDSA exclusively.
-pub const ACCEPTED_ALGORITHMS: &[&str] = &["EdDSA", "RS256"];
+/// **To add RS256 support in the future:**
+/// 1. Add RS256 back to this list
+/// 2. Store RSA public keys in the signing key store (currently EdDSA only)
+/// 3. Extend [`crate::jwt::verify_with_signing_key_cache`] to select the correct `Algorithm`
+///    variant based on the key type
+/// 4. Add integration tests for RS256 end-to-end verification
+///
+/// Per RFC 8725 Section 3.1, validators must reject algorithms they do not
+/// fully implement — listing RS256 here without verification support would
+/// produce confusing errors at the signature verification stage.
+pub const ACCEPTED_ALGORITHMS: &[&str] = &["EdDSA"];
 
 /// Validate JWT algorithm against security policies.
 ///
-/// This function enforces strict algorithm security:
+/// This function enforces strict algorithm security per RFC 8725:
 /// - ALWAYS rejects symmetric algorithms (HS256, HS384, HS512)
 /// - ALWAYS rejects "none" algorithm
-/// - Only accepts EdDSA and RS256
+/// - Only accepts EdDSA (Ed25519)
 ///
 /// # Arguments
 ///
@@ -44,10 +52,10 @@ pub const ACCEPTED_ALGORITHMS: &[&str] = &["EdDSA", "RS256"];
 ///
 /// # Errors
 ///
-/// Returns an error if:
+/// Returns [`AuthError::UnsupportedAlgorithm`] if:
 /// - Algorithm is symmetric (HS256, HS384, HS512)
 /// - Algorithm is "none"
-/// - Algorithm is not EdDSA or RS256
+/// - Algorithm is not in [`ACCEPTED_ALGORITHMS`]
 ///
 /// # Examples
 ///
@@ -58,9 +66,9 @@ pub const ACCEPTED_ALGORITHMS: &[&str] = &["EdDSA", "RS256"];
 /// let result = validate_algorithm("EdDSA");
 /// assert!(result.is_ok());
 ///
-/// // RS256 is accepted
+/// // RS256 is not currently supported
 /// let result = validate_algorithm("RS256");
-/// assert!(result.is_ok());
+/// assert!(result.is_err());
 ///
 /// // Symmetric algorithm rejected
 /// let result = validate_algorithm("HS256");
@@ -78,7 +86,7 @@ pub fn validate_algorithm(alg: &str) -> Result<(), AuthError> {
     // Check if in accepted list
     if !ACCEPTED_ALGORITHMS.contains(&alg) {
         return Err(AuthError::UnsupportedAlgorithm(format!(
-            "Algorithm '{}' is not in accepted list (only EdDSA and RS256 are supported)",
+            "Algorithm '{}' is not in accepted list (only EdDSA is supported)",
             alg
         )));
     }
@@ -92,9 +100,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_validate_algorithm_asymmetric() {
+    fn test_validate_algorithm_eddsa_accepted() {
         assert!(validate_algorithm("EdDSA").is_ok());
-        assert!(validate_algorithm("RS256").is_ok());
+    }
+
+    #[test]
+    fn test_validate_algorithm_rs256_rejected() {
+        // RS256 is not currently supported end-to-end — only EdDSA has full
+        // verification pipeline support. RS256 should produce a clear error
+        // rather than passing validation and failing at signature verification.
+        let result = validate_algorithm("RS256");
+        assert!(
+            matches!(result, Err(AuthError::UnsupportedAlgorithm(ref msg)) if msg.contains("not in accepted list"))
+        );
     }
 
     #[test]
@@ -107,7 +125,9 @@ mod tests {
     #[test]
     fn test_validate_algorithm_none_rejected() {
         let result = validate_algorithm("none");
-        assert!(matches!(result, Err(AuthError::UnsupportedAlgorithm(_))));
+        assert!(
+            matches!(result, Err(AuthError::UnsupportedAlgorithm(ref msg)) if msg.contains("not allowed for security reasons"))
+        );
     }
 
     #[test]
@@ -118,8 +138,20 @@ mod tests {
     }
 
     #[test]
+    fn test_forbidden_algorithms_each_rejected_with_security_message() {
+        // Each forbidden algorithm must be rejected before checking the
+        // accepted list, with a message indicating security reasons.
+        for alg in FORBIDDEN_ALGORITHMS {
+            let result = validate_algorithm(alg);
+            assert!(
+                matches!(result, Err(AuthError::UnsupportedAlgorithm(ref msg)) if msg.contains("not allowed for security reasons")),
+                "Expected security rejection for forbidden algorithm '{alg}'"
+            );
+        }
+    }
+
+    #[test]
     fn test_forbidden_algorithms_constant() {
-        // Verify the FORBIDDEN_ALGORITHMS constant is correctly defined
         assert_eq!(FORBIDDEN_ALGORITHMS.len(), 4);
         assert!(FORBIDDEN_ALGORITHMS.contains(&"none"));
         assert!(FORBIDDEN_ALGORITHMS.contains(&"HS256"));
@@ -129,9 +161,9 @@ mod tests {
 
     #[test]
     fn test_accepted_algorithms_constant() {
-        // Verify the ACCEPTED_ALGORITHMS constant is correctly defined
-        assert_eq!(ACCEPTED_ALGORITHMS.len(), 2);
+        assert_eq!(ACCEPTED_ALGORITHMS.len(), 1);
         assert!(ACCEPTED_ALGORITHMS.contains(&"EdDSA"));
-        assert!(ACCEPTED_ALGORITHMS.contains(&"RS256"));
+        // RS256 intentionally excluded — see ACCEPTED_ALGORITHMS doc comment
+        assert!(!ACCEPTED_ALGORITHMS.contains(&"RS256"));
     }
 }
