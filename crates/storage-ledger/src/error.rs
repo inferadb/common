@@ -297,16 +297,11 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
 mod tests {
     use std::error::Error;
 
-    use snafu::Location;
-
     use super::*;
 
     #[test]
     fn test_connection_error_mapping() {
-        let sdk_err = SdkError::Connection {
-            message: "connection refused".into(),
-            location: Location::default(),
-        };
+        let sdk_err = SdkError::Connection { message: "connection refused".into() };
         let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Connection { .. }));
