@@ -88,6 +88,7 @@ pub mod batch;
 pub mod error;
 pub mod memory;
 pub mod metrics;
+pub mod rate_limiter;
 pub mod size_limits;
 #[cfg(any(test, feature = "testutil"))]
 #[allow(clippy::expect_used)]
@@ -101,6 +102,10 @@ pub use batch::{BatchConfig, BatchFlushStats, BatchOperation, BatchWriter};
 pub use error::{BoxError, ConfigError, StorageError, StorageResult};
 pub use memory::MemoryBackend;
 pub use metrics::{LatencyPercentiles, Metrics, MetricsCollector, MetricsSnapshot};
+pub use rate_limiter::{
+    NamespaceExtractor, RateLimitConfig, RateLimitMetricsSnapshot, RateLimitedBackend,
+    TokenBucketLimiter,
+};
 pub use size_limits::{
     DEFAULT_MAX_KEY_SIZE, DEFAULT_MAX_VALUE_SIZE, SizeLimits, validate_key_size, validate_sizes,
 };
