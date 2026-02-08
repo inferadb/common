@@ -56,6 +56,7 @@ pub mod validation;
 pub use error::{AuthError, Result};
 pub use jwt::JwtClaims;
 pub use signing_key_cache::{
-    DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, DEFAULT_FALLBACK_CAPACITY, SigningKeyCache,
+    DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, DEFAULT_FALLBACK_CAPACITY, DEFAULT_FALLBACK_TTL,
+    SigningKeyCache,
 };
 pub use validation::{ACCEPTED_ALGORITHMS, FORBIDDEN_ALGORITHMS, validate_algorithm};

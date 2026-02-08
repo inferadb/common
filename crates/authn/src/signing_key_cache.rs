@@ -17,7 +17,8 @@
 //!
 //! # Cache Strategy
 //!
-//! - **TTL**: Default 300 seconds (5 minutes)
+//! - **L1 TTL**: Default 300 seconds (5 minutes)
+//! - **L3 Fallback TTL**: Default 3600 seconds (1 hour) — bounds staleness during outages
 //! - **Eviction**: Time-based expiration + capacity limits
 //! - **Invalidation**: Keys become invalid on next fetch after Ledger state changes
 //!
@@ -45,7 +46,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -71,10 +72,32 @@ pub const DEFAULT_CACHE_CAPACITY: u64 = 10_000;
 
 /// Default maximum fallback cache capacity.
 ///
-/// The fallback cache stores keys without TTL for graceful degradation
-/// during Ledger outages. This capacity bound prevents unbounded memory
-/// growth in long-running services.
+/// The fallback cache stores keys with a staleness-bounded TTL for graceful
+/// degradation during Ledger outages. This capacity bound prevents unbounded
+/// memory growth in long-running services.
 pub const DEFAULT_FALLBACK_CAPACITY: u64 = 10_000;
+
+/// Default maximum TTL for the fallback (L3) cache (1 hour).
+///
+/// Entries older than this are evicted even if the Ledger remains unreachable.
+/// This bounds the window during which a revoked key could still be served
+/// from the fallback cache during an outage. Operators can tune this via
+/// [`SigningKeyCache::builder`] based on their security posture:
+///
+/// - **Shorter TTL** (e.g., 15 minutes): tighter security, higher risk of total outage if Ledger is
+///   down for longer
+/// - **Longer TTL** (e.g., 4 hours): more availability, but revoked keys remain trusted longer
+///   during outages
+pub const DEFAULT_FALLBACK_TTL: Duration = Duration::from_secs(3_600);
+
+/// An entry in the fallback (L3) cache, carrying the decoding key
+/// along with the timestamp at which it was inserted. The insertion
+/// time enables logging the entry age when the fallback is used.
+#[derive(Clone)]
+struct FallbackEntry {
+    key: Arc<DecodingKey>,
+    inserted_at: Instant,
+}
 
 /// Cache for public signing keys fetched from Ledger.
 ///
@@ -99,16 +122,18 @@ pub const DEFAULT_FALLBACK_CAPACITY: u64 = 10_000;
 ///
 /// When Ledger is unavailable (connection or timeout errors), the cache falls back
 /// to previously fetched keys stored in the fallback cache. This ensures continued
-/// operation during transient Ledger outages. The fallback cache is capacity-bounded
-/// with LRU eviction to prevent unbounded memory growth.
+/// operation during transient Ledger outages. The fallback cache is both
+/// capacity-bounded (LRU eviction) and staleness-bounded (configurable TTL,
+/// default [`DEFAULT_FALLBACK_TTL`] = 1 hour) to prevent serving revoked keys
+/// indefinitely during prolonged outages.
 pub struct SigningKeyCache {
     /// In-memory cache with TTL-based expiration (L1).
     cache: Cache<String, Arc<DecodingKey>>,
     /// Backend store for fetching keys from Ledger (L2).
     key_store: Arc<dyn PublicSigningKeyStore>,
     /// Fallback cache for graceful degradation during Ledger outages (L3).
-    /// Capacity-bounded with LRU eviction, no TTL.
-    fallback: Cache<String, Arc<DecodingKey>>,
+    /// Capacity-bounded with LRU eviction and a staleness-bounded TTL.
+    fallback: Cache<String, FallbackEntry>,
     /// Monotonic generation counter incremented on every invalidation.
     ///
     /// Used to detect stale L2 reads: if the generation changes between
@@ -118,12 +143,12 @@ pub struct SigningKeyCache {
 }
 
 impl SigningKeyCache {
-    /// Creates a new signing key cache.
+    /// Creates a new signing key cache with default capacity and fallback TTL.
     ///
     /// # Arguments
     ///
     /// * `key_store` - Backend store (typically Ledger-backed)
-    /// * `ttl` - Time-to-live for cached keys
+    /// * `ttl` - Time-to-live for L1 cached keys
     ///
     /// # Example
     ///
@@ -143,12 +168,14 @@ impl SigningKeyCache {
         Self::with_capacity(key_store, ttl, DEFAULT_CACHE_CAPACITY)
     }
 
-    /// Creates a new signing key cache with custom capacity.
+    /// Creates a new signing key cache with custom L1 capacity.
+    ///
+    /// Uses [`DEFAULT_FALLBACK_TTL`] for the L3 fallback cache staleness bound.
     ///
     /// # Arguments
     ///
     /// * `key_store` - Backend store
-    /// * `ttl` - Time-to-live for cached keys
+    /// * `ttl` - Time-to-live for L1 cached keys
     /// * `max_capacity` - Maximum number of keys to cache in L1 and fallback
     #[must_use]
     pub fn with_capacity(
@@ -156,10 +183,43 @@ impl SigningKeyCache {
         ttl: Duration,
         max_capacity: u64,
     ) -> Self {
+        Self::with_fallback_ttl(key_store, ttl, max_capacity, DEFAULT_FALLBACK_TTL)
+    }
+
+    /// Creates a new signing key cache with custom capacity and fallback TTL.
+    ///
+    /// The `fallback_ttl` bounds the maximum staleness of L3 fallback cache
+    /// entries. After this duration, entries are evicted even if the Ledger
+    /// remains unreachable. This limits the window during which a revoked
+    /// key could be served from fallback during an outage.
+    ///
+    /// # Arguments
+    ///
+    /// * `key_store` - Backend store
+    /// * `ttl` - Time-to-live for L1 cached keys
+    /// * `max_capacity` - Maximum number of keys to cache in L1 and fallback
+    /// * `fallback_ttl` - Maximum staleness for L3 fallback cache entries
+    ///
+    /// # Security Trade-off
+    ///
+    /// - **Shorter `fallback_ttl`**: revoked keys are evicted sooner during outages, but total
+    ///   outage is more likely if Ledger is down for a prolonged period
+    /// - **Longer `fallback_ttl`**: more availability during outages, but revoked keys remain
+    ///   trusted longer
+    #[must_use]
+    pub fn with_fallback_ttl(
+        key_store: Arc<dyn PublicSigningKeyStore>,
+        ttl: Duration,
+        max_capacity: u64,
+        fallback_ttl: Duration,
+    ) -> Self {
         Self {
             cache: Cache::builder().time_to_live(ttl).max_capacity(max_capacity).build(),
             key_store,
-            fallback: Cache::builder().max_capacity(max_capacity).build(),
+            fallback: Cache::builder()
+                .time_to_live(fallback_ttl)
+                .max_capacity(max_capacity)
+                .build(),
             invalidation_gen: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -240,7 +300,12 @@ impl SigningKeyCache {
 
                 // Cache locally (both TTL cache and fallback)
                 self.cache.insert(cache_key.clone(), decoding_key.clone()).await;
-                self.fallback.insert(cache_key, decoding_key.clone()).await;
+                self.fallback
+                    .insert(
+                        cache_key,
+                        FallbackEntry { key: decoding_key.clone(), inserted_at: Instant::now() },
+                    )
+                    .await;
 
                 tracing::debug!(namespace_id = %namespace_id, kid, "Cached signing key from Ledger");
 
@@ -251,15 +316,17 @@ impl SigningKeyCache {
                 // Check if this is a transient error (connection/timeout)
                 // where fallback is appropriate
                 if is_transient_error(&storage_error)
-                    && let Some(key) = self.fallback.get(&cache_key).await
+                    && let Some(entry) = self.fallback.get(&cache_key).await
                 {
+                    let age = entry.inserted_at.elapsed();
                     tracing::warn!(
                         namespace_id = %namespace_id,
                         kid,
                         error = %storage_error,
-                        "Ledger unavailable, using fallback cached key"
+                        fallback_age_secs = age.as_secs(),
+                        "Ledger unavailable, using fallback cached key (age: {age:?})"
                     );
-                    return Ok(key);
+                    return Ok(entry.key);
                 }
 
                 // No fallback available or not a transient error
@@ -1358,5 +1425,146 @@ mod tests {
             generation >= 5,
             "generation should have been bumped at least 5 times, got {generation}"
         );
+    }
+
+    // ========== Fallback TTL / Staleness Bound Tests (Task 6) ==========
+
+    /// Tests that L3 fallback entries expire after the configured TTL.
+    ///
+    /// Uses a very short fallback TTL (50ms), populates L3, waits for expiry,
+    /// then verifies the entry is gone on the next transient-error fallback path.
+    #[tokio::test]
+    async fn test_fallback_entry_expires_after_ttl() {
+        let store = Arc::new(FailingStore::new());
+        let key = create_valid_test_key("expiring-fallback");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        // Short fallback TTL — entries expire quickly
+        let fallback_ttl = Duration::from_millis(50);
+        let cache = SigningKeyCache::with_fallback_ttl(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60), // L1 TTL
+            10,                      // capacity
+            fallback_ttl,
+        );
+
+        // Populate both L1 and L3
+        let result = cache.get_decoding_key(NamespaceId::from(1), "expiring-fallback").await;
+        assert!(result.is_ok());
+        cache.sync().await;
+        assert_eq!(cache.fallback_entry_count(), 1);
+
+        // Wait for the fallback TTL to expire
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        cache.sync().await;
+
+        // The L3 entry should now be expired
+        assert_eq!(
+            cache.fallback_entry_count(),
+            0,
+            "L3 entry should be evicted after fallback TTL expires"
+        );
+
+        // Simulate Ledger outage and clear L1
+        store.set_failure(Some(StorageError::connection("outage")));
+        cache.clear_l1().await;
+        cache.sync().await;
+
+        // Fallback should NOT serve the expired entry
+        let result = cache.get_decoding_key(NamespaceId::from(1), "expiring-fallback").await;
+        assert!(
+            matches!(result, Err(AuthError::KeyStorageError { .. })),
+            "expired fallback entry must not be served"
+        );
+    }
+
+    /// Tests that L3 fallback entries are served within the TTL window.
+    #[tokio::test]
+    async fn test_fallback_entry_served_within_ttl() {
+        let store = Arc::new(FailingStore::new());
+        let key = create_valid_test_key("fresh-fallback");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        // Generous fallback TTL — entries survive
+        let fallback_ttl = Duration::from_secs(60);
+        let cache = SigningKeyCache::with_fallback_ttl(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+            10,
+            fallback_ttl,
+        );
+
+        // Populate L1 + L3
+        let result = cache.get_decoding_key(NamespaceId::from(1), "fresh-fallback").await;
+        assert!(result.is_ok());
+        cache.sync().await;
+        assert_eq!(cache.fallback_entry_count(), 1);
+
+        // Simulate Ledger outage and clear L1
+        store.set_failure(Some(StorageError::connection("outage")));
+        cache.clear_l1().await;
+        cache.sync().await;
+
+        // Fallback should serve the still-valid entry
+        let result = cache.get_decoding_key(NamespaceId::from(1), "fresh-fallback").await;
+        assert!(result.is_ok(), "fallback entry within TTL should be served");
+    }
+
+    /// Tests that the default fallback TTL is applied when using `new()`.
+    #[tokio::test]
+    async fn test_default_fallback_ttl_is_applied() {
+        let store = Arc::new(FailingStore::new());
+        let key = create_valid_test_key("default-ttl");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        // Use the default constructor — should apply DEFAULT_FALLBACK_TTL
+        let cache = SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        );
+
+        // Populate L1 + L3
+        let result = cache.get_decoding_key(NamespaceId::from(1), "default-ttl").await;
+        assert!(result.is_ok());
+        cache.sync().await;
+        assert_eq!(cache.fallback_entry_count(), 1);
+
+        // Simulate Ledger outage and clear L1
+        store.set_failure(Some(StorageError::connection("outage")));
+        cache.clear_l1().await;
+        cache.sync().await;
+
+        // The default TTL is 1 hour, so the entry should still be fresh
+        let result = cache.get_decoding_key(NamespaceId::from(1), "default-ttl").await;
+        assert!(result.is_ok(), "entry under default 1-hour TTL should be served");
+    }
+
+    /// Tests that `with_capacity` also applies the default fallback TTL.
+    #[tokio::test]
+    async fn test_with_capacity_applies_default_fallback_ttl() {
+        let store = Arc::new(FailingStore::new());
+        let key = create_valid_test_key("capacity-ttl");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        let cache = SigningKeyCache::with_capacity(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+            10,
+        );
+
+        // Populate L1 + L3
+        let result = cache.get_decoding_key(NamespaceId::from(1), "capacity-ttl").await;
+        assert!(result.is_ok());
+        cache.sync().await;
+        assert_eq!(cache.fallback_entry_count(), 1);
+
+        // Simulate outage
+        store.set_failure(Some(StorageError::connection("outage")));
+        cache.clear_l1().await;
+        cache.sync().await;
+
+        // Should still serve from L3 under default TTL
+        let result = cache.get_decoding_key(NamespaceId::from(1), "capacity-ttl").await;
+        assert!(result.is_ok(), "entry under default fallback TTL should be served");
     }
 }
