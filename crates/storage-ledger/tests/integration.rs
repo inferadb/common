@@ -393,8 +393,10 @@ async fn test_health_check_healthy() {
     let server = MockLedgerServer::start().await.expect("mock server start");
     let backend = create_test_backend(&server).await;
 
-    let result = backend.health_check().await;
-    assert!(result.is_ok());
+    let status = backend.health_check().await.expect("health check");
+    assert!(status.is_healthy());
+    assert_eq!(status.metadata().backend, "ledger");
+    assert!(status.metadata().details.contains_key("connection_latency_ms"));
 }
 
 // ============================================================================

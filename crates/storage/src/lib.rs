@@ -86,6 +86,7 @@ pub mod auth;
 pub mod backend;
 pub mod batch;
 pub mod error;
+pub mod health;
 pub mod memory;
 pub mod metrics;
 pub mod rate_limiter;
@@ -100,6 +101,7 @@ pub mod types;
 pub use backend::StorageBackend;
 pub use batch::{BatchConfig, BatchFlushStats, BatchOperation, BatchResult, BatchWriter};
 pub use error::{BoxError, ConfigError, StorageError, StorageResult};
+pub use health::{HealthMetadata, HealthStatus};
 pub use memory::MemoryBackend;
 pub use metrics::{LatencyPercentiles, Metrics, MetricsCollector, MetricsSnapshot};
 pub use rate_limiter::{

@@ -1070,7 +1070,7 @@ mod tests {
             }))
         }
 
-        async fn health_check(&self) -> StorageResult<()> {
+        async fn health_check(&self) -> StorageResult<crate::health::HealthStatus> {
             self.inner.health_check().await
         }
     }

@@ -584,8 +584,8 @@ async fn test_real_ledger_health_check() {
 
     let backend = create_test_backend().await;
 
-    let result = backend.health_check().await;
-    assert!(result.is_ok(), "health check should succeed");
+    let status = backend.health_check().await.expect("health check should succeed");
+    assert!(status.is_healthy(), "backend should be healthy");
 }
 
 // ============================================================================

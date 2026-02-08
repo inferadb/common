@@ -30,7 +30,9 @@ use std::{ops::RangeBounds, time::Duration};
 use async_trait::async_trait;
 use bytes::Bytes;
 
-use crate::{error::StorageResult, transaction::Transaction, types::KeyValue};
+use crate::{
+    error::StorageResult, health::HealthStatus, transaction::Transaction, types::KeyValue,
+};
 
 /// Abstract storage backend for key-value operations.
 ///
@@ -184,15 +186,19 @@ pub trait StorageBackend: Send + Sync {
     /// A boxed [`Transaction`] trait object.
     async fn transaction(&self) -> StorageResult<Box<dyn Transaction>>;
 
-    /// Checks if the backend is healthy and accepting requests.
+    /// Checks backend health and returns detailed status information.
     ///
-    /// This method should perform a lightweight check to verify the
-    /// backend is operational. It's used for health monitoring and
-    /// readiness probes.
+    /// Returns a [`HealthStatus`] indicating whether the backend is fully
+    /// healthy, degraded (operational with reduced capability), or unhealthy.
+    /// Each variant carries [`HealthMetadata`](crate::health::HealthMetadata)
+    /// with check duration and backend-specific details.
     ///
     /// # Returns
     ///
-    /// - `Ok(())` if the backend is healthy
-    /// - `Err(...)` if the backend is unavailable or degraded
-    async fn health_check(&self) -> StorageResult<()>;
+    /// - `Ok(HealthStatus::Healthy(_))` — backend is fully operational
+    /// - `Ok(HealthStatus::Degraded(_, reason))` — backend can serve traffic but with reduced
+    ///   capability (e.g., circuit breaker half-open)
+    /// - `Ok(HealthStatus::Unhealthy(_, reason))` — backend cannot serve traffic reliably
+    /// - `Err(...)` — the health check itself failed (e.g., timeout)
+    async fn health_check(&self) -> StorageResult<HealthStatus>;
 }

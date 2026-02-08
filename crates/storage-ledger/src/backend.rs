@@ -13,8 +13,8 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use inferadb_common_storage::{
-    KeyValue, NamespaceId, SizeLimits, StorageBackend, StorageError, StorageResult, Transaction,
-    VaultId, validate_sizes,
+    HealthMetadata, HealthStatus, KeyValue, NamespaceId, SizeLimits, StorageBackend, StorageError,
+    StorageResult, Transaction, VaultId, validate_sizes,
 };
 use inferadb_ledger_sdk::{
     LedgerClient, ListEntitiesOpts, Operation, ReadConsistency, SetCondition,
@@ -718,7 +718,8 @@ impl StorageBackend for LedgerBackend {
     }
 
     #[tracing::instrument(skip(self))]
-    async fn health_check(&self) -> StorageResult<()> {
+    async fn health_check(&self) -> StorageResult<HealthStatus> {
+        let start = std::time::Instant::now();
         // Health checks bypass the circuit breaker — they are used to probe
         // backend health and should always attempt a real connection.
         let result = with_retry_timeout(
@@ -731,15 +732,34 @@ impl StorageBackend for LedgerBackend {
                     .health_check()
                     .await
                     .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
-
-                // If we get here, the service is either healthy or degraded (both are OK for
-                // this check)
                 Ok(())
             },
         )
         .await;
         self.record_circuit_result(&result);
-        result
+
+        // Convert the raw result into a HealthStatus with metadata
+        let check_duration = start.elapsed();
+        let mut metadata = HealthMetadata::new(check_duration, "ledger")
+            .with_detail("connection_latency_ms", check_duration.as_millis().to_string());
+
+        if let Some(cb_state) = self.circuit_breaker_state() {
+            metadata = metadata.with_detail("circuit_breaker_state", format!("{cb_state:?}"));
+        }
+
+        match result {
+            Ok(()) => {
+                // Check if circuit breaker is in a degraded state
+                if let Some(crate::circuit_breaker::CircuitState::HalfOpen) =
+                    self.circuit_breaker_state()
+                {
+                    Ok(HealthStatus::degraded(metadata, "circuit breaker half-open"))
+                } else {
+                    Ok(HealthStatus::healthy(metadata))
+                }
+            },
+            Err(e) => Err(e),
+        }
     }
 }
 

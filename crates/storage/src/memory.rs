@@ -56,6 +56,7 @@ use tokio::{select, sync::watch, time::sleep};
 use crate::{
     backend::StorageBackend,
     error::{StorageError, StorageResult},
+    health::{HealthMetadata, HealthStatus},
     size_limits::{SizeLimits, validate_sizes},
     transaction::Transaction,
     types::KeyValue,
@@ -370,10 +371,15 @@ impl StorageBackend for MemoryBackend {
         Ok(Box::new(MemoryTransaction::new(self.clone())))
     }
 
-    async fn health_check(&self) -> StorageResult<()> {
+    async fn health_check(&self) -> StorageResult<HealthStatus> {
+        let start = std::time::Instant::now();
         // Try to acquire read lock to verify we're not deadlocked
-        let _unused = self.data.read();
-        Ok(())
+        let entry_count = self.data.read().len();
+        let check_duration = start.elapsed();
+
+        let metadata = HealthMetadata::new(check_duration, "memory")
+            .with_detail("entry_count", entry_count.to_string());
+        Ok(HealthStatus::healthy(metadata))
     }
 }
 
@@ -616,7 +622,21 @@ mod tests {
     #[tokio::test]
     async fn test_health_check() {
         let backend = MemoryBackend::new();
-        assert!(backend.health_check().await.is_ok());
+        let status = backend.health_check().await.unwrap();
+        assert!(status.is_healthy());
+        assert_eq!(status.metadata().backend, "memory");
+        assert_eq!(status.metadata().details.get("entry_count"), Some(&"0".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn test_health_check_reports_entry_count() {
+        let backend = MemoryBackend::new();
+        backend.set(b"a".to_vec(), b"1".to_vec()).await.unwrap();
+        backend.set(b"b".to_vec(), b"2".to_vec()).await.unwrap();
+
+        let status = backend.health_check().await.unwrap();
+        assert!(status.is_healthy());
+        assert_eq!(status.metadata().details.get("entry_count"), Some(&"2".to_owned()));
     }
 
     #[tokio::test]

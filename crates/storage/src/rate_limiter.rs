@@ -44,6 +44,7 @@ use parking_lot::Mutex;
 use crate::{
     StorageBackend,
     error::{StorageError, StorageResult},
+    health::HealthStatus,
     metrics::{Metrics, MetricsCollector},
     transaction::Transaction,
     types::KeyValue,
@@ -374,7 +375,7 @@ impl<B: StorageBackend> StorageBackend for RateLimitedBackend<B> {
         self.inner.transaction().await
     }
 
-    async fn health_check(&self) -> StorageResult<()> {
+    async fn health_check(&self) -> StorageResult<HealthStatus> {
         // Health checks are always exempt from rate limiting
         self.inner.health_check().await
     }
@@ -505,8 +506,9 @@ mod tests {
         // Exhaust the limiter
         limited.set(b"a".to_vec(), b"v".to_vec()).await.unwrap();
 
-        // Health check should still succeed
-        limited.health_check().await.unwrap();
+        // Health check should still succeed and return a HealthStatus
+        let status = limited.health_check().await.unwrap();
+        assert!(status.is_healthy());
     }
 
     #[tokio::test]
