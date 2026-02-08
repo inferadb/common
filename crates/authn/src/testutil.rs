@@ -87,6 +87,36 @@ pub fn create_signed_jwt(pkcs8_der: &[u8], kid: &str, org_id: &str) -> String {
     jsonwebtoken::encode(&header, &claims, &encoding_key).expect("Failed to encode test JWT")
 }
 
+/// Create a valid JWT with a `jti` claim, signed with an Ed25519 key in PKCS#8 DER format.
+///
+/// Identical to [`create_signed_jwt`] but also includes a `jti` (JWT ID) claim
+/// for replay detection testing.
+///
+/// The token expires in 1 hour from the current time.
+///
+/// # Panics
+///
+/// Panics if JWT encoding fails (should not happen with valid inputs).
+pub fn create_signed_jwt_with_jti(pkcs8_der: &[u8], kid: &str, org_id: &str, jti: &str) -> String {
+    let now = Utc::now().timestamp() as u64;
+    let claims = json!({
+        "iss": "https://api.inferadb.com",
+        "sub": "client:test-client",
+        "aud": "https://api.inferadb.com/evaluate",
+        "exp": now + 3600,
+        "iat": now,
+        "scope": "vault:read vault:write",
+        "org_id": org_id,
+        "jti": jti,
+    });
+
+    let mut header = Header::new(Algorithm::EdDSA);
+    header.kid = Some(kid.to_string());
+
+    let encoding_key = EncodingKey::from_ed_der(pkcs8_der);
+    jsonwebtoken::encode(&header, &claims, &encoding_key).expect("Failed to encode test JWT")
+}
+
 /// Create a raw JWT string from arbitrary header and payload JSON.
 ///
 /// The resulting JWT has the structure `{header_b64}.{payload_b64}.`

@@ -1,5 +1,7 @@
 //! Public signing key type for Ledger storage.
 
+use std::fmt;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -60,7 +62,7 @@ use crate::types::{CertId, ClientId};
 ///
 /// assert!(key_with_expiry.valid_until.is_some());
 /// ```
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, bon::Builder)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, bon::Builder)]
 #[serde(deny_unknown_fields)]
 pub struct PublicSigningKey {
     /// Key ID (matches JWT `kid` header).
@@ -146,6 +148,23 @@ pub struct PublicSigningKey {
     /// stored keys without this field deserialize with `None`.
     #[serde(default)]
     pub revocation_reason: Option<String>,
+}
+
+impl fmt::Debug for PublicSigningKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PublicSigningKey")
+            .field("kid", &self.kid)
+            .field("public_key", &"[REDACTED]")
+            .field("client_id", &self.client_id)
+            .field("cert_id", &self.cert_id)
+            .field("created_at", &self.created_at)
+            .field("valid_from", &self.valid_from)
+            .field("valid_until", &self.valid_until)
+            .field("active", &self.active)
+            .field("revoked_at", &self.revoked_at)
+            .field("revocation_reason", &self.revocation_reason)
+            .finish()
+    }
 }
 
 #[cfg(test)]
@@ -382,10 +401,43 @@ mod tests {
         let key = create_test_key();
         let debug_str = format!("{:?}", key);
 
-        // Debug output should contain field names
+        // Debug output should contain struct name and non-sensitive fields
         assert!(debug_str.contains("PublicSigningKey"));
         assert!(debug_str.contains("kid"));
         assert!(debug_str.contains("test-key-001"));
+
+        // public_key field must be redacted
+        assert!(debug_str.contains("[REDACTED]"));
+        assert!(
+            !debug_str.contains("MCowBQYDK2VwAyEA"),
+            "Debug output must not contain actual key material"
+        );
+    }
+
+    #[test]
+    fn test_debug_redacts_all_key_material() {
+        // Use a distinctive key value to ensure it doesn't appear anywhere in output
+        let key = PublicSigningKey::builder()
+            .kid("redaction-test-kid".to_owned())
+            .public_key("SUPERSECRETKEYMATERIAL_SHOULD_NEVER_APPEAR".to_owned())
+            .client_id(999)
+            .cert_id(1)
+            .build();
+
+        let debug_str = format!("{:?}", key);
+        let debug_pretty = format!("{:#?}", key);
+
+        // Verify key material is absent in both compact and pretty-printed forms
+        for output in [&debug_str, &debug_pretty] {
+            assert!(
+                !output.contains("SUPERSECRETKEYMATERIAL"),
+                "Debug output leaked key material: {output}"
+            );
+            assert!(output.contains("[REDACTED]"), "Debug output missing redaction marker");
+            // Non-sensitive fields should still be visible
+            assert!(output.contains("redaction-test-kid"));
+            assert!(output.contains("999"));
+        }
     }
 
     #[test]

@@ -216,6 +216,31 @@ pub enum AuthError {
         /// Span ID captured at error creation for trace correlation.
         span_id: Option<tracing::span::Id>,
     },
+
+    // ========== Replay prevention errors ==========
+    /// JWT replay detected — a token with this JTI has already been presented.
+    ///
+    /// This error is only returned when a [`ReplayDetector`] is configured
+    /// and the token's `jti` claim matches a previously-seen value.
+    ///
+    /// [`ReplayDetector`]: crate::replay::ReplayDetector
+    TokenReplayed {
+        /// The duplicate JTI value.
+        jti: String,
+        /// Span ID captured at error creation for trace correlation.
+        span_id: Option<tracing::span::Id>,
+    },
+
+    /// Token is missing a required `jti` claim.
+    ///
+    /// When a [`ReplayDetector`] is configured, every token must carry a
+    /// `jti` claim to enable replay tracking. Tokens without it are rejected.
+    ///
+    /// [`ReplayDetector`]: crate::replay::ReplayDetector
+    MissingJti {
+        /// Span ID captured at error creation for trace correlation.
+        span_id: Option<tracing::span::Id>,
+    },
 }
 
 impl fmt::Display for AuthError {
@@ -311,6 +336,14 @@ impl fmt::Display for AuthError {
             },
             Self::KeyStorageError { source, span_id } => {
                 write!(f, "Key storage error: {source}")?;
+                fmt_span_suffix(f, span_id)
+            },
+            Self::TokenReplayed { jti, span_id } => {
+                write!(f, "Token replayed: JTI '{jti}' has already been presented")?;
+                fmt_span_suffix(f, span_id)
+            },
+            Self::MissingJti { span_id } => {
+                write!(f, "Missing jti claim: replay detection requires a jti claim")?;
                 fmt_span_suffix(f, span_id)
             },
         }
@@ -456,6 +489,18 @@ impl AuthError {
         Self::KeyStorageError { source, span_id: current_span_id() }
     }
 
+    /// Creates a new `TokenReplayed` error.
+    #[must_use]
+    pub fn token_replayed(jti: impl Into<String>) -> Self {
+        Self::TokenReplayed { jti: jti.into(), span_id: current_span_id() }
+    }
+
+    /// Creates a new `MissingJti` error.
+    #[must_use]
+    pub fn missing_jti() -> Self {
+        Self::MissingJti { span_id: current_span_id() }
+    }
+
     /// Returns the tracing span ID captured when this error was created,
     /// if a tracing subscriber was active at that time.
     #[must_use]
@@ -483,7 +528,9 @@ impl AuthError {
             | Self::KeyNotYetValid { span_id, .. }
             | Self::KeyExpired { span_id, .. }
             | Self::InvalidPublicKey { span_id, .. }
-            | Self::KeyStorageError { span_id, .. } => span_id.as_ref(),
+            | Self::KeyStorageError { span_id, .. }
+            | Self::TokenReplayed { span_id, .. }
+            | Self::MissingJti { span_id, .. } => span_id.as_ref(),
         }
     }
 }
@@ -625,5 +672,23 @@ mod tests {
         // Level 2: StorageError → inner error
         let level_2 = level_1.source().expect("level 2 source");
         assert_eq!(level_2.to_string(), "Operation timeout");
+    }
+
+    #[test]
+    fn test_replay_error_variants() {
+        let err = AuthError::token_replayed("jti-abc-123");
+        assert_eq!(err.to_string(), "Token replayed: JTI 'jti-abc-123' has already been presented");
+
+        let err = AuthError::missing_jti();
+        assert_eq!(err.to_string(), "Missing jti claim: replay detection requires a jti claim");
+    }
+
+    #[test]
+    fn test_replay_error_debug_does_not_panic() {
+        let err = AuthError::token_replayed("test-jti");
+        let _ = format!("{:?}", err);
+
+        let err = AuthError::missing_jti();
+        let _ = format!("{:?}", err);
     }
 }

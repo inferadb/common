@@ -344,6 +344,76 @@ pub async fn verify_with_signing_key_cache(
     Ok(verified_claims)
 }
 
+/// Verify JWT signature with replay detection via JTI tracking.
+///
+/// Extends [`verify_with_signing_key_cache`] with replay prevention:
+/// after successful signature verification, the token's `jti` claim is
+/// checked against the `replay_detector`. If the JTI was already seen
+/// within the token's validity window, the token is rejected.
+///
+/// # JTI Requirement
+///
+/// When a `ReplayDetector` is provided, every token **must** include a
+/// `jti` claim. Tokens without it are rejected with [`AuthError::MissingJti`].
+///
+/// # Arguments
+///
+/// * `token` — The JWT token string to verify
+/// * `signing_key_cache` — Ledger-backed signing key cache
+/// * `replay_detector` — Implementation of [`ReplayDetector`] for JTI tracking
+///
+/// # Errors
+///
+/// Returns all errors from [`verify_with_signing_key_cache`], plus:
+/// - [`AuthError::MissingJti`] if the token lacks a `jti` claim
+/// - [`AuthError::TokenReplayed`] if the JTI was already seen
+///
+/// # Example
+///
+/// ```no_run
+/// use std::sync::Arc;
+/// use std::time::Duration;
+/// use inferadb_common_authn::jwt::verify_with_replay_detection;
+/// use inferadb_common_authn::signing_key_cache::SigningKeyCache;
+/// use inferadb_common_authn::replay::InMemoryReplayDetector;
+/// use inferadb_common_storage::auth::MemorySigningKeyStore;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let store = Arc::new(MemorySigningKeyStore::new());
+/// let cache = SigningKeyCache::new(store, Duration::from_secs(300));
+/// let replay = InMemoryReplayDetector::new(10_000);
+///
+/// let token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6Im9yZy0uLi4ifQ...";
+/// let claims = verify_with_replay_detection(token, &cache, &replay).await?;
+/// # Ok(())
+/// # }
+/// ```
+#[tracing::instrument(skip(token, signing_key_cache, replay_detector))]
+pub async fn verify_with_replay_detection(
+    token: &str,
+    signing_key_cache: &SigningKeyCache,
+    replay_detector: &dyn crate::replay::ReplayDetector,
+) -> Result<JwtClaims, AuthError> {
+    let claims = verify_with_signing_key_cache(token, signing_key_cache).await?;
+
+    // Enforce JTI presence when replay detection is active
+    let jti = claims.jti.as_deref().ok_or_else(AuthError::missing_jti)?;
+
+    // Compute remaining token lifetime for the replay detector's per-entry TTL
+    let now = chrono::Utc::now().timestamp() as u64;
+    let expires_in = if claims.exp > now {
+        std::time::Duration::from_secs(claims.exp - now)
+    } else {
+        // Token already expired — use zero duration (will be caught by exp validation,
+        // but this function is called after verify_signature which checks exp)
+        std::time::Duration::ZERO
+    };
+
+    replay_detector.check_and_mark(jti, expires_in).await?;
+
+    Ok(claims)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -714,5 +784,96 @@ mod ledger_verification_tests {
         let result = verify_with_signing_key_cache(&token, &cache).await;
 
         assert!(matches!(result, Err(AuthError::InvalidTokenFormat { .. })));
+    }
+
+    // ===== Replay detection integration tests =====
+
+    #[tokio::test]
+    async fn test_replay_detection_first_presentation_accepted() {
+        use crate::{replay::InMemoryReplayDetector, testutil::create_signed_jwt_with_jti};
+
+        let (pkcs8_der, key) = create_test_signing_key("rd-key-001");
+        let org_id = NamespaceId::from(12345);
+
+        let store = Arc::new(MemorySigningKeyStore::new());
+        let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
+        store.create_key(org_id, &key).await.unwrap();
+
+        let detector = InMemoryReplayDetector::new(1000);
+        let token =
+            create_signed_jwt_with_jti(&pkcs8_der, "rd-key-001", &org_id.to_string(), "jti-001");
+
+        let result = verify_with_replay_detection(&token, &cache, &detector).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_replay_detection_second_presentation_rejected() {
+        use crate::{replay::InMemoryReplayDetector, testutil::create_signed_jwt_with_jti};
+
+        let (pkcs8_der, key) = create_test_signing_key("rd-key-002");
+        let org_id = NamespaceId::from(12345);
+
+        let store = Arc::new(MemorySigningKeyStore::new());
+        let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
+        store.create_key(org_id, &key).await.unwrap();
+
+        let detector = InMemoryReplayDetector::new(1000);
+        let token =
+            create_signed_jwt_with_jti(&pkcs8_der, "rd-key-002", &org_id.to_string(), "jti-002");
+
+        // First presentation succeeds
+        verify_with_replay_detection(&token, &cache, &detector).await.unwrap();
+
+        // Second presentation rejected
+        let result = verify_with_replay_detection(&token, &cache, &detector).await;
+        assert!(
+            matches!(&result, Err(AuthError::TokenReplayed { jti, .. }) if jti == "jti-002"),
+            "expected TokenReplayed, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_replay_detection_missing_jti_rejected() {
+        use crate::replay::InMemoryReplayDetector;
+
+        let (pkcs8_der, key) = create_test_signing_key("rd-key-003");
+        let org_id = NamespaceId::from(12345);
+
+        let store = Arc::new(MemorySigningKeyStore::new());
+        let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
+        store.create_key(org_id, &key).await.unwrap();
+
+        let detector = InMemoryReplayDetector::new(1000);
+        // Token without jti
+        let token = create_signed_jwt(&pkcs8_der, "rd-key-003", &org_id.to_string());
+
+        let result = verify_with_replay_detection(&token, &cache, &detector).await;
+        assert!(
+            matches!(result, Err(AuthError::MissingJti { .. })),
+            "expected MissingJti, got: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_replay_detection_different_jtis_accepted() {
+        use crate::{replay::InMemoryReplayDetector, testutil::create_signed_jwt_with_jti};
+
+        let (pkcs8_der, key) = create_test_signing_key("rd-key-004");
+        let org_id = NamespaceId::from(12345);
+
+        let store = Arc::new(MemorySigningKeyStore::new());
+        let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
+        store.create_key(org_id, &key).await.unwrap();
+
+        let detector = InMemoryReplayDetector::new(1000);
+        let token_a =
+            create_signed_jwt_with_jti(&pkcs8_der, "rd-key-004", &org_id.to_string(), "jti-a");
+        let token_b =
+            create_signed_jwt_with_jti(&pkcs8_der, "rd-key-004", &org_id.to_string(), "jti-b");
+
+        verify_with_replay_detection(&token_a, &cache, &detector).await.unwrap();
+        let result = verify_with_replay_detection(&token_b, &cache, &detector).await;
+        assert!(result.is_ok(), "different JTIs should be accepted");
     }
 }

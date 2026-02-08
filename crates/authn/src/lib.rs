@@ -43,6 +43,8 @@
 pub mod error;
 /// JWT validation and claims.
 pub mod jwt;
+/// JWT replay prevention via JTI tracking.
+pub mod replay;
 /// Ledger-backed signing key cache.
 pub mod signing_key_cache;
 /// Shared test utilities for authentication testing.
@@ -55,6 +57,7 @@ pub mod validation;
 // Re-export key types for convenience
 pub use error::{AuthError, Result};
 pub use jwt::JwtClaims;
+pub use replay::{InMemoryReplayDetector, ReplayDetector};
 pub use signing_key_cache::{
     DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, DEFAULT_FALLBACK_CAPACITY, DEFAULT_FALLBACK_TTL,
     SigningKeyCache,
