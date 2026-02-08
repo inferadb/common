@@ -1,7 +1,7 @@
-//! JWT algorithm validation.
+//! JWT validation utilities.
 //!
-//! This module provides security checks for JWT algorithms, ensuring only
-//! approved asymmetric algorithms are accepted.
+//! This module provides security checks for JWT fields, ensuring only
+//! approved algorithms and well-formed identifiers are accepted.
 //!
 //! # Security
 //!
@@ -94,6 +94,67 @@ pub fn validate_algorithm(alg: &str) -> Result<(), AuthError> {
     Ok(())
 }
 
+/// Maximum allowed length for a JWT `kid` header parameter.
+pub const MAX_KID_LENGTH: usize = 256;
+
+/// Validate the JWT `kid` (Key ID) header parameter.
+///
+/// The `kid` is used as a cache key and storage lookup key. Validating it
+/// at JWT parsing time — before any cache or storage interaction — prevents
+/// cache pollution, storage errors, and unexpected behavior from adversarial
+/// or malformed values.
+///
+/// # Constraints
+///
+/// - Non-empty (at least 1 character)
+/// - At most [`MAX_KID_LENGTH`] characters (256)
+/// - Only ASCII alphanumeric characters, hyphens, underscores, and dots: `[a-zA-Z0-9._-]`
+///
+/// # Errors
+///
+/// Returns [`AuthError::InvalidKid`] describing which constraint was violated.
+///
+/// # Examples
+///
+/// ```
+/// use inferadb_common_authn::validation::validate_kid;
+///
+/// // Valid kid values
+/// assert!(validate_kid("org-abc-123").is_ok());
+/// assert!(validate_kid("my_key.v2").is_ok());
+///
+/// // Empty kid rejected
+/// assert!(validate_kid("").is_err());
+///
+/// // Path traversal rejected
+/// assert!(validate_kid("../etc/passwd").is_err());
+/// ```
+pub fn validate_kid(kid: &str) -> Result<(), AuthError> {
+    if kid.is_empty() {
+        return Err(AuthError::invalid_kid("kid must not be empty"));
+    }
+
+    if kid.len() > MAX_KID_LENGTH {
+        return Err(AuthError::invalid_kid(format!(
+            "kid exceeds maximum length of {} (got {})",
+            MAX_KID_LENGTH,
+            kid.len()
+        )));
+    }
+
+    if let Some(pos) =
+        kid.find(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-'))
+    {
+        return Err(AuthError::invalid_kid(format!(
+            "kid contains invalid character '{}' at position {} (allowed: a-zA-Z0-9._-)",
+            kid.as_bytes()[pos] as char,
+            pos
+        )));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -165,5 +226,81 @@ mod tests {
         assert!(ACCEPTED_ALGORITHMS.contains(&"EdDSA"));
         // RS256 intentionally excluded — see ACCEPTED_ALGORITHMS doc comment
         assert!(!ACCEPTED_ALGORITHMS.contains(&"RS256"));
+    }
+
+    // ========== validate_kid tests ==========
+
+    #[test]
+    fn test_validate_kid_valid_alphanumeric() {
+        assert!(validate_kid("abc123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_kid_valid_with_hyphens_underscores_dots() {
+        assert!(validate_kid("org-abc_123.v2").is_ok());
+    }
+
+    #[test]
+    fn test_validate_kid_valid_single_char() {
+        assert!(validate_kid("k").is_ok());
+    }
+
+    #[test]
+    fn test_validate_kid_valid_at_max_length() {
+        let kid = "a".repeat(MAX_KID_LENGTH);
+        assert!(validate_kid(&kid).is_ok());
+    }
+
+    #[test]
+    fn test_validate_kid_empty_rejected() {
+        let result = validate_kid("");
+        assert!(
+            matches!(result, Err(AuthError::InvalidKid { message: ref msg, .. }) if msg.contains("must not be empty")),
+            "Expected empty kid rejection, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_kid_oversized_rejected() {
+        let kid = "a".repeat(MAX_KID_LENGTH + 1);
+        let result = validate_kid(&kid);
+        assert!(
+            matches!(result, Err(AuthError::InvalidKid { message: ref msg, .. }) if msg.contains("exceeds maximum length")),
+            "Expected oversized kid rejection, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_kid_path_traversal_rejected() {
+        let result = validate_kid("../etc/passwd");
+        assert!(
+            matches!(result, Err(AuthError::InvalidKid { message: ref msg, .. }) if msg.contains("invalid character '/'"))
+        );
+    }
+
+    #[test]
+    fn test_validate_kid_null_bytes_rejected() {
+        let result = validate_kid("key\0id");
+        assert!(matches!(result, Err(AuthError::InvalidKid { .. })));
+    }
+
+    #[test]
+    fn test_validate_kid_spaces_rejected() {
+        let result = validate_kid("key id");
+        assert!(
+            matches!(result, Err(AuthError::InvalidKid { message: ref msg, .. }) if msg.contains("invalid character ' '"))
+        );
+    }
+
+    #[test]
+    fn test_validate_kid_colon_rejected() {
+        let result = validate_kid("ns:kid");
+        assert!(matches!(result, Err(AuthError::InvalidKid { .. })));
+    }
+
+    #[test]
+    fn test_validate_kid_unicode_rejected() {
+        let result = validate_kid("kid-\u{00e9}");
+        assert!(matches!(result, Err(AuthError::InvalidKid { .. })));
     }
 }

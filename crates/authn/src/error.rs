@@ -241,6 +241,19 @@ pub enum AuthError {
         /// Span ID captured at error creation for trace correlation.
         span_id: Option<tracing::span::Id>,
     },
+
+    // ========== Input validation errors ==========
+    /// JWT `kid` header parameter failed validation.
+    ///
+    /// The `kid` (Key ID) value extracted from the JWT header does not
+    /// conform to the expected format. Valid `kid` values must be 1–256
+    /// characters long and contain only `[a-zA-Z0-9._-]`.
+    InvalidKid {
+        /// Description of the constraint that was violated.
+        message: String,
+        /// Span ID captured at error creation for trace correlation.
+        span_id: Option<tracing::span::Id>,
+    },
 }
 
 impl fmt::Display for AuthError {
@@ -344,6 +357,10 @@ impl fmt::Display for AuthError {
             },
             Self::MissingJti { span_id } => {
                 write!(f, "Missing jti claim: replay detection requires a jti claim")?;
+                fmt_span_suffix(f, span_id)
+            },
+            Self::InvalidKid { message, span_id } => {
+                write!(f, "Invalid kid: {message}")?;
                 fmt_span_suffix(f, span_id)
             },
         }
@@ -501,6 +518,12 @@ impl AuthError {
         Self::MissingJti { span_id: current_span_id() }
     }
 
+    /// Creates a new `InvalidKid` error.
+    #[must_use]
+    pub fn invalid_kid(message: impl Into<String>) -> Self {
+        Self::InvalidKid { message: message.into(), span_id: current_span_id() }
+    }
+
     /// Returns the tracing span ID captured when this error was created,
     /// if a tracing subscriber was active at that time.
     #[must_use]
@@ -530,7 +553,8 @@ impl AuthError {
             | Self::InvalidPublicKey { span_id, .. }
             | Self::KeyStorageError { span_id, .. }
             | Self::TokenReplayed { span_id, .. }
-            | Self::MissingJti { span_id, .. } => span_id.as_ref(),
+            | Self::MissingJti { span_id, .. }
+            | Self::InvalidKid { span_id, .. } => span_id.as_ref(),
         }
     }
 }

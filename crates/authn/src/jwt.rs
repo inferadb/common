@@ -23,7 +23,11 @@ use chrono::Utc;
 use jsonwebtoken::{Algorithm, DecodingKey, Header, Validation, decode, decode_header};
 use serde::{Deserialize, Serialize};
 
-use crate::{error::AuthError, signing_key_cache::SigningKeyCache, validation::validate_algorithm};
+use crate::{
+    error::AuthError,
+    signing_key_cache::SigningKeyCache,
+    validation::{validate_algorithm, validate_kid},
+};
 
 /// JWT claims structure.
 ///
@@ -304,6 +308,9 @@ pub async fn verify_with_signing_key_cache(
     let kid = header
         .kid
         .ok_or_else(|| AuthError::invalid_token_format("JWT header missing 'kid' field"))?;
+
+    // Validate kid format before any cache or storage interaction
+    validate_kid(&kid)?;
 
     // Validate algorithm — only EdDSA is accepted (see ACCEPTED_ALGORITHMS)
     let alg_str = format!("{:?}", header.alg);
