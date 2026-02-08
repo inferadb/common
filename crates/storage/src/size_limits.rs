@@ -77,24 +77,12 @@ impl Default for SizeLimits {
 /// Returns `Ok(())` when both sizes are within bounds, or
 /// `Err(StorageError::SizeLimitExceeded)` identifying which limit was
 /// violated.
-pub fn validate_sizes(
-    key: &[u8],
-    value: &[u8],
-    limits: &SizeLimits,
-) -> Result<(), StorageError> {
+pub fn validate_sizes(key: &[u8], value: &[u8], limits: &SizeLimits) -> Result<(), StorageError> {
     if key.len() > limits.max_key_size {
-        return Err(StorageError::size_limit_exceeded(
-            "key",
-            key.len(),
-            limits.max_key_size,
-        ));
+        return Err(StorageError::size_limit_exceeded("key", key.len(), limits.max_key_size));
     }
     if value.len() > limits.max_value_size {
-        return Err(StorageError::size_limit_exceeded(
-            "value",
-            value.len(),
-            limits.max_value_size,
-        ));
+        return Err(StorageError::size_limit_exceeded("value", value.len(), limits.max_value_size));
     }
     Ok(())
 }
@@ -103,16 +91,13 @@ pub fn validate_sizes(
 /// e.g. delete or get operations that want key-length protection).
 pub fn validate_key_size(key: &[u8], limits: &SizeLimits) -> Result<(), StorageError> {
     if key.len() > limits.max_key_size {
-        return Err(StorageError::size_limit_exceeded(
-            "key",
-            key.len(),
-            limits.max_key_size,
-        ));
+        return Err(StorageError::size_limit_exceeded("key", key.len(), limits.max_key_size));
     }
     Ok(())
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -133,13 +118,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "max_key_size must be >= 1")]
     fn zero_key_size_panics() {
-        SizeLimits::new(0, 1024);
+        let _ = SizeLimits::new(0, 1024);
     }
 
     #[test]
     #[should_panic(expected = "max_value_size must be >= 1")]
     fn zero_value_size_panics() {
-        SizeLimits::new(1, 0);
+        let _ = SizeLimits::new(1, 0);
     }
 
     #[test]
@@ -179,20 +164,20 @@ mod tests {
     #[test]
     fn validate_key_size_only() {
         let limits = SizeLimits::new(10, 20);
-        assert!(validate_key_size(&vec![0u8; 10], &limits).is_ok());
-        assert!(validate_key_size(&vec![0u8; 11], &limits).is_err());
+        assert!(validate_key_size(&[0u8; 10], &limits).is_ok());
+        assert!(validate_key_size(&[0u8; 11], &limits).is_err());
     }
 
     #[test]
     fn validate_at_exact_limit() {
         let limits = SizeLimits::new(5, 10);
-        assert!(validate_sizes(&vec![0u8; 5], &vec![0u8; 10], &limits).is_ok());
+        assert!(validate_sizes(&[0u8; 5], &[0u8; 10], &limits).is_ok());
     }
 
     #[test]
     fn validate_one_byte_over_limit() {
         let limits = SizeLimits::new(5, 10);
-        assert!(validate_sizes(&vec![0u8; 6], &vec![0u8; 10], &limits).is_err());
-        assert!(validate_sizes(&vec![0u8; 5], &vec![0u8; 11], &limits).is_err());
+        assert!(validate_sizes(&[0u8; 6], &[0u8; 10], &limits).is_err());
+        assert!(validate_sizes(&[0u8; 5], &[0u8; 11], &limits).is_err());
     }
 }

@@ -200,6 +200,17 @@ pub enum StorageError {
         span_id: Option<tracing::span::Id>,
     },
 
+    /// The circuit breaker is open and rejecting requests.
+    ///
+    /// This error is returned when the backend's circuit breaker has
+    /// detected sustained failures and is preventing further requests
+    /// to avoid cascading failures. The caller should wait for the
+    /// circuit breaker's recovery timeout before retrying.
+    CircuitOpen {
+        /// Span ID captured at error creation for trace correlation.
+        span_id: Option<tracing::span::Id>,
+    },
+
     /// Key or value exceeds the configured size limit.
     ///
     /// This error is returned when a write operation provides a key or
@@ -253,11 +264,12 @@ impl fmt::Display for StorageError {
                 write!(f, "CAS retries exhausted after {attempts} attempts")?;
                 fmt_span_suffix(f, span_id)
             },
+            Self::CircuitOpen { span_id } => {
+                write!(f, "Circuit breaker is open")?;
+                fmt_span_suffix(f, span_id)
+            },
             Self::SizeLimitExceeded { kind, actual, limit, span_id } => {
-                write!(
-                    f,
-                    "Size limit exceeded: {kind} is {actual} bytes, limit is {limit} bytes"
-                )?;
+                write!(f, "Size limit exceeded: {kind} is {actual} bytes, limit is {limit} bytes")?;
                 fmt_span_suffix(f, span_id)
             },
         }
@@ -366,6 +378,14 @@ impl StorageError {
         Self::CasRetriesExhausted { attempts, span_id: current_span_id() }
     }
 
+    /// Creates a new `CircuitOpen` error.
+    ///
+    /// Captures the current tracing span ID for log correlation.
+    #[must_use]
+    pub fn circuit_open() -> Self {
+        Self::CircuitOpen { span_id: current_span_id() }
+    }
+
     /// Creates a new `SizeLimitExceeded` error.
     ///
     /// `kind` should be `"key"` or `"value"`. Captures the current tracing
@@ -390,6 +410,7 @@ impl StorageError {
             | Self::Internal { span_id, .. }
             | Self::Timeout { span_id, .. }
             | Self::CasRetriesExhausted { span_id, .. }
+            | Self::CircuitOpen { span_id, .. }
             | Self::SizeLimitExceeded { span_id, .. } => span_id.as_ref(),
         }
     }
@@ -514,6 +535,7 @@ mod tests {
             );
             assert!(StorageError::timeout().span_id().is_some());
             assert!(StorageError::cas_retries_exhausted(3).span_id().is_some());
+            assert!(StorageError::circuit_open().span_id().is_some());
         });
     }
 

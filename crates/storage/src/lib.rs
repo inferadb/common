@@ -102,7 +102,7 @@ pub use error::{BoxError, ConfigError, StorageError, StorageResult};
 pub use memory::MemoryBackend;
 pub use metrics::{LatencyPercentiles, Metrics, MetricsCollector, MetricsSnapshot};
 pub use size_limits::{
-    validate_key_size, validate_sizes, SizeLimits, DEFAULT_MAX_KEY_SIZE, DEFAULT_MAX_VALUE_SIZE,
+    DEFAULT_MAX_KEY_SIZE, DEFAULT_MAX_VALUE_SIZE, SizeLimits, validate_key_size, validate_sizes,
 };
 pub use transaction::Transaction;
 pub use types::{CertId, ClientId, KeyValue, NamespaceId, VaultId};

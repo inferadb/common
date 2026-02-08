@@ -13,7 +13,8 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use inferadb_common_storage::{
-    KeyValue, NamespaceId, StorageBackend, StorageError, StorageResult, Transaction, VaultId,
+    KeyValue, NamespaceId, SizeLimits, StorageBackend, StorageError, StorageResult, Transaction,
+    VaultId, validate_sizes,
 };
 use inferadb_ledger_sdk::{
     LedgerClient, ListEntitiesOpts, Operation, ReadConsistency, SetCondition,
@@ -109,6 +110,12 @@ pub struct LedgerBackend {
 
     /// Per-operation timeout configuration.
     timeout_config: TimeoutConfig,
+
+    /// Optional key/value size limits.
+    size_limits: Option<SizeLimits>,
+
+    /// Optional circuit breaker for fail-fast during backend outages.
+    circuit_breaker: Option<crate::circuit_breaker::CircuitBreaker>,
 }
 
 impl std::fmt::Debug for LedgerBackend {
@@ -164,6 +171,11 @@ impl LedgerBackend {
         let max_range_results = config.max_range_results();
         let retry_config = config.retry_config().clone();
         let timeout_config = config.timeout_config().clone();
+        let size_limits = config.size_limits();
+        let circuit_breaker = config
+            .circuit_breaker_config()
+            .cloned()
+            .map(crate::circuit_breaker::CircuitBreaker::new);
 
         let client = LedgerClient::new(config.into_client_config())
             .await
@@ -178,6 +190,8 @@ impl LedgerBackend {
             max_range_results,
             retry_config,
             timeout_config,
+            size_limits,
+            circuit_breaker,
         })
     }
 
@@ -208,6 +222,8 @@ impl LedgerBackend {
             max_range_results: DEFAULT_MAX_RANGE_RESULTS,
             retry_config: RetryConfig::default(),
             timeout_config: TimeoutConfig::default(),
+            size_limits: None,
+            circuit_breaker: None,
         }
     }
 
@@ -258,6 +274,14 @@ impl LedgerBackend {
     /// Returns the vault ID as a raw `Option<i64>` for SDK calls.
     fn vault_raw(&self) -> Option<i64> {
         self.vault_id.map(Into::into)
+    }
+
+    /// Validates key and value sizes against configured limits, if any.
+    fn check_sizes(&self, key: &[u8], value: &[u8]) -> StorageResult<()> {
+        if let Some(ref limits) = self.size_limits {
+            validate_sizes(key, value, limits)?;
+        }
+        Ok(())
     }
 
     /// Performs a read with the configured consistency level.
@@ -322,6 +346,7 @@ impl StorageBackend for LedgerBackend {
 
     #[tracing::instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len()))]
     async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()> {
+        self.check_sizes(&key, &value)?;
         let encoded_key = encode_key(&key);
 
         with_retry_timeout(
@@ -351,6 +376,7 @@ impl StorageBackend for LedgerBackend {
         expected: Option<&[u8]>,
         new_value: Vec<u8>,
     ) -> StorageResult<()> {
+        self.check_sizes(key, &new_value)?;
         let encoded_key = encode_key(key);
 
         let condition = match expected {
@@ -590,6 +616,7 @@ impl StorageBackend for LedgerBackend {
     /// the Unix epoch, since a valid absolute timestamp cannot be computed.
     #[tracing::instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len(), ttl_ms = ttl.as_millis() as u64))]
     async fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> StorageResult<()> {
+        self.check_sizes(&key, &value)?;
         let encoded_key = encode_key(&key);
         let expires_at = Self::compute_expiration_timestamp(ttl)?;
 

@@ -56,7 +56,7 @@ use tokio::{select, sync::watch, time::sleep};
 use crate::{
     backend::StorageBackend,
     error::{StorageError, StorageResult},
-    size_limits::{validate_sizes, SizeLimits},
+    size_limits::{SizeLimits, validate_sizes},
     transaction::Transaction,
     types::KeyValue,
 };
@@ -809,30 +809,26 @@ mod tests {
     async fn set_key_over_limit_fails() {
         let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 100));
         let err = backend.set(vec![0u8; 6], vec![0u8; 1]).await.unwrap_err();
-        assert!(
-            matches!(err, StorageError::SizeLimitExceeded { kind: "key", actual: 6, limit: 5, .. })
-        );
+        assert!(matches!(
+            err,
+            StorageError::SizeLimitExceeded { kind: "key", actual: 6, limit: 5, .. }
+        ));
     }
 
     #[tokio::test]
     async fn set_value_over_limit_fails() {
         let backend = MemoryBackend::with_size_limits(SizeLimits::new(100, 10));
         let err = backend.set(vec![0u8; 1], vec![0u8; 11]).await.unwrap_err();
-        assert!(
-            matches!(
-                err,
-                StorageError::SizeLimitExceeded { kind: "value", actual: 11, limit: 10, .. }
-            )
-        );
+        assert!(matches!(
+            err,
+            StorageError::SizeLimitExceeded { kind: "value", actual: 11, limit: 10, .. }
+        ));
     }
 
     #[tokio::test]
     async fn compare_and_set_over_limit_fails() {
         let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10));
-        let err = backend
-            .compare_and_set(&[0u8; 3], None, vec![0u8; 11])
-            .await
-            .unwrap_err();
+        let err = backend.compare_and_set(&[0u8; 3], None, vec![0u8; 11]).await.unwrap_err();
         assert!(matches!(
             err,
             StorageError::SizeLimitExceeded { kind: "value", actual: 11, limit: 10, .. }
@@ -846,9 +842,10 @@ mod tests {
             .set_with_ttl(vec![0u8; 6], vec![0u8; 1], Duration::from_secs(60))
             .await
             .unwrap_err();
-        assert!(
-            matches!(err, StorageError::SizeLimitExceeded { kind: "key", actual: 6, limit: 5, .. })
-        );
+        assert!(matches!(
+            err,
+            StorageError::SizeLimitExceeded { kind: "key", actual: 6, limit: 5, .. }
+        ));
     }
 
     #[tokio::test]
@@ -858,18 +855,17 @@ mod tests {
         // Transaction::set is infallible — validation happens at commit time
         txn.set(vec![0u8; 6], vec![0u8; 1]);
         let err = txn.commit().await.unwrap_err();
-        assert!(
-            matches!(err, StorageError::SizeLimitExceeded { kind: "key", actual: 6, limit: 5, .. })
-        );
+        assert!(matches!(
+            err,
+            StorageError::SizeLimitExceeded { kind: "key", actual: 6, limit: 5, .. }
+        ));
     }
 
     #[tokio::test]
     async fn transaction_cas_over_limit_fails_immediately() {
         let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10));
         let mut txn = backend.transaction().await.unwrap();
-        let err = txn
-            .compare_and_set(vec![0u8; 3], None, vec![0u8; 11])
-            .unwrap_err();
+        let err = txn.compare_and_set(vec![0u8; 3], None, vec![0u8; 11]).unwrap_err();
         assert!(matches!(
             err,
             StorageError::SizeLimitExceeded { kind: "value", actual: 11, limit: 10, .. }
@@ -1097,21 +1093,21 @@ mod tests {
 
                     if key.len() > max_key {
                         prop_assert!(result.is_err(), "expected key size error");
-                        let err = result.unwrap_err();
-                        prop_assert!(matches!(
-                            err,
+                        let is_key_err = matches!(
+                            result.unwrap_err(),
                             StorageError::SizeLimitExceeded { kind: "key", .. }
-                        ));
+                        );
+                        prop_assert!(is_key_err, "expected SizeLimitExceeded for key");
                         // Verify nothing was stored
                         let val = backend.get(&key).await.unwrap();
                         prop_assert!(val.is_none());
                     } else if value.len() > max_value {
                         prop_assert!(result.is_err(), "expected value size error");
-                        let err = result.unwrap_err();
-                        prop_assert!(matches!(
-                            err,
+                        let is_val_err = matches!(
+                            result.unwrap_err(),
                             StorageError::SizeLimitExceeded { kind: "value", .. }
-                        ));
+                        );
+                        prop_assert!(is_val_err, "expected SizeLimitExceeded for value");
                         // Verify nothing was stored
                         let val = backend.get(&key).await.unwrap();
                         prop_assert!(val.is_none());

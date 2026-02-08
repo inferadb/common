@@ -411,6 +411,13 @@ pub struct LedgerBackendConfig {
     /// validate key and value sizes before sending to the ledger. This
     /// provides clear error messages instead of opaque downstream failures.
     pub(crate) size_limits: Option<SizeLimits>,
+
+    /// Optional circuit breaker configuration.
+    ///
+    /// When set, a circuit breaker protects the backend from cascading
+    /// failures by failing fast when the ledger is unreachable, and
+    /// periodically probing to detect recovery.
+    pub(crate) circuit_breaker_config: Option<crate::circuit_breaker::CircuitBreakerConfig>,
 }
 
 #[bon::bon]
@@ -444,6 +451,7 @@ impl LedgerBackendConfig {
         #[builder(default)] retry_config: RetryConfig,
         #[builder(default)] timeout_config: TimeoutConfig,
         size_limits: Option<SizeLimits>,
+        circuit_breaker_config: Option<crate::circuit_breaker::CircuitBreakerConfig>,
     ) -> Result<Self, ConfigError> {
         if page_size == 0 {
             return Err(ConfigError::BelowMinimum {
@@ -469,6 +477,7 @@ impl LedgerBackendConfig {
             retry_config,
             timeout_config,
             size_limits,
+            circuit_breaker_config,
         })
     }
 
@@ -524,6 +533,12 @@ impl LedgerBackendConfig {
     #[must_use]
     pub fn size_limits(&self) -> Option<SizeLimits> {
         self.size_limits
+    }
+
+    /// Returns the configured circuit breaker config, if any.
+    #[must_use]
+    pub fn circuit_breaker_config(&self) -> Option<&crate::circuit_breaker::CircuitBreakerConfig> {
+        self.circuit_breaker_config.as_ref()
     }
 
     /// Returns the SDK client configuration for building a client.

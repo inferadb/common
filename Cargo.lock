@@ -1657,6 +1657,7 @@ dependencies = [
  "hex",
  "inferadb-common-storage",
  "inferadb-ledger-sdk",
+ "parking_lot",
  "proptest",
  "rand 0.9.2",
  "serde",
