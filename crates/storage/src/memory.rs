@@ -387,8 +387,21 @@ struct CasOperation {
 
 /// In-memory transaction implementation.
 ///
-/// Buffers writes and deletes until commit, providing read-your-writes
-/// semantics within the transaction.
+/// Buffers writes, deletes, and compare-and-sets until commit, providing
+/// read-your-writes semantics within the transaction.
+///
+/// # Isolation Guarantees
+///
+/// Implements the [`Transaction`] trait's **read-committed** isolation model:
+///
+/// - **Read-your-writes**: Reads check `pending_writes` before the backend.
+/// - **Live reads**: Reads of unmodified keys go to the shared `MemoryBackend` data, reflecting the
+///   latest committed state. Two reads of the same unmodified key may return different values if
+///   another transaction commits between them.
+/// - **Atomic commit**: All operations are applied under a single write lock. CAS conditions are
+///   verified first; if any fail, no operations are applied.
+/// - **No cross-transaction conflict detection for unconditional writes**: concurrent `set`
+///   operations on the same key both succeed; last commit wins.
 struct MemoryTransaction {
     backend: MemoryBackend,
     pending_writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,

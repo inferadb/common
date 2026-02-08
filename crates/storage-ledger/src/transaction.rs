@@ -27,27 +27,51 @@ struct CasOperation {
     new_value: Vec<u8>,
 }
 
-/// Transaction for atomic operations on Ledger.
+/// Transaction for atomic operations on the Ledger backend.
 ///
-/// This transaction implementation buffers all writes (sets and deletes)
-/// until [`commit`](Transaction::commit) is called. It provides read-your-writes
-/// semantics within the transaction.
+/// This transaction implementation buffers all writes (sets, deletes, and
+/// compare-and-sets) in memory until [`commit`](Transaction::commit) is
+/// called, at which point all operations are submitted to the ledger in a
+/// single atomic `client.write()` call.
 ///
-/// # Buffering
+/// # Isolation Guarantees
 ///
-/// Operations are buffered in memory:
-/// - `set(key, value)` stores the value in `pending_sets`
-/// - `delete(key)` adds the key to `pending_deletes` and removes from `pending_sets`
+/// `LedgerTransaction` implements the [`Transaction`] trait's
+/// **read-committed** isolation model:
 ///
-/// When reading, the transaction first checks pending writes before
-/// consulting the underlying storage.
+/// - **Read-your-writes**: Reads check pending sets and deletes before consulting the ledger. A
+///   `set` followed by `get` on the same key returns the buffered value without a network
+///   round-trip.
+///
+/// - **Live reads**: Reads of unmodified keys go directly to the ledger with the configured
+///   [`ReadConsistency`] level. With `Linearizable` consistency, reads see the latest committed
+///   value. With `Eventual` consistency, reads may return stale data.
+///
+/// - **No snapshot isolation**: Two reads of the same unmodified key within one transaction may
+///   return different values if another writer commits between them.
 ///
 /// # Commit Semantics
 ///
-/// All buffered operations are submitted atomically via `client.write()`.
-/// Either all operations succeed, or none are applied. If the commit fails
-/// due to a conflict (e.g., another transaction modified the same keys),
-/// a `StorageError::Conflict` is returned.
+/// All buffered operations are submitted to the ledger in a single
+/// `client.write()` call, which provides **all-or-nothing** atomicity:
+///
+/// - If any compare-and-set condition fails (the ledger returns `FailedPrecondition`), the entire
+///   write is rejected and `StorageError::Conflict` is returned. No operations are applied.
+///
+/// - On backend errors, no operations are applied.
+///
+/// - Unconditional set and delete operations within the same transaction always succeed together —
+///   there is no partial commit.
+///
+/// # Limitations
+///
+/// - **No cross-transaction conflict detection for unconditional writes**: Two concurrent
+///   transactions writing to the same key with `set` (not `compare_and_set`) will both succeed. The
+///   last one to commit wins. Use `compare_and_set` to detect concurrent modifications.
+///
+/// - **CAS conditions checked server-side**: The expected value in a compare-and-set is evaluated
+///   by the ledger at commit time, not locally. This means CAS detects conflicts even from other
+///   clients.
 ///
 /// # Example
 ///
@@ -67,7 +91,7 @@ struct CasOperation {
 /// let value = txn.get(b"key1").await?;
 /// assert_eq!(value, Some(bytes::Bytes::from("value1")));
 ///
-/// // Commit atomically
+/// // Commit atomically — both writes succeed or neither does
 /// txn.commit().await?;
 /// # Ok(())
 /// # }

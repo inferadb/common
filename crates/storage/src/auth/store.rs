@@ -208,6 +208,99 @@ pub trait PublicSigningKeyStore: Send + Sync {
     ///
     /// Returns [`StorageError::NotFound`] if the key doesn't exist.
     async fn delete_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()>;
+
+    /// Stores multiple public signing keys in bulk.
+    ///
+    /// Returns a `Vec<StorageResult<()>>` with one result per input key,
+    /// in the same order as the input.
+    ///
+    /// The default implementation calls [`create_key`](Self::create_key)
+    /// sequentially. Implementations may override this for efficiency
+    /// (e.g., single lock acquisition for in-memory, batched writes for
+    /// ledger backends).
+    ///
+    /// # Arguments
+    ///
+    /// * `namespace_id` - Organization namespace ID
+    /// * `keys` - The keys to store
+    async fn create_keys(
+        &self,
+        namespace_id: NamespaceId,
+        keys: &[PublicSigningKey],
+    ) -> Vec<StorageResult<()>> {
+        let mut results = Vec::with_capacity(keys.len());
+        for key in keys {
+            results.push(self.create_key(namespace_id, key).await);
+        }
+        results
+    }
+
+    /// Revokes multiple keys in bulk.
+    ///
+    /// Each entry is a `(kid, optional_reason)` pair. Returns a
+    /// `Vec<StorageResult<()>>` with one result per input, in the
+    /// same order.
+    ///
+    /// The default implementation calls [`revoke_key`](Self::revoke_key)
+    /// sequentially. Implementations may override this for efficiency.
+    ///
+    /// # Arguments
+    ///
+    /// * `namespace_id` - Organization namespace ID
+    /// * `keys` - Pairs of `(kid, optional_reason)` to revoke
+    async fn revoke_keys(
+        &self,
+        namespace_id: NamespaceId,
+        keys: &[(&str, Option<&str>)],
+    ) -> Vec<StorageResult<()>> {
+        let mut results = Vec::with_capacity(keys.len());
+        for &(kid, reason) in keys {
+            results.push(self.revoke_key(namespace_id, kid, reason).await);
+        }
+        results
+    }
+
+    /// Atomically rotates a signing key: revokes the old key and stores
+    /// the new key as a single logical operation.
+    ///
+    /// Either both the revocation and the creation succeed, or neither
+    /// takes effect. This is the recommended way to perform key rotation
+    /// because it prevents windows where neither old nor new key is valid.
+    ///
+    /// The default implementation performs the two operations sequentially
+    /// and attempts to roll back on failure. Implementations may override
+    /// this with a truly atomic mechanism (e.g., a single transaction).
+    ///
+    /// # Arguments
+    ///
+    /// * `namespace_id` - Organization namespace ID
+    /// * `old_kid` - The key identifier to revoke
+    /// * `new_key` - The new key to store
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The old key doesn't exist ([`StorageError::NotFound`])
+    /// - The new key's `kid` already exists
+    /// - The storage backend is unavailable
+    async fn rotate_key(
+        &self,
+        namespace_id: NamespaceId,
+        old_kid: &str,
+        new_key: &PublicSigningKey,
+    ) -> StorageResult<()> {
+        // Store the new key first — if this fails, nothing has changed
+        self.create_key(namespace_id, new_key).await?;
+
+        // Revoke the old key — if this fails, roll back the new key
+        if let Err(e) = self.revoke_key(namespace_id, old_kid, Some("key rotation")).await {
+            // Best-effort rollback: delete the newly created key
+            let _rollback = self.delete_key(namespace_id, &new_key.kid).await;
+            return Err(e);
+        }
+
+        Ok(())
+    }
 }
 
 /// In-memory implementation of [`PublicSigningKeyStore`] for testing.
@@ -373,6 +466,96 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         if keys.remove(&map_key).is_none() {
             return Err(StorageError::not_found(kid));
         }
+        Ok(())
+    }
+
+    /// Optimized bulk create: single write-lock acquisition for all keys.
+    async fn create_keys(
+        &self,
+        namespace_id: NamespaceId,
+        keys: &[PublicSigningKey],
+    ) -> Vec<StorageResult<()>> {
+        let mut store_keys = self.keys.write();
+        let mut results = Vec::with_capacity(keys.len());
+
+        for key in keys {
+            let map_key = Self::make_key(namespace_id, &key.kid);
+            match store_keys.entry(map_key) {
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    results.push(Err(StorageError::internal(format!(
+                        "Key already exists: {}",
+                        key.kid
+                    ))));
+                },
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(key.clone());
+                    results.push(Ok(()));
+                },
+            }
+        }
+
+        results
+    }
+
+    /// Optimized bulk revoke: single write-lock acquisition for all keys.
+    async fn revoke_keys(
+        &self,
+        namespace_id: NamespaceId,
+        keys: &[(&str, Option<&str>)],
+    ) -> Vec<StorageResult<()>> {
+        let mut store_keys = self.keys.write();
+        let mut results = Vec::with_capacity(keys.len());
+
+        for &(kid, reason) in keys {
+            let map_key = Self::make_key(namespace_id, kid);
+            match store_keys.get_mut(&map_key) {
+                Some(key) => {
+                    if key.revoked_at.is_none() {
+                        key.revoked_at = Some(Utc::now());
+                        key.active = false;
+                        key.revocation_reason = reason.map(String::from);
+                    }
+                    results.push(Ok(()));
+                },
+                None => results.push(Err(StorageError::not_found(kid))),
+            }
+        }
+
+        results
+    }
+
+    /// Atomic rotate: both revoke and create happen under a single lock.
+    async fn rotate_key(
+        &self,
+        namespace_id: NamespaceId,
+        old_kid: &str,
+        new_key: &PublicSigningKey,
+    ) -> StorageResult<()> {
+        let mut store_keys = self.keys.write();
+
+        let old_map_key = Self::make_key(namespace_id, old_kid);
+        let new_map_key = Self::make_key(namespace_id, &new_key.kid);
+
+        // Validate both preconditions before mutating
+        if !store_keys.contains_key(&old_map_key) {
+            return Err(StorageError::not_found(old_kid));
+        }
+        if store_keys.contains_key(&new_map_key) {
+            return Err(StorageError::internal(format!("Key already exists: {}", new_key.kid)));
+        }
+
+        // Revoke old key (idempotent)
+        if let Some(old_entry) = store_keys.get_mut(&old_map_key)
+            && old_entry.revoked_at.is_none()
+        {
+            old_entry.revoked_at = Some(Utc::now());
+            old_entry.active = false;
+            old_entry.revocation_reason = Some("key rotation".to_string());
+        }
+
+        // Store new key
+        store_keys.insert(new_map_key, new_key.clone());
+
         Ok(())
     }
 }
@@ -732,5 +915,201 @@ mod tests {
         let second = store.get_key(namespace_id, "idempotent-reason").await.expect("get");
         let second = second.expect("exists");
         assert_eq!(second.revocation_reason.as_deref(), Some("compromised"));
+    }
+
+    // ── Bulk operation tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_create_keys_bulk() {
+        let store = MemorySigningKeyStore::new();
+        let namespace_id = NamespaceId::from(100);
+
+        let keys: Vec<PublicSigningKey> =
+            (0..10).map(|i| make_test_key(&format!("bulk-{i}"))).collect();
+
+        let results = store.create_keys(namespace_id, &keys).await;
+
+        assert_eq!(results.len(), 10);
+        for result in &results {
+            assert!(result.is_ok());
+        }
+
+        // Verify all keys are retrievable
+        for i in 0..10 {
+            let key = store.get_key(namespace_id, &format!("bulk-{i}")).await.expect("get");
+            assert!(key.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_keys_bulk_with_duplicate() {
+        let store = MemorySigningKeyStore::new();
+        let namespace_id = NamespaceId::from(100);
+
+        // Pre-create one key
+        let existing = make_test_key("bulk-dup-2");
+        store.create_key(namespace_id, &existing).await.expect("pre-create");
+
+        let keys: Vec<PublicSigningKey> =
+            (0..5).map(|i| make_test_key(&format!("bulk-dup-{i}"))).collect();
+
+        let results = store.create_keys(namespace_id, &keys).await;
+
+        assert_eq!(results.len(), 5);
+        // Index 2 should fail (already exists)
+        assert!(results[0].is_ok());
+        assert!(results[1].is_ok());
+        assert!(results[2].is_err());
+        assert!(results[3].is_ok());
+        assert!(results[4].is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_create_keys_empty() {
+        let store = MemorySigningKeyStore::new();
+        let namespace_id = NamespaceId::from(100);
+
+        let results = store.create_keys(namespace_id, &[]).await;
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_revoke_keys_bulk() {
+        let store = MemorySigningKeyStore::new();
+        let namespace_id = NamespaceId::from(100);
+
+        // Create 10 keys
+        for i in 0..10 {
+            let key = make_test_key(&format!("revoke-bulk-{i}"));
+            store.create_key(namespace_id, &key).await.expect("create");
+        }
+
+        let keys_to_revoke: Vec<(&str, Option<&str>)> = vec![
+            ("revoke-bulk-0", Some("rotation")),
+            ("revoke-bulk-3", None),
+            ("revoke-bulk-7", Some("compromised")),
+        ];
+
+        let results = store.revoke_keys(namespace_id, &keys_to_revoke).await;
+
+        assert_eq!(results.len(), 3);
+        for result in &results {
+            assert!(result.is_ok());
+        }
+
+        // Verify revocations took effect
+        let k0 = store.get_key(namespace_id, "revoke-bulk-0").await.expect("get").expect("exists");
+        assert!(k0.revoked_at.is_some());
+        assert_eq!(k0.revocation_reason.as_deref(), Some("rotation"));
+
+        let k3 = store.get_key(namespace_id, "revoke-bulk-3").await.expect("get").expect("exists");
+        assert!(k3.revoked_at.is_some());
+        assert!(k3.revocation_reason.is_none());
+
+        // Non-revoked key should still be active
+        let k5 = store.get_key(namespace_id, "revoke-bulk-5").await.expect("get").expect("exists");
+        assert!(k5.active);
+        assert!(k5.revoked_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_revoke_keys_with_missing() {
+        let store = MemorySigningKeyStore::new();
+        let namespace_id = NamespaceId::from(100);
+
+        let key = make_test_key("exists");
+        store.create_key(namespace_id, &key).await.expect("create");
+
+        let keys_to_revoke: Vec<(&str, Option<&str>)> =
+            vec![("exists", None), ("does-not-exist", None)];
+
+        let results = store.revoke_keys(namespace_id, &keys_to_revoke).await;
+
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_ok());
+        assert!(results[1].is_err());
+        assert!(matches!(
+            results[1].as_ref().expect_err("should be NotFound"),
+            StorageError::NotFound { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_rotate_key_success() {
+        let store = MemorySigningKeyStore::new();
+        let namespace_id = NamespaceId::from(100);
+
+        let old_key = make_test_key("old-key");
+        store.create_key(namespace_id, &old_key).await.expect("create old");
+
+        let new_key = make_test_key("new-key");
+        store.rotate_key(namespace_id, "old-key", &new_key).await.expect("rotate");
+
+        // Old key should be revoked
+        let old =
+            store.get_key(namespace_id, "old-key").await.expect("get old").expect("old exists");
+        assert!(!old.active);
+        assert!(old.revoked_at.is_some());
+        assert_eq!(old.revocation_reason.as_deref(), Some("key rotation"));
+
+        // New key should be active
+        let new =
+            store.get_key(namespace_id, "new-key").await.expect("get new").expect("new exists");
+        assert!(new.active);
+        assert!(new.revoked_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_rotate_key_old_not_found() {
+        let store = MemorySigningKeyStore::new();
+        let namespace_id = NamespaceId::from(100);
+
+        let new_key = make_test_key("new-key");
+        let result = store.rotate_key(namespace_id, "nonexistent", &new_key).await;
+
+        assert!(result.is_err());
+        assert!(matches!(result.expect_err("should be NotFound"), StorageError::NotFound { .. }));
+
+        // New key should not have been created
+        let check = store.get_key(namespace_id, "new-key").await.expect("get");
+        assert!(check.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_rotate_key_new_already_exists() {
+        let store = MemorySigningKeyStore::new();
+        let namespace_id = NamespaceId::from(100);
+
+        let old_key = make_test_key("old-key");
+        let conflicting_new = make_test_key("conflicting");
+        store.create_key(namespace_id, &old_key).await.expect("create old");
+        store.create_key(namespace_id, &conflicting_new).await.expect("create conflict");
+
+        let new_key = make_test_key("conflicting");
+        let result = store.rotate_key(namespace_id, "old-key", &new_key).await;
+
+        assert!(result.is_err());
+
+        // Old key should NOT have been revoked (atomic rollback)
+        let old =
+            store.get_key(namespace_id, "old-key").await.expect("get old").expect("old exists");
+        assert!(old.active);
+        assert!(old.revoked_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_rotate_key_atomicity_on_failure() {
+        let store = MemorySigningKeyStore::new();
+        let namespace_id = NamespaceId::from(100);
+
+        // Do not create old key — rotate should fail at the old-key-not-found step
+        let new_key = make_test_key("new-key-atomic");
+        let result = store.rotate_key(namespace_id, "missing-old", &new_key).await;
+
+        assert!(result.is_err());
+
+        // Neither old (doesn't exist) nor new key should exist
+        let check = store.get_key(namespace_id, "new-key-atomic").await.expect("get");
+        assert!(check.is_none());
     }
 }

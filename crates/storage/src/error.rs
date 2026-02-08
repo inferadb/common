@@ -226,6 +226,18 @@ pub enum StorageError {
         /// Span ID captured at error creation for trace correlation.
         span_id: Option<tracing::span::Id>,
     },
+
+    /// The operation was rejected because the rate limit was exceeded.
+    ///
+    /// This is a transient error — the caller should back off and retry
+    /// after the indicated duration. Rate limiting protects the backend
+    /// from overload and provides fair resource allocation across tenants.
+    RateLimitExceeded {
+        /// Suggested duration to wait before retrying.
+        retry_after: std::time::Duration,
+        /// Span ID captured at error creation for trace correlation.
+        span_id: Option<tracing::span::Id>,
+    },
 }
 
 /// Appends ` [span=<id>]` to a formatter when a span ID is present.
@@ -270,6 +282,10 @@ impl fmt::Display for StorageError {
             },
             Self::SizeLimitExceeded { kind, actual, limit, span_id } => {
                 write!(f, "Size limit exceeded: {kind} is {actual} bytes, limit is {limit} bytes")?;
+                fmt_span_suffix(f, span_id)
+            },
+            Self::RateLimitExceeded { retry_after, span_id } => {
+                write!(f, "Rate limit exceeded, retry after {}ms", retry_after.as_millis())?;
                 fmt_span_suffix(f, span_id)
             },
         }
@@ -395,6 +411,15 @@ impl StorageError {
         Self::SizeLimitExceeded { kind, actual, limit, span_id: current_span_id() }
     }
 
+    /// Creates a new `RateLimitExceeded` error with the suggested retry-after
+    /// duration.
+    ///
+    /// Captures the current tracing span ID for log correlation.
+    #[must_use]
+    pub fn rate_limit_exceeded(retry_after: std::time::Duration) -> Self {
+        Self::RateLimitExceeded { retry_after, span_id: current_span_id() }
+    }
+
     /// Returns the tracing span ID captured when this error was created,
     /// if a tracing subscriber was active at that time.
     ///
@@ -411,7 +436,8 @@ impl StorageError {
             | Self::Timeout { span_id, .. }
             | Self::CasRetriesExhausted { span_id, .. }
             | Self::CircuitOpen { span_id, .. }
-            | Self::SizeLimitExceeded { span_id, .. } => span_id.as_ref(),
+            | Self::SizeLimitExceeded { span_id, .. }
+            | Self::RateLimitExceeded { span_id, .. } => span_id.as_ref(),
         }
     }
 
@@ -425,7 +451,10 @@ impl StorageError {
     /// resolve by retrying the same operation.
     #[must_use]
     pub fn is_transient(&self) -> bool {
-        matches!(self, Self::Connection { .. } | Self::Timeout { .. })
+        matches!(
+            self,
+            Self::Connection { .. } | Self::Timeout { .. } | Self::RateLimitExceeded { .. }
+        )
     }
 
     /// Returns a detailed diagnostic string for server-side logging.
@@ -536,6 +565,11 @@ mod tests {
             assert!(StorageError::timeout().span_id().is_some());
             assert!(StorageError::cas_retries_exhausted(3).span_id().is_some());
             assert!(StorageError::circuit_open().span_id().is_some());
+            assert!(
+                StorageError::rate_limit_exceeded(std::time::Duration::from_secs(1))
+                    .span_id()
+                    .is_some()
+            );
         });
     }
 

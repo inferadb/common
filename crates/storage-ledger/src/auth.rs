@@ -59,7 +59,7 @@
 //! # }
 //! ```
 
-use std::{future::Future, sync::Arc, time::Instant};
+use std::{collections::HashMap, future::Future, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -652,6 +652,79 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         }
 
         result
+    }
+
+    /// Optimized bulk create: batches all key writes into a single SDK `write()` call.
+    ///
+    /// Unlike the default sequential implementation, this issues one network
+    /// round-trip regardless of how many keys are being stored. Individual
+    /// serialization failures are reported per-key; the remaining keys are
+    /// still submitted in the batch.
+    #[tracing::instrument(skip(self, keys), fields(count = keys.len()))]
+    async fn create_keys(
+        &self,
+        namespace_id: NamespaceId,
+        keys: &[PublicSigningKey],
+    ) -> Vec<StorageResult<()>> {
+        if keys.is_empty() {
+            return Vec::new();
+        }
+
+        let start = Instant::now();
+
+        // Pre-serialize all keys, separating successes from failures.
+        // Track which indices had serialization errors so we can report per-key.
+        let mut operations = Vec::with_capacity(keys.len());
+        let mut serialization_errors: Vec<(usize, StorageError)> = Vec::new();
+
+        for (i, key) in keys.iter().enumerate() {
+            match Self::serialize_key(key) {
+                Ok(value) => {
+                    let storage_key = Self::storage_key(&key.kid);
+                    operations.push(Operation::set_entity(storage_key, value));
+                },
+                Err(e) => {
+                    self.record_error(SigningKeyErrorKind::Serialization);
+                    serialization_errors.push((i, e));
+                },
+            }
+        }
+
+        // Submit all valid operations in a single batch write
+        let batch_failed = if operations.is_empty() {
+            false
+        } else {
+            match self.client.write(namespace_id.into(), None, operations).await {
+                Ok(_) => false,
+                Err(e) => {
+                    let storage_err = StorageError::from(LedgerStorageError::from(e));
+                    self.record_error(Self::error_to_kind(&storage_err));
+                    true
+                },
+            }
+        };
+
+        // Build per-key results: serialization errors go at their original indices,
+        // remaining slots get the batch outcome.
+        let mut ser_error_map: HashMap<usize, StorageError> =
+            serialization_errors.into_iter().collect();
+
+        let mut results = Vec::with_capacity(keys.len());
+        for i in 0..keys.len() {
+            if let Some(err) = ser_error_map.remove(&i) {
+                results.push(Err(err));
+            } else if batch_failed {
+                results.push(Err(StorageError::internal("Batch key creation failed")));
+            } else {
+                results.push(Ok(()));
+            }
+        }
+
+        if let Some(metrics) = &self.metrics {
+            metrics.record_create(start.elapsed());
+        }
+
+        results
     }
 }
 

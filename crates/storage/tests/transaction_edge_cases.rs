@@ -1,7 +1,9 @@
-//! Transaction conflict detection and edge case tests.
+//! Transaction conflict detection, isolation, and edge case tests.
 //!
 //! Tests cover: CAS-based conflict detection, oversized batch handling,
-//! empty transactions, mixed CAS + unconditional operations, and abort isolation.
+//! empty transactions, mixed CAS + unconditional operations, abort isolation,
+//! and transaction isolation model verification (read-committed semantics,
+//! read-your-writes, commit atomicity, concurrent conflict detection).
 //! These tests run against `MemoryBackend`.
 
 #![allow(clippy::expect_used, clippy::panic)]
@@ -562,4 +564,281 @@ async fn test_transaction_only_deletes() {
 
     assert_eq!(backend.get(b"x").await.expect("get"), None);
     assert_eq!(backend.get(b"y").await.expect("get"), None);
+}
+
+// ============================================================================
+// Transaction Isolation Tests (Task 14)
+// ============================================================================
+
+/// Transaction reads its own uncommitted writes for all operation types.
+///
+/// Verifies the read-your-writes guarantee: `set`, `delete`, and overwrite
+/// within a transaction are all visible to subsequent `get` calls in the
+/// same transaction, while the backend is unaffected until commit.
+#[tokio::test]
+async fn test_transaction_reads_own_uncommitted_writes_comprehensively() {
+    let backend = MemoryBackend::new();
+    backend.set(b"pre-existing".to_vec(), b"original".to_vec()).await.expect("setup");
+
+    let mut txn = backend.transaction().await.expect("txn");
+
+    // 1. New key: set then read
+    txn.set(b"new-key".to_vec(), b"new-value".to_vec());
+    assert_eq!(
+        txn.get(b"new-key").await.expect("ryw set"),
+        Some(Bytes::from("new-value")),
+        "set followed by get should return buffered value"
+    );
+
+    // 2. Overwrite: set existing key then read
+    txn.set(b"pre-existing".to_vec(), b"overwritten".to_vec());
+    assert_eq!(
+        txn.get(b"pre-existing").await.expect("ryw overwrite"),
+        Some(Bytes::from("overwritten")),
+        "overwrite should be visible within the transaction"
+    );
+
+    // 3. Delete: delete then read
+    txn.delete(b"pre-existing".to_vec());
+    assert_eq!(
+        txn.get(b"pre-existing").await.expect("ryw delete"),
+        None,
+        "deleted key should return None within the transaction"
+    );
+
+    // 4. Re-set after delete: set the deleted key again
+    txn.set(b"pre-existing".to_vec(), b"resurrected".to_vec());
+    assert_eq!(
+        txn.get(b"pre-existing").await.expect("ryw re-set"),
+        Some(Bytes::from("resurrected")),
+        "re-setting a deleted key should be visible"
+    );
+
+    // Backend is still unaffected (uncommitted)
+    assert_eq!(
+        backend.get(b"new-key").await.expect("backend check"),
+        None,
+        "uncommitted write should not be visible outside transaction"
+    );
+    assert_eq!(
+        backend.get(b"pre-existing").await.expect("backend check"),
+        Some(Bytes::from("original")),
+        "backend should still have original value"
+    );
+
+    // Commit and verify persistence
+    txn.commit().await.expect("commit");
+
+    assert_eq!(backend.get(b"new-key").await.expect("post-commit"), Some(Bytes::from("new-value")));
+    assert_eq!(
+        backend.get(b"pre-existing").await.expect("post-commit"),
+        Some(Bytes::from("resurrected"))
+    );
+}
+
+/// Reads within a transaction see concurrent commits (read-committed, not snapshot).
+///
+/// This test proves that transactions are NOT snapshot-isolated: a read of an
+/// unmodified key returns the latest committed value, which may change between
+/// reads within the same transaction.
+#[tokio::test]
+async fn test_reads_are_not_snapshot_isolated() {
+    let backend = MemoryBackend::new();
+    backend.set(b"shared".to_vec(), b"v1".to_vec()).await.expect("setup");
+
+    let txn = backend.transaction().await.expect("txn");
+
+    // First read: sees v1
+    let first_read = txn.get(b"shared").await.expect("first read");
+    assert_eq!(first_read, Some(Bytes::from("v1")));
+
+    // Another writer commits a change while our transaction is open
+    backend.set(b"shared".to_vec(), b"v2".to_vec()).await.expect("concurrent write");
+
+    // Second read: sees v2 (read-committed, not snapshot)
+    let second_read = txn.get(b"shared").await.expect("second read");
+    assert_eq!(
+        second_read,
+        Some(Bytes::from("v2")),
+        "read-committed isolation: second read should see the concurrent commit"
+    );
+}
+
+/// Concurrent unconditional writes to overlapping keys — last commit wins.
+///
+/// Without compare-and-set, two transactions writing to the same key both
+/// succeed. The final value is from whichever transaction committed last.
+/// No `StorageError::Conflict` is raised.
+#[tokio::test]
+async fn test_concurrent_unconditional_writes_last_commit_wins() {
+    let backend = MemoryBackend::new();
+    backend.set(b"key".to_vec(), b"initial".to_vec()).await.expect("setup");
+
+    // Both transactions read and prepare unconditional writes
+    let mut txn_a = backend.transaction().await.expect("txn_a");
+    let mut txn_b = backend.transaction().await.expect("txn_b");
+
+    txn_a.set(b"key".to_vec(), b"from-A".to_vec());
+    txn_b.set(b"key".to_vec(), b"from-B".to_vec());
+
+    // Commit A first, then B
+    txn_a.commit().await.expect("txn_a commit should succeed (no CAS)");
+    txn_b.commit().await.expect("txn_b commit should succeed (no CAS)");
+
+    // B committed last, so its value wins
+    assert_eq!(
+        backend.get(b"key").await.expect("get"),
+        Some(Bytes::from("from-B")),
+        "last-commit-wins for unconditional writes"
+    );
+}
+
+/// CAS protects against concurrent modification — exactly one transaction wins.
+///
+/// Two transactions both read the same value and attempt CAS. Only the first
+/// to commit succeeds; the second receives `StorageError::Conflict`.
+/// This verifies optimistic concurrency control.
+#[tokio::test]
+async fn test_concurrent_cas_exactly_one_winner_with_state_check() {
+    let backend = MemoryBackend::new();
+    backend.set(b"counter".to_vec(), b"0".to_vec()).await.expect("setup");
+
+    let mut txn_a = backend.transaction().await.expect("txn_a");
+    let mut txn_b = backend.transaction().await.expect("txn_b");
+
+    // Both read the same current value
+    let val_a = txn_a.get(b"counter").await.expect("read A");
+    let val_b = txn_b.get(b"counter").await.expect("read B");
+    assert_eq!(val_a, val_b, "both should read the same initial value");
+
+    // Both prepare CAS: 0 -> 1
+    txn_a
+        .compare_and_set(b"counter".to_vec(), Some(b"0".to_vec()), b"1".to_vec())
+        .expect("CAS A buffer");
+    txn_b
+        .compare_and_set(b"counter".to_vec(), Some(b"0".to_vec()), b"1".to_vec())
+        .expect("CAS B buffer");
+
+    // A commits first — succeeds
+    txn_a.commit().await.expect("txn_a commit");
+    assert_eq!(
+        backend.get(b"counter").await.expect("get"),
+        Some(Bytes::from("1")),
+        "A's CAS should have updated the value"
+    );
+
+    // B commits second — fails because the value is now "1", not "0"
+    let result = txn_b.commit().await;
+    assert!(
+        matches!(result, Err(StorageError::Conflict { .. })),
+        "B's CAS should conflict: {result:?}"
+    );
+
+    // Value remains "1" (A's write), B had no effect
+    assert_eq!(
+        backend.get(b"counter").await.expect("get"),
+        Some(Bytes::from("1")),
+        "value should remain from A's commit, B was rejected"
+    );
+}
+
+/// Transaction commit is atomic: CAS failure prevents ALL operations.
+///
+/// A transaction containing both unconditional writes and a failing CAS
+/// must not apply any of the unconditional writes. The backend state
+/// must be completely unchanged after a failed commit.
+#[tokio::test]
+async fn test_commit_atomicity_no_partial_writes_on_cas_failure() {
+    let backend = MemoryBackend::new();
+    backend.set(b"guarded".to_vec(), b"original".to_vec()).await.expect("setup");
+    backend.set(b"unguarded-1".to_vec(), b"old-1".to_vec()).await.expect("setup");
+    backend.set(b"unguarded-2".to_vec(), b"old-2".to_vec()).await.expect("setup");
+
+    let mut txn = backend.transaction().await.expect("txn");
+
+    // Unconditional writes that should NOT be applied if CAS fails
+    txn.set(b"unguarded-1".to_vec(), b"new-1".to_vec());
+    txn.set(b"unguarded-2".to_vec(), b"new-2".to_vec());
+    txn.set(b"brand-new".to_vec(), b"should-not-exist".to_vec());
+    txn.delete(b"unguarded-2".to_vec());
+
+    // CAS with wrong expected value — will cause commit to fail
+    txn.compare_and_set(b"guarded".to_vec(), Some(b"WRONG".to_vec()), b"should-not-apply".to_vec())
+        .expect("CAS buffer");
+
+    let result = txn.commit().await;
+    assert!(
+        matches!(result, Err(StorageError::Conflict { .. })),
+        "commit should fail due to CAS mismatch: {result:?}"
+    );
+
+    // Verify NOTHING changed — atomicity guarantee
+    assert_eq!(
+        backend.get(b"guarded").await.expect("get"),
+        Some(Bytes::from("original")),
+        "guarded key unchanged"
+    );
+    assert_eq!(
+        backend.get(b"unguarded-1").await.expect("get"),
+        Some(Bytes::from("old-1")),
+        "unguarded-1 unchanged despite unconditional set"
+    );
+    assert_eq!(
+        backend.get(b"unguarded-2").await.expect("get"),
+        Some(Bytes::from("old-2")),
+        "unguarded-2 unchanged despite unconditional delete"
+    );
+    assert_eq!(
+        backend.get(b"brand-new").await.expect("get"),
+        None,
+        "brand-new key should not exist after failed commit"
+    );
+}
+
+/// Concurrent async tasks confirm that exactly one CAS winner emerges.
+///
+/// Spawns multiple concurrent tasks each attempting a CAS on the same key.
+/// Validates: exactly one succeeds, the others get `Conflict`, and the
+/// final value is consistent.
+#[tokio::test]
+async fn test_concurrent_async_cas_tasks_exactly_one_winner() {
+    let backend = MemoryBackend::new();
+    backend.set(b"race".to_vec(), b"start".to_vec()).await.expect("setup");
+
+    let mut join_set = JoinSet::new();
+    let num_tasks = 10;
+
+    for i in 0..num_tasks {
+        let backend = backend.clone();
+        join_set.spawn(async move {
+            let mut txn = backend.transaction().await.expect("txn");
+            txn.compare_and_set(
+                b"race".to_vec(),
+                Some(b"start".to_vec()),
+                format!("task-{i}").into_bytes(),
+            )
+            .expect("CAS buffer");
+            txn.commit().await
+        });
+    }
+
+    let mut successes = 0;
+    let mut conflicts = 0;
+
+    while let Some(result) = join_set.join_next().await {
+        match result.expect("task panicked") {
+            Ok(()) => successes += 1,
+            Err(StorageError::Conflict { .. }) => conflicts += 1,
+            Err(e) => panic!("unexpected error: {e}"),
+        }
+    }
+
+    assert_eq!(successes, 1, "exactly one task should succeed");
+    assert_eq!(conflicts, num_tasks - 1, "all other tasks should get Conflict");
+
+    // The final value should be from the winning task
+    let final_value = backend.get(b"race").await.expect("get");
+    assert!(final_value.is_some(), "key should have a value");
+    let value_str = String::from_utf8(final_value.expect("some").to_vec()).expect("utf8");
+    assert!(value_str.starts_with("task-"), "value should be from one of the tasks: {value_str}");
 }
