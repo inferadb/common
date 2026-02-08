@@ -9,7 +9,7 @@ The `inferadb-storage` crate includes Criterion benchmarks for measuring storage
 **These rules are non-negotiable:**
 
 - No `unsafe` code
-- No `.unwrap()` — use snafu `.context()`
+- No `.unwrap()` in production code — propagate errors with `?` and `thiserror`
 - No `panic!`, `todo!()`, `unimplemented!()`
 - No placeholder stubs — fully implement or don't write
 - No TODO/FIXME/HACK comments
@@ -46,7 +46,7 @@ Activate at session start: `mcp__plugin_serena_serena__activate_project`
 **A task is not complete until all of these pass — no "pre-existing issue" exceptions:**
 
 - `cargo build --workspace` — no errors or warnings
-- `cargo nextest run` — all tests pass
+- `cargo test --workspace` — all tests pass
 - `cargo +1.92 clippy --workspace --all-targets -- -D warnings` — no warnings
 - `cargo +nightly fmt --all -- --check` — no formatting issues
 

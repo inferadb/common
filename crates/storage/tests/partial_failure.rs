@@ -6,7 +6,7 @@
 //! These tests complement the isolation and edge-case tests in
 //! `transaction_edge_cases.rs`.
 
-#![allow(clippy::expect_used, clippy::panic)]
+#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
 use std::{
     collections::HashSet,
@@ -205,7 +205,7 @@ async fn test_transaction_10_ops_injected_failure_no_ops_applied() {
 #[tokio::test]
 async fn test_transaction_size_limit_exceeded_no_side_effects() {
     // 10 byte key limit, 20 byte value limit
-    let backend = MemoryBackend::with_size_limits(SizeLimits::new(10, 20));
+    let backend = MemoryBackend::with_size_limits(SizeLimits::new(10, 20).unwrap());
 
     // Pre-populate with valid-sized keys
     backend.set(b"key-a".to_vec(), b"val-a".to_vec()).await.expect("setup");
@@ -393,7 +393,7 @@ async fn test_failing_backend_selective_commit_failure() {
 /// and committing the remaining valid operations should succeed.
 #[tokio::test]
 async fn test_transaction_cas_size_limit_early_rejection() {
-    let backend = MemoryBackend::with_size_limits(SizeLimits::new(10, 20));
+    let backend = MemoryBackend::with_size_limits(SizeLimits::new(10, 20).unwrap());
     backend.set(b"key-1".to_vec(), b"val-1".to_vec()).await.expect("setup");
 
     let mut txn = backend.transaction().await.expect("txn");

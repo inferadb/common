@@ -30,7 +30,7 @@ pub const DEFAULT_MAX_VALUE_SIZE: usize = 512 * 1024;
 /// ```no_run
 /// use inferadb_common_storage::SizeLimits;
 ///
-/// let limits = SizeLimits::new(256, 1024 * 1024);
+/// let limits = SizeLimits::new(256, 1024 * 1024).unwrap();
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SizeLimits {
@@ -43,14 +43,25 @@ impl SizeLimits {
     ///
     /// Both values must be at least 1.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if either limit is zero.
-    #[must_use]
-    pub fn new(max_key_size: usize, max_value_size: usize) -> Self {
-        assert!(max_key_size >= 1, "max_key_size must be >= 1");
-        assert!(max_value_size >= 1, "max_value_size must be >= 1");
-        Self { max_key_size, max_value_size }
+    /// Returns [`ConfigError::BelowMinimum`] if either limit is zero.
+    pub fn new(max_key_size: usize, max_value_size: usize) -> Result<Self, crate::ConfigError> {
+        if max_key_size == 0 {
+            return Err(crate::ConfigError::BelowMinimum {
+                field: "max_key_size",
+                min: "1".into(),
+                value: "0".into(),
+            });
+        }
+        if max_value_size == 0 {
+            return Err(crate::ConfigError::BelowMinimum {
+                field: "max_value_size",
+                min: "1".into(),
+                value: "0".into(),
+            });
+        }
+        Ok(Self { max_key_size, max_value_size })
     }
 
     /// Returns the maximum allowed key size in bytes.
@@ -112,21 +123,21 @@ mod tests {
 
     #[test]
     fn custom_limits() {
-        let limits = SizeLimits::new(64, 1024);
+        let limits = SizeLimits::new(64, 1024).unwrap();
         assert_eq!(limits.max_key_size(), 64);
         assert_eq!(limits.max_value_size(), 1024);
     }
 
     #[test]
-    #[should_panic(expected = "max_key_size must be >= 1")]
-    fn zero_key_size_panics() {
-        let _ = SizeLimits::new(0, 1024);
+    fn zero_key_size_rejected() {
+        let err = SizeLimits::new(0, 1024).unwrap_err();
+        assert!(err.to_string().contains("max_key_size"), "error should name the field: {err}");
     }
 
     #[test]
-    #[should_panic(expected = "max_value_size must be >= 1")]
-    fn zero_value_size_panics() {
-        let _ = SizeLimits::new(1, 0);
+    fn zero_value_size_rejected() {
+        let err = SizeLimits::new(1, 0).unwrap_err();
+        assert!(err.to_string().contains("max_value_size"), "error should name the field: {err}");
     }
 
     #[rstest]
@@ -143,14 +154,14 @@ mod tests {
         #[case] val_size: usize,
         #[case] should_pass: bool,
     ) {
-        let limits = SizeLimits::new(max_key, max_val);
+        let limits = SizeLimits::new(max_key, max_val).unwrap();
         let result = validate_sizes(&vec![0u8; key_size], &vec![0u8; val_size], &limits);
         assert_eq!(result.is_ok(), should_pass);
     }
 
     #[test]
     fn validate_key_exceeds_limit_error_details() {
-        let limits = SizeLimits::new(10, 20);
+        let limits = SizeLimits::new(10, 20).unwrap();
         let err = validate_sizes(&[0u8; 11], &[0u8; 5], &limits).unwrap_err();
         assert!(matches!(
             err,
@@ -161,7 +172,7 @@ mod tests {
 
     #[test]
     fn validate_value_exceeds_limit_error_details() {
-        let limits = SizeLimits::new(10, 20);
+        let limits = SizeLimits::new(10, 20).unwrap();
         let err = validate_sizes(&[0u8; 5], &[0u8; 21], &limits).unwrap_err();
         assert!(matches!(
             err,
@@ -174,7 +185,7 @@ mod tests {
     #[case::at_limit(10, true)]
     #[case::over_limit(11, false)]
     fn validate_key_size_parametric(#[case] key_size: usize, #[case] should_pass: bool) {
-        let limits = SizeLimits::new(10, 20);
+        let limits = SizeLimits::new(10, 20).unwrap();
         assert_eq!(validate_key_size(&vec![0u8; key_size], &limits).is_ok(), should_pass);
     }
 }

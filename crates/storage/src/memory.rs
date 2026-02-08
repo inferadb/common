@@ -136,7 +136,7 @@ impl MemoryBackend {
     /// ```no_run
     /// use inferadb_common_storage::{MemoryBackend, SizeLimits};
     ///
-    /// let backend = MemoryBackend::with_size_limits(SizeLimits::new(256, 1024));
+    /// let backend = MemoryBackend::with_size_limits(SizeLimits::new(256, 1024).unwrap());
     /// ```
     pub fn with_size_limits(limits: SizeLimits) -> Self {
         Self::build(Some(limits))
@@ -1011,7 +1011,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_within_limits_succeeds() {
-        let backend = MemoryBackend::with_size_limits(SizeLimits::new(10, 20));
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(10, 20).unwrap());
         backend.set(vec![0u8; 10], vec![0u8; 20]).await.unwrap();
         let val = backend.get(&[0u8; 10]).await.unwrap();
         assert!(val.is_some());
@@ -1019,7 +1019,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_key_over_limit_fails() {
-        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 100));
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 100).unwrap());
         let err = backend.set(vec![0u8; 6], vec![0u8; 1]).await.unwrap_err();
         assert!(matches!(
             err,
@@ -1029,7 +1029,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_value_over_limit_fails() {
-        let backend = MemoryBackend::with_size_limits(SizeLimits::new(100, 10));
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(100, 10).unwrap());
         let err = backend.set(vec![0u8; 1], vec![0u8; 11]).await.unwrap_err();
         assert!(matches!(
             err,
@@ -1039,7 +1039,7 @@ mod tests {
 
     #[tokio::test]
     async fn compare_and_set_over_limit_fails() {
-        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10));
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10).unwrap());
         let err = backend.compare_and_set(&[0u8; 3], None, vec![0u8; 11]).await.unwrap_err();
         assert!(matches!(
             err,
@@ -1049,7 +1049,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_with_ttl_over_limit_fails() {
-        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10));
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10).unwrap());
         let err = backend
             .set_with_ttl(vec![0u8; 6], vec![0u8; 1], Duration::from_secs(60))
             .await
@@ -1062,7 +1062,7 @@ mod tests {
 
     #[tokio::test]
     async fn transaction_set_over_limit_fails_at_commit() {
-        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10));
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10).unwrap());
         let mut txn = backend.transaction().await.unwrap();
         // Transaction::set is infallible — validation happens at commit time
         txn.set(vec![0u8; 6], vec![0u8; 1]);
@@ -1075,7 +1075,7 @@ mod tests {
 
     #[tokio::test]
     async fn transaction_cas_over_limit_fails_immediately() {
-        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10));
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10).unwrap());
         let mut txn = backend.transaction().await.unwrap();
         let err = txn.compare_and_set(vec![0u8; 3], None, vec![0u8; 11]).unwrap_err();
         assert!(matches!(
@@ -1093,7 +1093,7 @@ mod tests {
 
     #[tokio::test]
     async fn size_limit_does_not_write_on_failure() {
-        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10));
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10).unwrap());
         let key = vec![0u8; 3];
         // First write succeeds
         backend.set(key.clone(), vec![1u8; 5]).await.unwrap();
@@ -1106,7 +1106,7 @@ mod tests {
 
     #[tokio::test]
     async fn transaction_commit_rejects_all_on_size_violation() {
-        let backend = MemoryBackend::with_size_limits(SizeLimits::new(10, 20));
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(10, 20).unwrap());
         let mut txn = backend.transaction().await.unwrap();
         // First op is valid, second is oversized
         txn.set(b"good_key".to_vec(), b"good_value".to_vec());
@@ -1294,7 +1294,7 @@ mod tests {
                     .expect("runtime");
 
                 rt.block_on(async {
-                    let limits = SizeLimits::new(max_key, max_value);
+                    let limits = SizeLimits::new(max_key, max_value).unwrap();
                     let backend = MemoryBackend::with_size_limits(limits);
 
                     // Use key_len + 1 to avoid empty keys in storage

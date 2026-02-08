@@ -21,7 +21,7 @@
 //!
 //! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
 //! let backend = MemoryBackend::new();
-//! let config = RateLimitConfig::new(100, 20);
+//! let config = RateLimitConfig::new(100, 20).unwrap();
 //! let limiter = TokenBucketLimiter::new(config);
 //! let limited = RateLimitedBackend::new(backend, limiter);
 //!
@@ -72,14 +72,25 @@ impl RateLimitConfig {
     /// * `rate` - Sustained tokens per second (must be >= 1)
     /// * `burst` - Maximum burst capacity (must be >= 1)
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `rate` or `burst` is zero.
-    #[must_use]
-    pub fn new(rate: u64, burst: u64) -> Self {
-        assert!(rate >= 1, "rate must be at least 1");
-        assert!(burst >= 1, "burst must be at least 1");
-        Self { rate, burst }
+    /// Returns [`ConfigError::BelowMinimum`] if `rate` or `burst` is zero.
+    pub fn new(rate: u64, burst: u64) -> Result<Self, crate::ConfigError> {
+        if rate == 0 {
+            return Err(crate::ConfigError::BelowMinimum {
+                field: "rate",
+                min: "1".into(),
+                value: "0".into(),
+            });
+        }
+        if burst == 0 {
+            return Err(crate::ConfigError::BelowMinimum {
+                field: "burst",
+                min: "1".into(),
+                value: "0".into(),
+            });
+        }
+        Ok(Self { rate, burst })
     }
 
     /// Returns the sustained rate in tokens per second.
@@ -370,8 +381,8 @@ impl<B: StorageBackend> StorageBackend for RateLimitedBackend<B> {
     }
 
     async fn transaction(&self) -> StorageResult<Box<dyn Transaction>> {
-        // Transactions are exempt — individual ops within will be rate-limited
-        // at commit time by the inner backend, not through this wrapper.
+        // Transactions are exempt from rate limiting. Operations within a
+        // transaction are not individually metered.
         self.inner.transaction().await
     }
 
@@ -395,26 +406,26 @@ mod tests {
 
     #[test]
     fn config_creation() {
-        let config = RateLimitConfig::new(100, 20);
+        let config = RateLimitConfig::new(100, 20).unwrap();
         assert_eq!(config.rate(), 100);
         assert_eq!(config.burst(), 20);
     }
 
     #[test]
-    #[should_panic(expected = "rate must be at least 1")]
     fn config_rejects_zero_rate() {
-        let _ = RateLimitConfig::new(0, 10);
+        let err = RateLimitConfig::new(0, 10).unwrap_err();
+        assert!(err.to_string().contains("rate"), "error should name the field: {err}");
     }
 
     #[test]
-    #[should_panic(expected = "burst must be at least 1")]
     fn config_rejects_zero_burst() {
-        let _ = RateLimitConfig::new(10, 0);
+        let err = RateLimitConfig::new(10, 0).unwrap_err();
+        assert!(err.to_string().contains("burst"), "error should name the field: {err}");
     }
 
     #[test]
     fn bucket_allows_within_burst() {
-        let config = RateLimitConfig::new(10, 5);
+        let config = RateLimitConfig::new(10, 5).unwrap();
         let mut bucket = BucketState::new(config);
         // Should allow up to burst capacity
         for _ in 0..5 {
@@ -426,7 +437,7 @@ mod tests {
 
     #[test]
     fn bucket_retry_after_is_positive() {
-        let config = RateLimitConfig::new(10, 1);
+        let config = RateLimitConfig::new(10, 1).unwrap();
         let mut bucket = BucketState::new(config);
         // Consume the single token
         assert!(bucket.try_acquire().is_ok());
@@ -437,7 +448,7 @@ mod tests {
 
     #[test]
     fn limiter_allows_within_limit() {
-        let config = RateLimitConfig::new(1000, 5);
+        let config = RateLimitConfig::new(1000, 5).unwrap();
         let limiter = TokenBucketLimiter::new(config);
         for _ in 0..5 {
             assert!(limiter.check(b"key").is_ok());
@@ -454,7 +465,7 @@ mod tests {
 
     #[test]
     fn metrics_track_allowed_and_rejected() {
-        let config = RateLimitConfig::new(1000, 2);
+        let config = RateLimitConfig::new(1000, 2).unwrap();
         let limiter = TokenBucketLimiter::new(config);
         // 2 allowed
         let _ = limiter.check(b"a");
@@ -470,7 +481,7 @@ mod tests {
     #[tokio::test]
     async fn rate_limited_backend_passes_through() {
         let backend = MemoryBackend::new();
-        let config = RateLimitConfig::new(1000, 100);
+        let config = RateLimitConfig::new(1000, 100).unwrap();
         let limiter = TokenBucketLimiter::new(config);
         let limited = RateLimitedBackend::new(backend, limiter);
 
@@ -482,7 +493,7 @@ mod tests {
     #[tokio::test]
     async fn rate_limited_backend_rejects_when_exhausted() {
         let backend = MemoryBackend::new();
-        let config = RateLimitConfig::new(1, 2);
+        let config = RateLimitConfig::new(1, 2).unwrap();
         let limiter = TokenBucketLimiter::new(config);
         let limited = RateLimitedBackend::new(backend, limiter);
 
@@ -497,7 +508,7 @@ mod tests {
     #[tokio::test]
     async fn health_check_bypasses_rate_limit() {
         let backend = MemoryBackend::new();
-        let config = RateLimitConfig::new(1, 1);
+        let config = RateLimitConfig::new(1, 1).unwrap();
         let limiter = TokenBucketLimiter::new(config);
         let limited = RateLimitedBackend::new(backend, limiter);
 
@@ -512,7 +523,7 @@ mod tests {
     #[tokio::test]
     async fn transaction_bypasses_rate_limit() {
         let backend = MemoryBackend::new();
-        let config = RateLimitConfig::new(1, 1);
+        let config = RateLimitConfig::new(1, 1).unwrap();
         let limiter = TokenBucketLimiter::new(config);
         let limited = RateLimitedBackend::new(backend, limiter);
 
@@ -537,7 +548,7 @@ mod tests {
 
     #[test]
     fn per_namespace_rate_limiting() {
-        let config = RateLimitConfig::new(1000, 2);
+        let config = RateLimitConfig::new(1000, 2).unwrap();
         let limiter =
             TokenBucketLimiter::new(config).with_namespace_extractor(Arc::new(PrefixExtractor));
 
@@ -554,8 +565,8 @@ mod tests {
 
     #[test]
     fn per_namespace_config_override() {
-        let default_config = RateLimitConfig::new(1000, 2);
-        let premium_config = RateLimitConfig::new(1000, 5);
+        let default_config = RateLimitConfig::new(1000, 2).unwrap();
+        let premium_config = RateLimitConfig::new(1000, 5).unwrap();
 
         let mut overrides = HashMap::new();
         overrides.insert("premium".to_owned(), premium_config);
@@ -581,7 +592,7 @@ mod tests {
 
     #[test]
     fn bucket_refills_over_time() {
-        let config = RateLimitConfig::new(1000, 1);
+        let config = RateLimitConfig::new(1000, 1).unwrap();
         let mut bucket = BucketState::new(config);
 
         // Consume the token

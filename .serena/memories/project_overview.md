@@ -8,7 +8,7 @@ Shared library crates for InferaDB: storage abstraction, authentication, and led
 - Async runtime: Tokio
 - Builder pattern: `bon`
 - Caching: `moka`
-- Error handling: `snafu` style with thiserror
+- Error handling: `thiserror` with `?` propagation
 - Serialization: `serde` (JSON)
 
 ## Crate Structure

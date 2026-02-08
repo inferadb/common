@@ -100,23 +100,22 @@ impl InMemoryReplayDetector {
 #[async_trait]
 impl ReplayDetector for InMemoryReplayDetector {
     async fn check_and_mark(&self, jti: &str, expires_in: Duration) -> Result<(), AuthError> {
-        let key = jti.to_owned();
         let expiration = Instant::now() + expires_in;
 
-        // Try to insert; if the key already exists, this is a replay.
-        let existed = self.seen.contains_key(&key);
-        if existed {
-            return Err(AuthError::token_replayed(jti));
-        }
+        // Atomic check-and-insert: `or_insert_with` ensures that concurrent
+        // callers with the same JTI coalesce — only one future evaluates, and
+        // subsequent callers see `is_fresh() == false`.
+        let entry = self.seen.entry(jti.to_owned()).or_insert_with(async { expiration }).await;
 
-        self.seen.insert(key, expiration).await;
-        Ok(())
+        if entry.is_fresh() { Ok(()) } else { Err(AuthError::token_replayed(jti)) }
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[tokio::test]
@@ -185,5 +184,37 @@ mod tests {
         // A token with zero remaining lifetime — should still be tracked briefly
         let result = detector.check_and_mark("jti-zero", Duration::ZERO).await;
         assert!(result.is_ok());
+
+        // With zero TTL the entry expires immediately, so moka may evict it
+        // before the next call. We only guarantee the first presentation succeeds;
+        // whether a zero-TTL entry survives long enough to reject a replay is
+        // implementation-dependent and not something callers should rely on.
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_replay_exactly_one_succeeds() {
+        let detector = Arc::new(InMemoryReplayDetector::new(100));
+        let task_count = 20;
+        let mut handles = Vec::with_capacity(task_count);
+
+        for _ in 0..task_count {
+            let det = Arc::clone(&detector);
+            handles.push(tokio::spawn(async move {
+                det.check_and_mark("racy-jti", Duration::from_secs(60)).await
+            }));
+        }
+
+        let mut ok_count = 0usize;
+        let mut replayed_count = 0usize;
+        for handle in handles {
+            match handle.await.unwrap() {
+                Ok(()) => ok_count += 1,
+                Err(AuthError::TokenReplayed { .. }) => replayed_count += 1,
+                Err(other) => panic!("unexpected error variant: {other}"),
+            }
+        }
+
+        assert_eq!(ok_count, 1, "exactly one task should succeed");
+        assert_eq!(replayed_count, task_count - 1, "all others should be rejected as replays");
     }
 }
