@@ -110,7 +110,7 @@ fn test_algorithm_none_rejected_before_key_lookup() {
     // algorithm validation layer, before any key lookup occurs.
     let result = validate_algorithm("none");
     assert!(
-        matches!(&result, Err(AuthError::UnsupportedAlgorithm(msg)) if msg.contains("not allowed for security reasons")),
+        matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("not allowed for security reasons")),
         "Expected 'none' to be rejected with security message, got: {result:?}"
     );
 }
@@ -148,7 +148,7 @@ async fn test_algorithm_none_jwt_rejected_end_to_end() {
     assert!(
         matches!(
             &result,
-            Err(AuthError::UnsupportedAlgorithm(_)) | Err(AuthError::InvalidTokenFormat(_))
+            Err(AuthError::UnsupportedAlgorithm { .. }) | Err(AuthError::InvalidTokenFormat { .. })
         ),
         "Security: JWT with alg:'none' must be rejected, got: {result:?}"
     );
@@ -166,7 +166,7 @@ fn test_algorithm_confusion_hs256_rejected() {
     // as the HMAC secret.
     let result = validate_algorithm("HS256");
     assert!(
-        matches!(&result, Err(AuthError::UnsupportedAlgorithm(msg)) if msg.contains("not allowed for security reasons")),
+        matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("not allowed for security reasons")),
         "Security: HS256 must be rejected as forbidden, got: {result:?}"
     );
 }
@@ -175,7 +175,7 @@ fn test_algorithm_confusion_hs256_rejected() {
 fn test_algorithm_confusion_hs384_rejected() {
     let result = validate_algorithm("HS384");
     assert!(
-        matches!(&result, Err(AuthError::UnsupportedAlgorithm(msg)) if msg.contains("not allowed for security reasons")),
+        matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("not allowed for security reasons")),
         "Security: HS384 must be rejected as forbidden, got: {result:?}"
     );
 }
@@ -184,7 +184,7 @@ fn test_algorithm_confusion_hs384_rejected() {
 fn test_algorithm_confusion_hs512_rejected() {
     let result = validate_algorithm("HS512");
     assert!(
-        matches!(&result, Err(AuthError::UnsupportedAlgorithm(msg)) if msg.contains("not allowed for security reasons")),
+        matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("not allowed for security reasons")),
         "Security: HS512 must be rejected as forbidden, got: {result:?}"
     );
 }
@@ -222,7 +222,7 @@ async fn test_algorithm_confusion_hs256_end_to_end() {
 
     let result = verify_with_signing_key_cache(&token, &cache).await;
     assert!(
-        matches!(&result, Err(AuthError::UnsupportedAlgorithm(msg)) if msg.contains("not allowed for security reasons")),
+        matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("not allowed for security reasons")),
         "Security: HS256-signed JWT must be rejected even with valid HMAC, got: {result:?}"
     );
 }
@@ -249,7 +249,7 @@ fn test_token_expired_one_second_ago() {
     };
     let result = validate_claims(&claims, None);
     assert!(
-        matches!(&result, Err(AuthError::TokenExpired)),
+        matches!(&result, Err(AuthError::TokenExpired { .. })),
         "Token expired 1 second ago must be rejected, got: {result:?}"
     );
 }
@@ -296,7 +296,7 @@ fn test_future_nbf_rejected() {
     };
     let result = validate_claims(&claims, None);
     assert!(
-        matches!(&result, Err(AuthError::TokenNotYetValid)),
+        matches!(&result, Err(AuthError::TokenNotYetValid { .. })),
         "Token with future nbf must be rejected, got: {result:?}"
     );
 }
@@ -451,7 +451,7 @@ fn test_malformed_jwt_missing_segments_one_part() {
     // Security property: a JWT with fewer than 3 parts must be rejected.
     let result = decode_jwt_claims("just-one-part");
     assert!(
-        matches!(&result, Err(AuthError::InvalidTokenFormat(msg)) if msg.contains("3 parts")),
+        matches!(&result, Err(AuthError::InvalidTokenFormat { message: msg, .. }) if msg.contains("3 parts")),
         "JWT with 1 part must be rejected, got: {result:?}"
     );
 }
@@ -460,7 +460,7 @@ fn test_malformed_jwt_missing_segments_one_part() {
 fn test_malformed_jwt_missing_segments_two_parts() {
     let result = decode_jwt_claims("header.payload");
     assert!(
-        matches!(&result, Err(AuthError::InvalidTokenFormat(msg)) if msg.contains("3 parts")),
+        matches!(&result, Err(AuthError::InvalidTokenFormat { message: msg, .. }) if msg.contains("3 parts")),
         "JWT with 2 parts must be rejected, got: {result:?}"
     );
 }
@@ -469,7 +469,7 @@ fn test_malformed_jwt_missing_segments_two_parts() {
 fn test_malformed_jwt_extra_segments() {
     let result = decode_jwt_claims("a.b.c.d");
     assert!(
-        matches!(&result, Err(AuthError::InvalidTokenFormat(msg)) if msg.contains("3 parts")),
+        matches!(&result, Err(AuthError::InvalidTokenFormat { message: msg, .. }) if msg.contains("3 parts")),
         "JWT with 4 parts must be rejected, got: {result:?}"
     );
 }
@@ -481,7 +481,7 @@ fn test_malformed_jwt_invalid_base64url_payload() {
     let token = format!("{header_b64}.!!!not-valid-base64!!!.signature");
     let result = decode_jwt_claims(&token);
     assert!(
-        matches!(&result, Err(AuthError::InvalidTokenFormat(msg)) if msg.contains("decode")),
+        matches!(&result, Err(AuthError::InvalidTokenFormat { message: msg, .. }) if msg.contains("decode")),
         "JWT with invalid base64url payload must be rejected, got: {result:?}"
     );
 }
@@ -494,7 +494,7 @@ fn test_malformed_jwt_payload_not_json() {
     let token = format!("{header_b64}.{payload_b64}.signature");
     let result = decode_jwt_claims(&token);
     assert!(
-        matches!(&result, Err(AuthError::InvalidTokenFormat(msg)) if msg.contains("parse")),
+        matches!(&result, Err(AuthError::InvalidTokenFormat { message: msg, .. }) if msg.contains("parse")),
         "JWT with non-JSON payload must be rejected, got: {result:?}"
     );
 }
@@ -503,7 +503,7 @@ fn test_malformed_jwt_payload_not_json() {
 fn test_malformed_jwt_empty_string() {
     let result = decode_jwt_claims("");
     assert!(
-        matches!(&result, Err(AuthError::InvalidTokenFormat(_))),
+        matches!(&result, Err(AuthError::InvalidTokenFormat { .. })),
         "Empty string JWT must be rejected, got: {result:?}"
     );
 }
@@ -512,7 +512,7 @@ fn test_malformed_jwt_empty_string() {
 fn test_malformed_jwt_header_decode_fails_garbage() {
     let result = decode_jwt_header("not.a.jwt");
     assert!(
-        matches!(&result, Err(AuthError::InvalidTokenFormat(_))),
+        matches!(&result, Err(AuthError::InvalidTokenFormat { .. })),
         "Garbage JWT header must be rejected, got: {result:?}"
     );
 }
@@ -561,7 +561,7 @@ fn test_rs256_rejected_as_not_accepted() {
     // message used for forbidden algorithms.
     let result = validate_algorithm("RS256");
     assert!(
-        matches!(&result, Err(AuthError::UnsupportedAlgorithm(msg)) if msg.contains("not in accepted list")),
+        matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("not in accepted list")),
         "RS256 must be rejected as not-accepted (not forbidden), got: {result:?}"
     );
 }
@@ -576,7 +576,7 @@ fn test_all_forbidden_algorithms_rejected_with_security_message() {
     for alg in &forbidden {
         let result = validate_algorithm(alg);
         assert!(
-            matches!(&result, Err(AuthError::UnsupportedAlgorithm(msg)) if msg.contains("not allowed for security reasons")),
+            matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("not allowed for security reasons")),
             "Security: forbidden algorithm '{alg}' must be rejected with security message, got: {result:?}"
         );
     }

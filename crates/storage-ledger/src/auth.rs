@@ -367,6 +367,7 @@ impl LedgerSigningKeyStore {
 
 #[async_trait]
 impl PublicSigningKeyStore for LedgerSigningKeyStore {
+    #[tracing::instrument(skip(self, key), fields(kid = %key.kid))]
     async fn create_key(
         &self,
         namespace_id: NamespaceId,
@@ -413,6 +414,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         result
     }
 
+    #[tracing::instrument(skip(self))]
     async fn get_key(
         &self,
         namespace_id: NamespaceId,
@@ -438,6 +440,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         result
     }
 
+    #[tracing::instrument(skip(self))]
     async fn list_active_keys(
         &self,
         namespace_id: NamespaceId,
@@ -504,6 +507,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         list_result
     }
 
+    #[tracing::instrument(skip(self))]
     async fn deactivate_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
         let start = Instant::now();
         let storage_key = Self::storage_key(kid);
@@ -535,6 +539,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         result
     }
 
+    #[tracing::instrument(skip(self))]
     async fn revoke_key(
         &self,
         namespace_id: NamespaceId,
@@ -582,6 +587,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         result
     }
 
+    #[tracing::instrument(skip(self))]
     async fn activate_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
         let start = Instant::now();
         let storage_key = Self::storage_key(kid);
@@ -621,6 +627,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         result
     }
 
+    #[tracing::instrument(skip(self))]
     async fn delete_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
         let start = Instant::now();
         let storage_key = Self::storage_key(kid);

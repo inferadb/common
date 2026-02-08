@@ -77,7 +77,7 @@ pub const ACCEPTED_ALGORITHMS: &[&str] = &["EdDSA"];
 pub fn validate_algorithm(alg: &str) -> Result<(), AuthError> {
     // Check against forbidden algorithms
     if FORBIDDEN_ALGORITHMS.contains(&alg) {
-        return Err(AuthError::UnsupportedAlgorithm(format!(
+        return Err(AuthError::unsupported_algorithm(format!(
             "Algorithm '{}' is not allowed for security reasons",
             alg
         )));
@@ -85,7 +85,7 @@ pub fn validate_algorithm(alg: &str) -> Result<(), AuthError> {
 
     // Check if in accepted list
     if !ACCEPTED_ALGORITHMS.contains(&alg) {
-        return Err(AuthError::UnsupportedAlgorithm(format!(
+        return Err(AuthError::unsupported_algorithm(format!(
             "Algorithm '{}' is not in accepted list (only EdDSA is supported)",
             alg
         )));
@@ -111,7 +111,7 @@ mod tests {
         // rather than passing validation and failing at signature verification.
         let result = validate_algorithm("RS256");
         assert!(
-            matches!(result, Err(AuthError::UnsupportedAlgorithm(ref msg)) if msg.contains("not in accepted list"))
+            matches!(result, Err(AuthError::UnsupportedAlgorithm { message: ref msg, .. }) if msg.contains("not in accepted list"))
         );
     }
 
@@ -126,7 +126,7 @@ mod tests {
     fn test_validate_algorithm_none_rejected() {
         let result = validate_algorithm("none");
         assert!(
-            matches!(result, Err(AuthError::UnsupportedAlgorithm(ref msg)) if msg.contains("not allowed for security reasons"))
+            matches!(result, Err(AuthError::UnsupportedAlgorithm { message: ref msg, .. }) if msg.contains("not allowed for security reasons"))
         );
     }
 
@@ -134,7 +134,7 @@ mod tests {
     fn test_validate_algorithm_not_in_list() {
         // ES256 is not in ACCEPTED_ALGORITHMS
         let result = validate_algorithm("ES256");
-        assert!(matches!(result, Err(AuthError::UnsupportedAlgorithm(_))));
+        assert!(matches!(result, Err(AuthError::UnsupportedAlgorithm { .. })));
     }
 
     #[test]
@@ -144,7 +144,7 @@ mod tests {
         for alg in FORBIDDEN_ALGORITHMS {
             let result = validate_algorithm(alg);
             assert!(
-                matches!(result, Err(AuthError::UnsupportedAlgorithm(ref msg)) if msg.contains("not allowed for security reasons")),
+                matches!(result, Err(AuthError::UnsupportedAlgorithm { message: ref msg, .. }) if msg.contains("not allowed for security reasons")),
                 "Expected security rejection for forbidden algorithm '{alg}'"
             );
         }

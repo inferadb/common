@@ -78,11 +78,7 @@ pub enum LedgerStorageError {
 
 /// Appends ` [span=<id>]` to a formatter when a span ID is present.
 fn fmt_span_suffix(f: &mut fmt::Formatter<'_>, span_id: &Option<tracing::span::Id>) -> fmt::Result {
-    if let Some(id) = span_id {
-        write!(f, " [span={}]", id.into_u64())
-    } else {
-        Ok(())
-    }
+    if let Some(id) = span_id { write!(f, " [span={}]", id.into_u64()) } else { Ok(()) }
 }
 
 impl fmt::Display for LedgerStorageError {
@@ -152,9 +148,7 @@ impl From<LedgerStorageError> for StorageError {
             LedgerStorageError::Config { message, .. } => {
                 StorageError::internal(format!("Config: {message}"))
             },
-            LedgerStorageError::KeyEncoding { message, .. } => {
-                StorageError::serialization(message)
-            },
+            LedgerStorageError::KeyEncoding { message, .. } => StorageError::serialization(message),
             LedgerStorageError::Transaction { message, .. } => {
                 StorageError::internal(format!("Transaction: {message}"))
             },
@@ -552,5 +546,56 @@ mod tests {
 
         let err = LedgerStorageError::transaction("commit failed");
         assert_eq!(err.to_string(), "Transaction error: commit failed");
+    }
+
+    /// Installs a minimal tracing subscriber for the duration of the closure.
+    fn with_subscriber<F: FnOnce()>(f: F) {
+        use tracing_subscriber::layer::SubscriberExt;
+        let subscriber =
+            tracing_subscriber::Registry::default().with(tracing_subscriber::fmt::layer());
+        tracing::subscriber::with_default(subscriber, f);
+    }
+
+    #[test]
+    fn span_id_captured_in_ledger_errors() {
+        with_subscriber(|| {
+            let span = tracing::info_span!("ledger_test");
+            let _guard = span.enter();
+
+            let err = LedgerStorageError::config("bad");
+            assert!(err.span_id().is_some(), "span_id must be captured");
+        });
+    }
+
+    #[test]
+    fn span_propagates_through_ledger_to_storage_conversion() {
+        with_subscriber(|| {
+            let span = tracing::info_span!("conversion_test");
+            let _guard = span.enter();
+
+            // Create a LedgerStorageError inside the span
+            let ledger_err = LedgerStorageError::key_encoding("bad hex");
+            assert!(ledger_err.span_id().is_some());
+
+            // Convert to StorageError — the From impl calls a constructor
+            // which captures the *current* span at conversion time
+            let storage_err: StorageError = ledger_err.into();
+            assert!(
+                storage_err.span_id().is_some(),
+                "StorageError must capture span_id during From conversion"
+            );
+        });
+    }
+
+    #[test]
+    fn display_includes_span_for_ledger_error() {
+        with_subscriber(|| {
+            let span = tracing::info_span!("display_test");
+            let _guard = span.enter();
+
+            let err = LedgerStorageError::config("test");
+            let display = err.to_string();
+            assert!(display.contains("[span="), "Display must include span: {display}");
+        });
     }
 }

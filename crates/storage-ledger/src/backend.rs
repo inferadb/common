@@ -300,6 +300,7 @@ impl LedgerBackend {
 
 #[async_trait]
 impl StorageBackend for LedgerBackend {
+    #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
         let encoded_key = encode_key(key);
 
@@ -319,6 +320,7 @@ impl StorageBackend for LedgerBackend {
         .await
     }
 
+    #[tracing::instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len()))]
     async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()> {
         let encoded_key = encode_key(&key);
 
@@ -342,6 +344,7 @@ impl StorageBackend for LedgerBackend {
         .await
     }
 
+    #[tracing::instrument(skip(self, key, expected, new_value), fields(key_len = key.len()))]
     async fn compare_and_set(
         &self,
         key: &[u8],
@@ -388,6 +391,7 @@ impl StorageBackend for LedgerBackend {
         .await
     }
 
+    #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {
         let encoded_key = encode_key(key);
 
@@ -411,6 +415,7 @@ impl StorageBackend for LedgerBackend {
         .await
     }
 
+    #[tracing::instrument(skip(self, range))]
     async fn get_range<R>(&self, range: R) -> StorageResult<Vec<KeyValue>>
     where
         R: RangeBounds<Vec<u8>> + Send,
@@ -537,6 +542,7 @@ impl StorageBackend for LedgerBackend {
         .unwrap_or(Err(StorageError::timeout()))
     }
 
+    #[tracing::instrument(skip(self, range))]
     async fn clear_range<R>(&self, range: R) -> StorageResult<()>
     where
         R: RangeBounds<Vec<u8>> + Send,
@@ -582,6 +588,7 @@ impl StorageBackend for LedgerBackend {
     ///
     /// Returns [`StorageError::Internal`] if the system clock is set before
     /// the Unix epoch, since a valid absolute timestamp cannot be computed.
+    #[tracing::instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len(), ttl_ms = ttl.as_millis() as u64))]
     async fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> StorageResult<()> {
         let encoded_key = encode_key(&key);
         let expires_at = Self::compute_expiration_timestamp(ttl)?;
@@ -610,6 +617,7 @@ impl StorageBackend for LedgerBackend {
         .await
     }
 
+    #[tracing::instrument(skip(self))]
     async fn transaction(&self) -> StorageResult<Box<dyn Transaction>> {
         let txn = LedgerTransaction::new(
             Arc::clone(&self.client),
@@ -620,6 +628,7 @@ impl StorageBackend for LedgerBackend {
         Ok(Box::new(txn))
     }
 
+    #[tracing::instrument(skip(self))]
     async fn health_check(&self) -> StorageResult<()> {
         // health_check() returns bool: true = healthy, false = degraded but available
         // It returns Err for unavailable

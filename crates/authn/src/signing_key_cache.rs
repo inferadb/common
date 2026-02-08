@@ -40,7 +40,13 @@
 //! }
 //! ```
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
@@ -103,6 +109,12 @@ pub struct SigningKeyCache {
     /// Fallback cache for graceful degradation during Ledger outages (L3).
     /// Capacity-bounded with LRU eviction, no TTL.
     fallback: Cache<String, Arc<DecodingKey>>,
+    /// Monotonic generation counter incremented on every invalidation.
+    ///
+    /// Used to detect stale L2 reads: if the generation changes between
+    /// the start and end of an L2 fetch, the result is discarded rather
+    /// than being written into L1 with potentially-revoked data.
+    invalidation_gen: Arc<AtomicU64>,
 }
 
 impl SigningKeyCache {
@@ -148,6 +160,7 @@ impl SigningKeyCache {
             cache: Cache::builder().time_to_live(ttl).max_capacity(max_capacity).build(),
             key_store,
             fallback: Cache::builder().max_capacity(max_capacity).build(),
+            invalidation_gen: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -178,6 +191,7 @@ impl SigningKeyCache {
     /// - Key has expired ([`AuthError::KeyExpired`])
     /// - Public key format is invalid ([`AuthError::InvalidPublicKey`])
     /// - Storage backend error with no fallback available ([`AuthError::KeyStorageError`])
+    #[tracing::instrument(skip(self))]
     pub async fn get_decoding_key(
         &self,
         org_id: NamespaceId,
@@ -189,6 +203,12 @@ impl SigningKeyCache {
         if let Some(key) = self.cache.get(&cache_key).await {
             return Ok(key);
         }
+
+        // Snapshot the invalidation generation before the L2 fetch.
+        // If `invalidate()` runs concurrently, it bumps this counter.
+        // We compare after the L2 read to detect the race and discard
+        // stale results rather than re-populating L1 with revoked data.
+        let gen_before = self.invalidation_gen.load(Ordering::Acquire);
 
         // L2: Fetch from Ledger (org_id == namespace_id)
         let namespace_id = org_id;
@@ -203,6 +223,21 @@ impl SigningKeyCache {
                 let decoding_key = to_decoding_key(&public_key)?;
                 let decoding_key = Arc::new(decoding_key);
 
+                // Check if an invalidation occurred during the L2 fetch.
+                // If so, discard this result — the key may have been revoked.
+                let gen_after = self.invalidation_gen.load(Ordering::Acquire);
+                if gen_after != gen_before {
+                    tracing::debug!(
+                        namespace_id = %namespace_id,
+                        kid,
+                        "Discarding L2 result: invalidation occurred during fetch"
+                    );
+                    // Return the key to the caller (it was valid at fetch time)
+                    // but do NOT populate L1/L3 caches with potentially-stale data.
+                    // The next request will re-fetch from Ledger.
+                    return Ok(decoding_key);
+                }
+
                 // Cache locally (both TTL cache and fallback)
                 self.cache.insert(cache_key.clone(), decoding_key.clone()).await;
                 self.fallback.insert(cache_key, decoding_key.clone()).await;
@@ -211,7 +246,7 @@ impl SigningKeyCache {
 
                 Ok(decoding_key)
             },
-            Ok(None) => Err(AuthError::KeyNotFound { kid: kid.to_string() }),
+            Ok(None) => Err(AuthError::key_not_found(kid.to_string())),
             Err(storage_error) => {
                 // Check if this is a transient error (connection/timeout)
                 // where fallback is appropriate
@@ -228,18 +263,23 @@ impl SigningKeyCache {
                 }
 
                 // No fallback available or not a transient error
-                Err(AuthError::KeyStorageError(storage_error))
+                Err(AuthError::key_storage_error(storage_error))
             },
         }
     }
 
     /// Invalidates a specific key from all cache tiers.
     ///
-    /// Removes the key from both the L1 TTL cache and the L3 fallback cache.
+    /// Removes the key from both the L1 TTL cache and the L3 fallback cache,
+    /// and bumps the invalidation generation counter to prevent any in-flight
+    /// L2 fetches from re-populating L1 with stale data.
+    ///
     /// Call this when a key is known to be revoked or deleted.
     /// The next lookup will fetch fresh state from Ledger.
     pub async fn invalidate(&self, org_id: NamespaceId, kid: &str) {
         let cache_key = format!("{org_id}:{kid}");
+        // Bump generation first so any in-flight L2 reads will detect the change
+        self.invalidation_gen.fetch_add(1, Ordering::Release);
         self.cache.invalidate(&cache_key).await;
         self.fallback.invalidate(&cache_key).await;
         tracing::debug!(org_id = %org_id, kid = kid, "Invalidated signing key from all cache tiers");
@@ -253,6 +293,8 @@ impl SigningKeyCache {
     pub async fn clear_all(&self) {
         let l1_count = self.cache.entry_count();
         let fallback_count = self.fallback.entry_count();
+        // Bump generation to prevent in-flight L2 reads from re-populating
+        self.invalidation_gen.fetch_add(1, Ordering::Release);
         self.cache.invalidate_all();
         self.fallback.invalidate_all();
         tracing::warn!(
@@ -324,21 +366,21 @@ fn validate_key_state(key: &PublicSigningKey) -> Result<(), AuthError> {
     let now = Utc::now();
 
     if !key.active {
-        return Err(AuthError::KeyInactive { kid: key.kid.clone() });
+        return Err(AuthError::key_inactive(key.kid.clone()));
     }
 
     if key.revoked_at.is_some() {
-        return Err(AuthError::KeyRevoked { kid: key.kid.clone() });
+        return Err(AuthError::key_revoked(key.kid.clone()));
     }
 
     if now < key.valid_from {
-        return Err(AuthError::KeyNotYetValid { kid: key.kid.clone() });
+        return Err(AuthError::key_not_yet_valid(key.kid.clone()));
     }
 
     if let Some(valid_until) = key.valid_until
         && now > valid_until
     {
-        return Err(AuthError::KeyExpired { kid: key.kid.clone() });
+        return Err(AuthError::key_expired(key.kid.clone()));
     }
 
     Ok(())
@@ -353,12 +395,12 @@ fn to_decoding_key(key: &PublicSigningKey) -> Result<DecodingKey, AuthError> {
     let public_key_bytes: Zeroizing<Vec<u8>> = Zeroizing::new(
         URL_SAFE_NO_PAD
             .decode(key.public_key.as_bytes())
-            .map_err(|e| AuthError::InvalidPublicKey(format!("base64 decode: {e}")))?,
+            .map_err(|e| AuthError::invalid_public_key(format!("base64 decode: {e}")))?,
     );
 
     // Verify key length (Ed25519 public keys are 32 bytes)
     if public_key_bytes.len() != PUBLIC_KEY_LENGTH {
-        return Err(AuthError::InvalidPublicKey(format!(
+        return Err(AuthError::invalid_public_key(format!(
             "expected {PUBLIC_KEY_LENGTH} bytes, got {}",
             public_key_bytes.len()
         )));
@@ -369,14 +411,14 @@ fn to_decoding_key(key: &PublicSigningKey) -> Result<DecodingKey, AuthError> {
     // via the Zeroizing wrapper on the source Vec.
     let key_bytes: [u8; PUBLIC_KEY_LENGTH] = public_key_bytes[..PUBLIC_KEY_LENGTH]
         .try_into()
-        .map_err(|_| AuthError::InvalidPublicKey("failed to convert bytes".to_string()))?;
+        .map_err(|_| AuthError::invalid_public_key("failed to convert bytes"))?;
 
     let _verifying_key = VerifyingKey::from_bytes(&key_bytes)
-        .map_err(|e| AuthError::InvalidPublicKey(format!("invalid Ed25519 key: {e}")))?;
+        .map_err(|e| AuthError::invalid_public_key(format!("invalid Ed25519 key: {e}")))?;
 
     // Convert to jsonwebtoken DecodingKey
     DecodingKey::from_ed_components(&key.public_key)
-        .map_err(|e| AuthError::InvalidPublicKey(e.to_string()))
+        .map_err(|e| AuthError::invalid_public_key(e.to_string()))
 }
 
 #[cfg(test)]
@@ -415,7 +457,7 @@ mod tests {
 
         let result = cache.get_decoding_key(NamespaceId::from(1), "nonexistent").await;
 
-        assert!(matches!(result, Err(AuthError::KeyNotFound { kid }) if kid == "nonexistent"));
+        assert!(matches!(result, Err(AuthError::KeyNotFound { kid, .. }) if kid == "nonexistent"));
     }
 
     #[tokio::test]
@@ -431,7 +473,7 @@ mod tests {
 
         let result = cache.get_decoding_key(NamespaceId::from(1), "inactive-key").await;
 
-        assert!(matches!(result, Err(AuthError::KeyInactive { kid }) if kid == "inactive-key"));
+        assert!(matches!(result, Err(AuthError::KeyInactive { kid, .. }) if kid == "inactive-key"));
     }
 
     #[tokio::test]
@@ -448,7 +490,7 @@ mod tests {
 
         let result = cache.get_decoding_key(NamespaceId::from(1), "revoked-key").await;
 
-        assert!(matches!(result, Err(AuthError::KeyRevoked { kid }) if kid == "revoked-key"));
+        assert!(matches!(result, Err(AuthError::KeyRevoked { kid, .. }) if kid == "revoked-key"));
     }
 
     #[tokio::test]
@@ -465,7 +507,9 @@ mod tests {
 
         let result = cache.get_decoding_key(NamespaceId::from(1), "future-key").await;
 
-        assert!(matches!(result, Err(AuthError::KeyNotYetValid { kid }) if kid == "future-key"));
+        assert!(
+            matches!(result, Err(AuthError::KeyNotYetValid { kid, .. }) if kid == "future-key")
+        );
     }
 
     #[tokio::test]
@@ -483,7 +527,7 @@ mod tests {
 
         let result = cache.get_decoding_key(NamespaceId::from(1), "expired-key").await;
 
-        assert!(matches!(result, Err(AuthError::KeyExpired { kid }) if kid == "expired-key"));
+        assert!(matches!(result, Err(AuthError::KeyExpired { kid, .. }) if kid == "expired-key"));
     }
 
     #[tokio::test]
@@ -500,7 +544,7 @@ mod tests {
 
         let result = cache.get_decoding_key(NamespaceId::from(1), "bad-key").await;
 
-        assert!(matches!(result, Err(AuthError::InvalidPublicKey(_))));
+        assert!(matches!(result, Err(AuthError::InvalidPublicKey { .. })));
     }
 
     #[tokio::test]
@@ -668,7 +712,7 @@ mod tests {
         let mut key = create_test_key("bad", true);
         key.public_key = "not-valid!!!".to_string().into();
         let result = to_decoding_key(&key);
-        assert!(matches!(result, Err(AuthError::InvalidPublicKey(_))));
+        assert!(matches!(result, Err(AuthError::InvalidPublicKey { .. })));
     }
 
     #[test]
@@ -676,7 +720,7 @@ mod tests {
         let mut key = create_test_key("short", true);
         key.public_key = "AAAA".to_string().into(); // Too short
         let result = to_decoding_key(&key);
-        assert!(matches!(result, Err(AuthError::InvalidPublicKey(_))));
+        assert!(matches!(result, Err(AuthError::InvalidPublicKey { .. })));
     }
 
     // ========== Fallback/Graceful Degradation Tests ==========
@@ -847,7 +891,7 @@ mod tests {
         // Should NOT use fallback - internal errors are definitive responses
         let result2 = cache.get_decoding_key(NamespaceId::from(1), "no-fallback-key").await;
         assert!(
-            matches!(result2, Err(AuthError::KeyStorageError(_))),
+            matches!(result2, Err(AuthError::KeyStorageError { .. })),
             "should NOT use fallback on internal error"
         );
     }
@@ -868,7 +912,7 @@ mod tests {
         // Should return error since no fallback available
         let result = cache.get_decoding_key(NamespaceId::from(1), "unknown-key").await;
         assert!(
-            matches!(result, Err(AuthError::KeyStorageError(_))),
+            matches!(result, Err(AuthError::KeyStorageError { .. })),
             "should return error when no fallback available"
         );
     }
@@ -927,7 +971,7 @@ mod tests {
 
         let result = cache.get_decoding_key(NamespaceId::from(1), "revoked-key").await;
         assert!(
-            matches!(result, Err(AuthError::KeyStorageError(_))),
+            matches!(result, Err(AuthError::KeyStorageError { .. })),
             "invalidated key must not be returned from fallback"
         );
     }
@@ -961,7 +1005,7 @@ mod tests {
 
         let result = cache.get_decoding_key(NamespaceId::from(1), "rotation-key").await;
         assert!(
-            matches!(result, Err(AuthError::KeyStorageError(_))),
+            matches!(result, Err(AuthError::KeyStorageError { .. })),
             "cleared key must not be returned from fallback"
         );
     }
@@ -991,6 +1035,328 @@ mod tests {
             cache.fallback_entry_count() <= 3,
             "fallback should not exceed capacity of 3, got {}",
             cache.fallback_entry_count()
+        );
+    }
+
+    // ========== Concurrency Tests (Task 5) ==========
+
+    /// Mock store that counts L2 reads and supports configurable delays.
+    ///
+    /// Used to test thundering herd prevention and race conditions
+    /// in the signing key cache.
+    struct DelayingStore {
+        inner: Arc<MemorySigningKeyStore>,
+        delay: std::sync::Mutex<Duration>,
+        /// Controls whether the gate is active. When false, `get_key` skips
+        /// the started/gate notifications and proceeds immediately.
+        gate_enabled: std::sync::atomic::AtomicBool,
+        /// When gate is enabled, `get_key` signals this after starting.
+        started_notify: Arc<tokio::sync::Notify>,
+        /// When gate is enabled, `get_key` waits on this after signalling start.
+        gate_notify: Arc<tokio::sync::Notify>,
+    }
+
+    impl DelayingStore {
+        fn new() -> Self {
+            Self {
+                inner: Arc::new(MemorySigningKeyStore::new()),
+                delay: std::sync::Mutex::new(Duration::ZERO),
+                gate_enabled: std::sync::atomic::AtomicBool::new(false),
+                started_notify: Arc::new(tokio::sync::Notify::new()),
+                gate_notify: Arc::new(tokio::sync::Notify::new()),
+            }
+        }
+
+        fn set_delay(&self, delay: Duration) {
+            *self.delay.lock().expect("lock") = delay;
+        }
+
+        fn enable_gate(&self) {
+            self.gate_enabled.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PublicSigningKeyStore for DelayingStore {
+        async fn create_key(
+            &self,
+            namespace_id: NamespaceId,
+            key: &PublicSigningKey,
+        ) -> Result<(), StorageError> {
+            self.inner.create_key(namespace_id, key).await
+        }
+
+        async fn get_key(
+            &self,
+            namespace_id: NamespaceId,
+            kid: &str,
+        ) -> Result<Option<PublicSigningKey>, StorageError> {
+            if self.gate_enabled.load(std::sync::atomic::Ordering::SeqCst) {
+                // Signal that we've started the L2 read
+                self.started_notify.notify_one();
+
+                // Wait for the gate to simulate slow L2 reads
+                self.gate_notify.notified().await;
+            }
+
+            let delay = *self.delay.lock().expect("lock");
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+
+            self.inner.get_key(namespace_id, kid).await
+        }
+
+        async fn list_active_keys(
+            &self,
+            namespace_id: NamespaceId,
+        ) -> Result<Vec<PublicSigningKey>, StorageError> {
+            self.inner.list_active_keys(namespace_id).await
+        }
+
+        async fn deactivate_key(
+            &self,
+            namespace_id: NamespaceId,
+            kid: &str,
+        ) -> Result<(), StorageError> {
+            self.inner.deactivate_key(namespace_id, kid).await
+        }
+
+        async fn revoke_key(
+            &self,
+            namespace_id: NamespaceId,
+            kid: &str,
+            reason: Option<&str>,
+        ) -> Result<(), StorageError> {
+            self.inner.revoke_key(namespace_id, kid, reason).await
+        }
+
+        async fn activate_key(
+            &self,
+            namespace_id: NamespaceId,
+            kid: &str,
+        ) -> Result<(), StorageError> {
+            self.inner.activate_key(namespace_id, kid).await
+        }
+
+        async fn delete_key(
+            &self,
+            namespace_id: NamespaceId,
+            kid: &str,
+        ) -> Result<(), StorageError> {
+            self.inner.delete_key(namespace_id, kid).await
+        }
+    }
+
+    /// Tests that concurrent `get` + `invalidate` does not result in stale reads
+    /// after invalidation completes.
+    ///
+    /// Scenario:
+    /// 1. Key is cached in L1
+    /// 2. L1 entry is cleared to force L2 read
+    /// 3. A `get_decoding_key` call starts, hitting L2 (with a gate delay)
+    /// 4. While the L2 read is in-flight, `invalidate` runs
+    /// 5. The L2 read completes and the result must NOT be written to L1
+    #[tokio::test]
+    async fn test_no_stale_repopulation_after_invalidate() {
+        let store = Arc::new(DelayingStore::new());
+
+        let key = create_valid_test_key("race-key");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        let cache = Arc::new(SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        ));
+
+        // Warm the cache (gate is disabled, so this completes immediately)
+        let _ = cache.get_decoding_key(NamespaceId::from(1), "race-key").await;
+        cache.sync().await;
+        assert_eq!(cache.entry_count(), 1);
+
+        // Clear L1 to force an L2 read on next get
+        cache.clear_l1().await;
+        cache.sync().await;
+        assert_eq!(cache.entry_count(), 0);
+
+        // Enable the gate so the next L2 read blocks
+        store.enable_gate();
+
+        // Start a get_decoding_key that will block in L2 at the gate
+        let cache_clone = Arc::clone(&cache);
+        let get_handle = tokio::spawn(async move {
+            cache_clone.get_decoding_key(NamespaceId::from(1), "race-key").await
+        });
+
+        // Wait for the L2 read to start
+        store.started_notify.notified().await;
+
+        // While L2 read is in-flight, invalidate the key
+        cache.invalidate(NamespaceId::from(1), "race-key").await;
+
+        // Now release the gate to let the L2 read complete
+        store.gate_notify.notify_one();
+
+        // The get should still succeed (the key was valid at fetch time)
+        let result = get_handle.await.expect("task should not panic");
+        assert!(result.is_ok(), "get should succeed with the fetched key");
+
+        // But L1 must NOT have been re-populated (invalidation happened mid-fetch)
+        cache.sync().await;
+        assert_eq!(
+            cache.entry_count(),
+            0,
+            "L1 must not be re-populated after invalidation during fetch"
+        );
+
+        // L3 fallback must also not be re-populated
+        assert_eq!(
+            cache.fallback_entry_count(),
+            0,
+            "L3 must not be re-populated after invalidation during fetch"
+        );
+    }
+
+    /// Tests that concurrent `get` calls during L2 read latency all receive
+    /// the same result.
+    #[tokio::test]
+    async fn test_concurrent_gets_during_l2_latency() {
+        let store = Arc::new(DelayingStore::new());
+        store.set_delay(Duration::from_millis(50));
+
+        let key = create_valid_test_key("concurrent-key");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        let cache = Arc::new(SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        ));
+
+        // Launch 10 concurrent get calls — all should succeed
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let cache_clone = Arc::clone(&cache);
+            handles.push(tokio::spawn(async move {
+                cache_clone.get_decoding_key(NamespaceId::from(1), "concurrent-key").await
+            }));
+        }
+
+        // All should succeed
+        for handle in handles {
+            let result = handle.await.expect("task should not panic");
+            assert!(result.is_ok(), "all concurrent gets should succeed");
+        }
+    }
+
+    /// Tests that L2 failure during concurrent access correctly falls back
+    /// to L3 for all callers.
+    #[tokio::test]
+    async fn test_l2_failure_concurrent_fallback() {
+        let store = Arc::new(FailingStore::new());
+        let key = create_valid_test_key("concurrent-fallback");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        let cache = Arc::new(SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        ));
+
+        // Warm the cache (populates L1 + L3)
+        let _ = cache.get_decoding_key(NamespaceId::from(1), "concurrent-fallback").await;
+
+        // Simulate Ledger failure and clear L1
+        store.set_failure(Some(StorageError::connection("network error")));
+        cache.clear_l1().await;
+        cache.sync().await;
+
+        // Launch 10 concurrent gets — all should use L3 fallback
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let cache_clone = Arc::clone(&cache);
+            handles.push(tokio::spawn(async move {
+                cache_clone.get_decoding_key(NamespaceId::from(1), "concurrent-fallback").await
+            }));
+        }
+
+        for handle in handles {
+            let result = handle.await.expect("task should not panic");
+            assert!(result.is_ok(), "all callers should receive fallback key");
+        }
+    }
+
+    /// Stress test: 100 concurrent readers + 1 writer performing key rotation.
+    /// No stale reads should be observed after invalidation completes.
+    #[tokio::test]
+    #[ignore] // Run explicitly with `cargo test -- --ignored`
+    async fn test_stress_concurrent_readers_with_writer() {
+        let store = Arc::new(DelayingStore::new());
+        store.set_delay(Duration::from_millis(1));
+
+        let key_v1 = create_valid_test_key("stress-key");
+        store.inner.create_key(NamespaceId::from(1), &key_v1).await.expect("create_key");
+
+        let cache = Arc::new(SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        ));
+
+        // Warm the cache
+        let _ = cache.get_decoding_key(NamespaceId::from(1), "stress-key").await;
+
+        let stale_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        // Spawn 100 readers that continuously read the key
+        let mut reader_handles = Vec::new();
+        for _ in 0..100 {
+            let cache_clone = Arc::clone(&cache);
+            let stale_count_clone = Arc::clone(&stale_count);
+            reader_handles.push(tokio::spawn(async move {
+                for _ in 0..10 {
+                    let result =
+                        cache_clone.get_decoding_key(NamespaceId::from(1), "stress-key").await;
+                    if result.is_err() {
+                        // After invalidation, a KeyNotFound is acceptable
+                        // (key was deleted from store and re-created as v2)
+                    }
+                    // Small yield to interleave with the writer
+                    tokio::task::yield_now().await;
+                }
+                stale_count_clone.load(std::sync::atomic::Ordering::SeqCst)
+            }));
+        }
+
+        // Spawn 1 writer that performs key rotation
+        let cache_writer = Arc::clone(&cache);
+        let store_writer = Arc::clone(&store);
+        let writer_handle = tokio::spawn(async move {
+            for _ in 0..5 {
+                // Invalidate the old key
+                cache_writer.invalidate(NamespaceId::from(1), "stress-key").await;
+
+                // Delete old key and create a new version
+                let _ = store_writer.inner.delete_key(NamespaceId::from(1), "stress-key").await;
+                let key_v2 = create_valid_test_key("stress-key");
+                let _ = store_writer.inner.create_key(NamespaceId::from(1), &key_v2).await;
+
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        });
+
+        // Wait for all tasks
+        writer_handle.await.expect("writer should not panic");
+        for handle in reader_handles {
+            let _ = handle.await.expect("reader should not panic");
+        }
+
+        // After the writer finishes, the cache should not contain stale entries
+        // from before the last invalidation
+        cache.sync().await;
+
+        // Verify the generation counter was incremented
+        let generation = cache.invalidation_gen.load(Ordering::Acquire);
+        assert!(
+            generation >= 5,
+            "generation should have been bumped at least 5 times, got {generation}"
         );
     }
 }

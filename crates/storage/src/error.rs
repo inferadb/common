@@ -374,3 +374,87 @@ impl StorageError {
         matches!(self, Self::Connection { .. } | Self::Timeout { .. })
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use tracing_subscriber::{Registry, layer::SubscriberExt};
+
+    use super::*;
+
+    /// Installs a minimal tracing subscriber for the duration of the closure,
+    /// ensuring `Span::current().id()` returns `Some`.
+    fn with_subscriber<F: FnOnce()>(f: F) {
+        let subscriber = Registry::default().with(tracing_subscriber::fmt::layer());
+        tracing::subscriber::with_default(subscriber, f);
+    }
+
+    #[test]
+    fn span_id_captured_when_subscriber_active() {
+        with_subscriber(|| {
+            let span = tracing::info_span!("test_span");
+            let _guard = span.enter();
+
+            let err = StorageError::not_found("key-1");
+            assert!(err.span_id().is_some(), "span_id must be captured inside active span");
+        });
+    }
+
+    #[test]
+    fn span_id_none_without_subscriber() {
+        // No subscriber → current_span_id() returns None
+        let err = StorageError::not_found("key-2");
+        assert!(err.span_id().is_none(), "span_id must be None without a subscriber");
+    }
+
+    #[test]
+    fn display_includes_span_id_when_present() {
+        with_subscriber(|| {
+            let span = tracing::info_span!("display_test");
+            let _guard = span.enter();
+
+            let err = StorageError::timeout();
+            let display = err.to_string();
+            assert!(display.contains("[span="), "Display must include span suffix: {display}");
+        });
+    }
+
+    #[test]
+    fn display_excludes_span_id_when_absent() {
+        let err = StorageError::timeout();
+        let display = err.to_string();
+        assert!(!display.contains("[span="), "Display must not include span suffix: {display}");
+        assert_eq!(display, "Operation timeout");
+    }
+
+    #[test]
+    fn each_constructor_captures_span() {
+        with_subscriber(|| {
+            let span = tracing::info_span!("constructor_test");
+            let _guard = span.enter();
+
+            assert!(StorageError::not_found("k").span_id().is_some());
+            assert!(StorageError::conflict().span_id().is_some());
+            assert!(StorageError::connection("msg").span_id().is_some());
+            assert!(
+                StorageError::connection_with_source("msg", StorageError::timeout())
+                    .span_id()
+                    .is_some()
+            );
+            assert!(StorageError::serialization("msg").span_id().is_some());
+            assert!(
+                StorageError::serialization_with_source("msg", StorageError::timeout())
+                    .span_id()
+                    .is_some()
+            );
+            assert!(StorageError::internal("msg").span_id().is_some());
+            assert!(
+                StorageError::internal_with_source("msg", StorageError::timeout())
+                    .span_id()
+                    .is_some()
+            );
+            assert!(StorageError::timeout().span_id().is_some());
+            assert!(StorageError::cas_retries_exhausted(3).span_id().is_some());
+        });
+    }
+}

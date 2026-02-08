@@ -89,7 +89,7 @@ impl JwtClaims {
             .as_ref()
             .filter(|id| !id.is_empty())
             .cloned()
-            .ok_or_else(|| AuthError::MissingClaim("org_id".into()))
+            .ok_or_else(|| AuthError::missing_claim("org_id"))
     }
 
     /// Parse scopes from space-separated string.
@@ -124,7 +124,7 @@ impl JwtClaims {
 /// Returns an error if the JWT header cannot be decoded.
 pub fn decode_jwt_header(token: &str) -> Result<Header, AuthError> {
     decode_header(token)
-        .map_err(|e| AuthError::InvalidTokenFormat(format!("Failed to decode JWT header: {}", e)))
+        .map_err(|e| AuthError::invalid_token_format(format!("Failed to decode JWT header: {}", e)))
 }
 
 /// Decode JWT claims without verification (used to extract issuer for key lookup).
@@ -140,29 +140,28 @@ pub fn decode_jwt_claims(token: &str) -> Result<JwtClaims, AuthError> {
     // Split token into parts
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
-        return Err(AuthError::InvalidTokenFormat(
-            "JWT must have 3 parts separated by dots".into(),
-        ));
+        return Err(AuthError::invalid_token_format("JWT must have 3 parts separated by dots"));
     }
 
     // Decode payload (part 1) using base64 URL-safe encoding
     let payload_bytes = URL_SAFE_NO_PAD.decode(parts[1]).map_err(|e| {
-        AuthError::InvalidTokenFormat(format!("Failed to decode JWT payload: {}", e))
+        AuthError::invalid_token_format(format!("Failed to decode JWT payload: {}", e))
     })?;
 
     // Parse as JSON
-    let claims: JwtClaims = serde_json::from_slice(&payload_bytes)
-        .map_err(|e| AuthError::InvalidTokenFormat(format!("Failed to parse JWT claims: {}", e)))?;
+    let claims: JwtClaims = serde_json::from_slice(&payload_bytes).map_err(|e| {
+        AuthError::invalid_token_format(format!("Failed to parse JWT claims: {}", e))
+    })?;
 
     // Validate required claims are present
     if claims.iss.is_empty() {
-        return Err(AuthError::MissingClaim("iss".into()));
+        return Err(AuthError::missing_claim("iss"));
     }
     if claims.sub.is_empty() {
-        return Err(AuthError::MissingClaim("sub".into()));
+        return Err(AuthError::missing_claim("sub"));
     }
     if claims.aud.is_empty() {
-        return Err(AuthError::MissingClaim("aud".into()));
+        return Err(AuthError::missing_claim("aud"));
     }
 
     Ok(claims)
@@ -191,30 +190,30 @@ pub fn validate_claims(
 
     // Check expiration
     if claims.exp <= now {
-        return Err(AuthError::TokenExpired);
+        return Err(AuthError::token_expired());
     }
 
     // Check not-before if present
     if let Some(nbf) = claims.nbf
         && nbf > now
     {
-        return Err(AuthError::TokenNotYetValid);
+        return Err(AuthError::token_not_yet_valid());
     }
 
     // Check issued-at is reasonable (not too far in past, max 24 hours)
     if claims.iat > now {
-        return Err(AuthError::InvalidTokenFormat("iat claim is in the future".into()));
+        return Err(AuthError::invalid_token_format("iat claim is in the future"));
     }
     if now - claims.iat > 86400 {
         // 24 hours
-        return Err(AuthError::InvalidTokenFormat("iat claim is too old (> 24 hours)".into()));
+        return Err(AuthError::invalid_token_format("iat claim is too old (> 24 hours)"));
     }
 
     // Check audience if enforced
     if let Some(expected) = expected_audience
         && claims.aud != expected
     {
-        return Err(AuthError::InvalidAudience(format!(
+        return Err(AuthError::invalid_audience(format!(
             "expected '{}', got '{}'",
             expected, claims.aud
         )));
@@ -294,6 +293,7 @@ pub fn verify_signature(
 /// # Ok(())
 /// # }
 /// ```
+#[tracing::instrument(skip(token, signing_key_cache))]
 pub async fn verify_with_signing_key_cache(
     token: &str,
     signing_key_cache: &SigningKeyCache,
@@ -303,7 +303,7 @@ pub async fn verify_with_signing_key_cache(
 
     let kid = header
         .kid
-        .ok_or_else(|| AuthError::InvalidTokenFormat("JWT header missing 'kid' field".into()))?;
+        .ok_or_else(|| AuthError::invalid_token_format("JWT header missing 'kid' field"))?;
 
     // Validate algorithm — only EdDSA is accepted (see ACCEPTED_ALGORITHMS)
     let alg_str = format!("{:?}", header.alg);
@@ -314,7 +314,7 @@ pub async fn verify_with_signing_key_cache(
     let org_id_str = claims.require_org_id()?;
     let org_id =
         inferadb_common_storage::NamespaceId::from(org_id_str.parse::<i64>().map_err(|_| {
-            AuthError::InvalidTokenFormat(format!(
+            AuthError::invalid_token_format(format!(
                 "org_id '{}' is not a valid Snowflake ID",
                 org_id_str
             ))
@@ -682,7 +682,7 @@ mod ledger_verification_tests {
 
         let result = verify_with_signing_key_cache(&token, &cache).await;
 
-        assert!(matches!(result, Err(AuthError::InvalidTokenFormat(_))));
+        assert!(matches!(result, Err(AuthError::InvalidTokenFormat { .. })));
     }
 
     #[tokio::test]
@@ -713,6 +713,6 @@ mod ledger_verification_tests {
 
         let result = verify_with_signing_key_cache(&token, &cache).await;
 
-        assert!(matches!(result, Err(AuthError::InvalidTokenFormat(_))));
+        assert!(matches!(result, Err(AuthError::InvalidTokenFormat { .. })));
     }
 }
