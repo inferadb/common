@@ -208,6 +208,11 @@ pub enum AuthError {
     /// Wraps the original [`StorageError`] to preserve the full error source
     /// chain for debugging and structured logging.
     ///
+    /// This is the **only conditionally transient** variant: [`is_transient()`](Self::is_transient)
+    /// delegates to
+    /// [`StorageError::is_transient()`](inferadb_common_storage::StorageError::is_transient),
+    /// returning `true` for connection failures, timeouts, and rate limiting.
+    ///
     /// [`StorageError`]: inferadb_common_storage::StorageError
     KeyStorageError {
         /// The underlying storage error that caused the key lookup to fail.
@@ -657,33 +662,28 @@ impl AuthError {
     ///
     /// - [`KeyStorageError`](Self::KeyStorageError) — delegates to
     ///   [`StorageError::is_transient()`](inferadb_common_storage::StorageError::is_transient).
-    ///   Transient when the underlying storage error is a connection failure,
-    ///   timeout, or rate limit. Permanent when the storage error is a
-    ///   conflict, serialization error, or internal logic error.
+    ///   Transient when the underlying storage error is a connection failure, timeout, or rate
+    ///   limit. Permanent when the storage error is a conflict, serialization error, or internal
+    ///   logic error.
     ///
     /// # Permanent variants
     ///
     /// All authentication and validation failures are permanent:
     ///
-    /// - **Token errors** (`InvalidTokenFormat`, `TokenExpired`,
-    ///   `TokenNotYetValid`, `InvalidSignature`, `TokenTooOld`,
-    ///   `TokenInactive`, `TokenReplayed`, `MissingJti`) — the token itself
-    ///   is invalid; retrying the same token won't fix it.
-    /// - **Claim errors** (`InvalidIssuer`, `InvalidAudience`,
-    ///   `MissingClaim`, `InvalidScope`, `MissingTenantId`) — the token's
-    ///   claims don't match the server's requirements.
-    /// - **Algorithm errors** (`UnsupportedAlgorithm`) — the token uses a
-    ///   disallowed algorithm.
-    /// - **Key errors** (`KeyNotFound`, `KeyInactive`, `KeyRevoked`,
-    ///   `KeyNotYetValid`, `KeyExpired`, `InvalidPublicKey`, `InvalidKid`)
-    ///   — the signing key is in a definitive state that won't change on
-    ///   retry.
-    /// - **Protocol errors** (`JwksError`, `OidcDiscoveryFailed`,
-    ///   `IntrospectionFailed`, `InvalidIntrospectionResponse`) — while
-    ///   these may involve network calls, the errors typically indicate
-    ///   configuration or protocol issues rather than transient failures.
-    ///   Callers needing retry for JWKS/OIDC fetches should implement
-    ///   retry at the HTTP transport layer.
+    /// - **Token errors** (`InvalidTokenFormat`, `TokenExpired`, `TokenNotYetValid`,
+    ///   `InvalidSignature`, `TokenTooOld`, `TokenInactive`, `TokenReplayed`, `MissingJti`) — the
+    ///   token itself is invalid; retrying the same token won't fix it.
+    /// - **Claim errors** (`InvalidIssuer`, `InvalidAudience`, `MissingClaim`, `InvalidScope`,
+    ///   `MissingTenantId`) — the token's claims don't match the server's requirements.
+    /// - **Algorithm errors** (`UnsupportedAlgorithm`) — the token uses a disallowed algorithm.
+    /// - **Key errors** (`KeyNotFound`, `KeyInactive`, `KeyRevoked`, `KeyNotYetValid`,
+    ///   `KeyExpired`, `InvalidPublicKey`, `InvalidKid`) — the signing key is in a definitive state
+    ///   that won't change on retry.
+    /// - **Protocol errors** (`JwksError`, `OidcDiscoveryFailed`, `IntrospectionFailed`,
+    ///   `InvalidIntrospectionResponse`) — while these may involve network calls, the errors
+    ///   typically indicate configuration or protocol issues rather than transient failures.
+    ///   Callers needing retry for JWKS/OIDC fetches should implement retry at the HTTP transport
+    ///   layer.
     ///
     /// # Example
     ///
@@ -944,10 +944,9 @@ mod tests {
     #[test]
     fn test_is_transient_key_storage_error_delegates_to_source() {
         // Transient storage errors → transient auth error
-        let connection_err =
-            AuthError::key_storage_error(inferadb_common_storage::StorageError::connection(
-                "network down",
-            ));
+        let connection_err = AuthError::key_storage_error(
+            inferadb_common_storage::StorageError::connection("network down"),
+        );
         assert!(
             connection_err.is_transient(),
             "KeyStorageError wrapping Connection should be transient"
@@ -955,10 +954,7 @@ mod tests {
 
         let timeout_err =
             AuthError::key_storage_error(inferadb_common_storage::StorageError::timeout());
-        assert!(
-            timeout_err.is_transient(),
-            "KeyStorageError wrapping Timeout should be transient"
-        );
+        assert!(timeout_err.is_transient(), "KeyStorageError wrapping Timeout should be transient");
 
         let rate_err = AuthError::key_storage_error(
             inferadb_common_storage::StorageError::rate_limit_exceeded(
@@ -971,19 +967,16 @@ mod tests {
         );
 
         // Non-transient storage errors → non-transient auth error
-        let not_found_err =
-            AuthError::key_storage_error(inferadb_common_storage::StorageError::not_found(
-                "missing",
-            ));
+        let not_found_err = AuthError::key_storage_error(
+            inferadb_common_storage::StorageError::not_found("missing"),
+        );
         assert!(
             !not_found_err.is_transient(),
             "KeyStorageError wrapping NotFound should NOT be transient"
         );
 
         let conflict_err =
-            AuthError::key_storage_error(inferadb_common_storage::StorageError::conflict(
-                "cas mismatch",
-            ));
+            AuthError::key_storage_error(inferadb_common_storage::StorageError::conflict());
         assert!(
             !conflict_err.is_transient(),
             "KeyStorageError wrapping Conflict should NOT be transient"
@@ -998,29 +991,14 @@ mod tests {
             ("TokenNotYetValid", AuthError::token_not_yet_valid()),
             ("InvalidSignature", AuthError::invalid_signature()),
             ("InvalidIssuer", AuthError::invalid_issuer("wrong issuer")),
-            (
-                "InvalidAudience",
-                AuthError::invalid_audience("wrong audience"),
-            ),
+            ("InvalidAudience", AuthError::invalid_audience("wrong audience")),
             ("MissingClaim", AuthError::missing_claim("aud")),
             ("InvalidScope", AuthError::invalid_scope("read")),
-            (
-                "UnsupportedAlgorithm",
-                AuthError::unsupported_algorithm("HS256"),
-            ),
+            ("UnsupportedAlgorithm", AuthError::unsupported_algorithm("HS256")),
             ("JwksError", AuthError::jwks_error("fetch failed")),
-            (
-                "OidcDiscoveryFailed",
-                AuthError::oidc_discovery_failed("timeout"),
-            ),
-            (
-                "IntrospectionFailed",
-                AuthError::introspection_failed("error"),
-            ),
-            (
-                "InvalidIntrospectionResponse",
-                AuthError::invalid_introspection_response("bad json"),
-            ),
+            ("OidcDiscoveryFailed", AuthError::oidc_discovery_failed("timeout")),
+            ("IntrospectionFailed", AuthError::introspection_failed("error")),
+            ("InvalidIntrospectionResponse", AuthError::invalid_introspection_response("bad json")),
             ("TokenInactive", AuthError::token_inactive()),
             ("MissingTenantId", AuthError::missing_tenant_id()),
             ("TokenTooOld", AuthError::token_too_old()),
@@ -1030,15 +1008,9 @@ mod tests {
             ("KeyNotYetValid", AuthError::key_not_yet_valid("kid-1")),
             ("KeyExpired", AuthError::key_expired("kid-1")),
             ("InvalidPublicKey", AuthError::invalid_public_key("bad pem")),
-            (
-                "TokenReplayed",
-                AuthError::token_replayed("jti-123"),
-            ),
+            ("TokenReplayed", AuthError::token_replayed("jti-123")),
             ("MissingJti", AuthError::missing_jti()),
-            (
-                "InvalidKid",
-                AuthError::invalid_kid("invalid char '/' at position 0"),
-            ),
+            ("InvalidKid", AuthError::invalid_kid("invalid char '/' at position 0")),
         ];
 
         for (variant_name, err) in permanent_errors {
