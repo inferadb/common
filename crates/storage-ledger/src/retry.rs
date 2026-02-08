@@ -52,6 +52,7 @@ struct RetryState {
 /// When `metrics` is provided, each retry attempt increments the
 /// `retry_count` counter, and exhausted retries increment
 /// `retry_exhausted_count`.
+#[tracing::instrument(skip(config, metrics, operation), fields(max_retries = config.max_retries))]
 pub(crate) async fn with_retry<F, Fut, T>(
     config: &RetryConfig,
     metrics: Option<&Metrics>,
@@ -115,6 +116,7 @@ where
 
 /// Like [`with_retry`] but also updates a shared `RetryState` so that
 /// `with_retry_timeout` can produce informative timeout errors.
+#[tracing::instrument(skip(config, metrics, operation, state), fields(max_retries = config.max_retries))]
 async fn with_retry_tracked<F, Fut, T>(
     config: &RetryConfig,
     metrics: Option<&Metrics>,
@@ -206,6 +208,7 @@ where
 /// during a backoff sleep or a backend call, and the last backend error.
 /// This helps operators distinguish configuration issues (timeout too
 /// short for retry config) from backend slowness.
+#[tracing::instrument(skip(config, metrics, operation), fields(timeout_ms = timeout.as_millis() as u64, max_retries = config.max_retries))]
 pub(crate) async fn with_retry_timeout<F, Fut, T>(
     config: &RetryConfig,
     timeout: Duration,
@@ -256,6 +259,7 @@ where
 ///
 /// Returns [`StorageError::CasRetriesExhausted`] when all attempts
 /// encounter conflicts.
+#[tracing::instrument(skip(config, operation), fields(max_retries = config.max_retries))]
 pub(crate) async fn with_cas_retry<F, Fut>(
     config: &CasRetryConfig,
     mut operation: F,

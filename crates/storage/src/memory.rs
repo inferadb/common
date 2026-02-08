@@ -233,6 +233,7 @@ impl Default for MemoryBackend {
 
 #[async_trait]
 impl StorageBackend for MemoryBackend {
+    #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
         // Check if key is expired
         if self.is_expired(key) {
@@ -243,6 +244,7 @@ impl StorageBackend for MemoryBackend {
         Ok(data.get(key).cloned())
     }
 
+    #[tracing::instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len()))]
     async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()> {
         self.check_sizes(&key, &value)?;
         let mut data = self.data.write();
@@ -257,6 +259,7 @@ impl StorageBackend for MemoryBackend {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, key, expected, new_value), fields(key_len = key.len()))]
     async fn compare_and_set(
         &self,
         key: &[u8],
@@ -287,6 +290,7 @@ impl StorageBackend for MemoryBackend {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {
         let mut data = self.data.write();
         data.remove(key);
@@ -300,6 +304,7 @@ impl StorageBackend for MemoryBackend {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, range))]
     async fn get_range<R>(&self, range: R) -> StorageResult<Vec<KeyValue>>
     where
         R: RangeBounds<Vec<u8>> + Send,
@@ -327,6 +332,7 @@ impl StorageBackend for MemoryBackend {
         Ok(results)
     }
 
+    #[tracing::instrument(skip(self, range))]
     async fn clear_range<R>(&self, range: R) -> StorageResult<()>
     where
         R: RangeBounds<Vec<u8>> + Send,
@@ -354,6 +360,7 @@ impl StorageBackend for MemoryBackend {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len(), ttl_ms = ttl.as_millis() as u64))]
     async fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> StorageResult<()> {
         self.check_sizes(&key, &value)?;
         let mut data = self.data.write();
@@ -367,10 +374,12 @@ impl StorageBackend for MemoryBackend {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     async fn transaction(&self) -> StorageResult<Box<dyn Transaction>> {
         Ok(Box::new(MemoryTransaction::new(self.clone())))
     }
 
+    #[tracing::instrument(skip(self))]
     async fn health_check(&self) -> StorageResult<HealthStatus> {
         let start = std::time::Instant::now();
         // Try to acquire read lock to verify we're not deadlocked

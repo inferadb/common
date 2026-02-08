@@ -13,7 +13,10 @@ use chrono::Utc;
 use ed25519_dalek::SigningKey;
 use inferadb_common_authn::{
     error::AuthError,
-    jwt::{decode_jwt_claims, decode_jwt_header, validate_claims, verify_with_signing_key_cache},
+    jwt::{
+        DEFAULT_MAX_IAT_AGE, decode_jwt_claims, decode_jwt_header, validate_claims,
+        verify_with_signing_key_cache,
+    },
     signing_key_cache::SigningKeyCache,
     validation::validate_algorithm,
 };
@@ -247,7 +250,7 @@ fn test_token_expired_one_second_ago() {
         vault_id: None,
         org_id: Some("12345".into()),
     };
-    let result = validate_claims(&claims, None);
+    let result = validate_claims(&claims, None, Some(DEFAULT_MAX_IAT_AGE));
     assert!(
         matches!(&result, Err(AuthError::TokenExpired { .. })),
         "Token expired 1 second ago must be rejected, got: {result:?}"
@@ -270,7 +273,7 @@ fn test_token_valid_one_second_from_now() {
         vault_id: None,
         org_id: Some("12345".into()),
     };
-    let result = validate_claims(&claims, None);
+    let result = validate_claims(&claims, None, Some(DEFAULT_MAX_IAT_AGE));
     assert!(result.is_ok(), "Token expiring in 1 second must be accepted, got: {result:?}");
 }
 
@@ -294,7 +297,7 @@ fn test_future_nbf_rejected() {
         vault_id: None,
         org_id: Some("12345".into()),
     };
-    let result = validate_claims(&claims, None);
+    let result = validate_claims(&claims, None, Some(DEFAULT_MAX_IAT_AGE));
     assert!(
         matches!(&result, Err(AuthError::TokenNotYetValid { .. })),
         "Token with future nbf must be rejected, got: {result:?}"
@@ -317,7 +320,7 @@ fn test_nbf_in_past_accepted() {
         vault_id: None,
         org_id: Some("12345".into()),
     };
-    let result = validate_claims(&claims, None);
+    let result = validate_claims(&claims, None, Some(DEFAULT_MAX_IAT_AGE));
     assert!(result.is_ok(), "Token with past nbf must be accepted, got: {result:?}");
 }
 

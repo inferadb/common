@@ -363,6 +363,7 @@ impl MemorySigningKeyStore {
 
 #[async_trait]
 impl PublicSigningKeyStore for MemorySigningKeyStore {
+    #[tracing::instrument(skip(self, key), fields(kid = %key.kid))]
     async fn create_key(
         &self,
         namespace_id: NamespaceId,
@@ -379,6 +380,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     async fn get_key(
         &self,
         namespace_id: NamespaceId,
@@ -389,6 +391,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         Ok(keys.get(&map_key).cloned())
     }
 
+    #[tracing::instrument(skip(self))]
     async fn list_active_keys(
         &self,
         namespace_id: NamespaceId,
@@ -412,6 +415,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         Ok(active_keys)
     }
 
+    #[tracing::instrument(skip(self))]
     async fn deactivate_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
         let map_key = Self::make_key(namespace_id, kid);
         let mut keys = self.keys.write();
@@ -422,6 +426,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     async fn revoke_key(
         &self,
         namespace_id: NamespaceId,
@@ -442,6 +447,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     async fn activate_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
         let map_key = Self::make_key(namespace_id, kid);
         let mut keys = self.keys.write();
@@ -459,6 +465,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self))]
     async fn delete_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
         let map_key = Self::make_key(namespace_id, kid);
         let mut keys = self.keys.write();
@@ -470,6 +477,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
     }
 
     /// Optimized bulk create: single write-lock acquisition for all keys.
+    #[tracing::instrument(skip(self, keys), fields(count = keys.len()))]
     async fn create_keys(
         &self,
         namespace_id: NamespaceId,
@@ -498,6 +506,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
     }
 
     /// Optimized bulk revoke: single write-lock acquisition for all keys.
+    #[tracing::instrument(skip(self, keys), fields(count = keys.len()))]
     async fn revoke_keys(
         &self,
         namespace_id: NamespaceId,
@@ -525,6 +534,7 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
     }
 
     /// Atomic rotate: both revoke and create happen under a single lock.
+    #[tracing::instrument(skip(self, new_key))]
     async fn rotate_key(
         &self,
         namespace_id: NamespaceId,

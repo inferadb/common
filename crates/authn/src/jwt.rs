@@ -29,6 +29,13 @@ use crate::{
     validation::{validate_algorithm, validate_kid},
 };
 
+/// Default maximum age for the `iat` (issued-at) claim: 24 hours.
+///
+/// Tokens with an `iat` value older than this are rejected by
+/// [`validate_claims`]. Pass a custom `Duration` to override, or `None`
+/// to disable the check (e.g. for long-lived machine-to-machine tokens).
+pub const DEFAULT_MAX_IAT_AGE: std::time::Duration = std::time::Duration::from_secs(86_400);
+
 /// JWT claims structure.
 ///
 /// Per the Management API specification, JWTs should have the following structure:
@@ -126,6 +133,8 @@ impl JwtClaims {
 /// # Errors
 ///
 /// Returns an error if the JWT header cannot be decoded.
+#[must_use = "JWT parsing may fail and errors must be handled"]
+#[tracing::instrument(skip(token))]
 pub fn decode_jwt_header(token: &str) -> Result<Header, AuthError> {
     decode_header(token)
         .map_err(|e| AuthError::invalid_token_format(format!("Failed to decode JWT header: {}", e)))
@@ -140,6 +149,8 @@ pub fn decode_jwt_header(token: &str) -> Result<Header, AuthError> {
 /// - The payload cannot be base64-decoded
 /// - The payload cannot be parsed as JSON
 /// - Required claims (iss, sub, aud) are empty
+#[must_use = "JWT parsing may fail and errors must be handled"]
+#[tracing::instrument(skip(token))]
 pub fn decode_jwt_claims(token: &str) -> Result<JwtClaims, AuthError> {
     // Split token into parts
     let parts: Vec<&str> = token.split('.').collect();
@@ -177,6 +188,9 @@ pub fn decode_jwt_claims(token: &str) -> Result<JwtClaims, AuthError> {
 ///
 /// * `claims` - The JWT claims to validate
 /// * `expected_audience` - Optional expected audience value
+/// * `max_iat_age` - Maximum allowed age for the `iat` claim. Defaults to [`DEFAULT_MAX_IAT_AGE`]
+///   (24 hours) when `Some(None)` or not overridden. Pass `Some(duration)` to set a custom max age,
+///   or `None` to disable the `iat` age check entirely.
 ///
 /// # Errors
 ///
@@ -184,11 +198,14 @@ pub fn decode_jwt_claims(token: &str) -> Result<JwtClaims, AuthError> {
 /// - Token has expired
 /// - Token is not yet valid (nbf in future)
 /// - Issued-at is in the future
-/// - Issued-at is too old (> 24 hours)
+/// - Issued-at is too old (exceeds `max_iat_age`)
 /// - Audience doesn't match expected value (if provided)
+#[must_use = "claim validation may fail and errors must be handled"]
+#[tracing::instrument(skip(claims))]
 pub fn validate_claims(
     claims: &JwtClaims,
     expected_audience: Option<&str>,
+    max_iat_age: Option<std::time::Duration>,
 ) -> Result<(), AuthError> {
     let now = Utc::now().timestamp() as u64;
 
@@ -204,13 +221,17 @@ pub fn validate_claims(
         return Err(AuthError::token_not_yet_valid());
     }
 
-    // Check issued-at is reasonable (not too far in past, max 24 hours)
+    // Check issued-at is not in the future
     if claims.iat > now {
         return Err(AuthError::invalid_token_format("iat claim is in the future"));
     }
-    if now - claims.iat > 86400 {
-        // 24 hours
-        return Err(AuthError::invalid_token_format("iat claim is too old (> 24 hours)"));
+
+    // Check issued-at is within max age (if configured)
+    if let Some(max_age) = max_iat_age {
+        let max_age_secs = max_age.as_secs();
+        if now - claims.iat > max_age_secs {
+            return Err(AuthError::token_too_old(claims.iat, max_age_secs));
+        }
     }
 
     // Check audience if enforced
@@ -231,6 +252,8 @@ pub fn validate_claims(
 /// # Errors
 ///
 /// Returns an error if signature verification fails.
+#[must_use = "signature verification may fail and errors must be handled"]
+#[tracing::instrument(skip(token, key))]
 pub fn verify_signature(
     token: &str,
     key: &DecodingKey,
@@ -297,6 +320,7 @@ pub fn verify_signature(
 /// # Ok(())
 /// # }
 /// ```
+#[must_use = "JWT verification may fail and errors must be handled"]
 #[tracing::instrument(skip(token, signing_key_cache))]
 pub async fn verify_with_signing_key_cache(
     token: &str,
@@ -395,6 +419,7 @@ pub async fn verify_with_signing_key_cache(
 /// # Ok(())
 /// # }
 /// ```
+#[must_use = "JWT verification may fail and errors must be handled"]
 #[tracing::instrument(skip(token, signing_key_cache, replay_detector))]
 pub async fn verify_with_replay_detection(
     token: &str,
@@ -572,6 +597,114 @@ mod tests {
         assert!(result.is_err());
     }
 
+    // ========== validate_claims max_iat_age tests ==========
+
+    fn make_claims(iat: u64, exp: u64) -> JwtClaims {
+        JwtClaims {
+            iss: "https://api.inferadb.com".to_owned(),
+            sub: "client:test".to_owned(),
+            aud: "https://api.inferadb.com/evaluate".to_owned(),
+            exp,
+            iat,
+            nbf: None,
+            jti: None,
+            scope: "vault:read".to_owned(),
+            vault_id: None,
+            org_id: Some("12345".to_owned()),
+        }
+    }
+
+    #[test]
+    fn test_validate_claims_iat_within_default_max_age() {
+        let now = Utc::now().timestamp() as u64;
+        let claims = make_claims(now - 3600, now + 3600); // iat 1h ago
+        let result = validate_claims(&claims, None, Some(DEFAULT_MAX_IAT_AGE));
+        assert!(result.is_ok(), "Token issued 1h ago should pass 24h limit: {result:?}");
+    }
+
+    #[test]
+    fn test_validate_claims_iat_exceeds_default_max_age() {
+        let now = Utc::now().timestamp() as u64;
+        let claims = make_claims(now - 90_000, now + 3600); // iat 25h ago
+        let result = validate_claims(&claims, None, Some(DEFAULT_MAX_IAT_AGE));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, AuthError::TokenTooOld { .. }), "Expected TokenTooOld, got: {err:?}");
+    }
+
+    #[test]
+    fn test_validate_claims_iat_check_disabled() {
+        let now = Utc::now().timestamp() as u64;
+        // iat 7 days ago — normally way beyond 24h limit
+        let claims = make_claims(now - 604_800, now + 3600);
+        let result = validate_claims(&claims, None, None);
+        assert!(result.is_ok(), "iat check disabled should accept old tokens: {result:?}");
+    }
+
+    #[test]
+    fn test_validate_claims_custom_short_max_age() {
+        let now = Utc::now().timestamp() as u64;
+        let five_minutes = std::time::Duration::from_secs(300);
+        // iat 10 minutes ago — within 24h but beyond 5min
+        let claims = make_claims(now - 600, now + 3600);
+        let result = validate_claims(&claims, None, Some(five_minutes));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, AuthError::TokenTooOld { max_age_secs: 300, .. }),
+            "Expected TokenTooOld with max_age_secs=300, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_claims_custom_long_max_age() {
+        let now = Utc::now().timestamp() as u64;
+        let one_week = std::time::Duration::from_secs(7 * 86_400);
+        // iat 3 days ago — within 1 week
+        let claims = make_claims(now - 3 * 86_400, now + 3600);
+        let result = validate_claims(&claims, None, Some(one_week));
+        assert!(result.is_ok(), "3-day-old token should pass 7-day limit: {result:?}");
+    }
+
+    #[test]
+    fn test_validate_claims_iat_at_exact_boundary() {
+        let now = Utc::now().timestamp() as u64;
+        // iat exactly 24h ago — should pass (> not >=)
+        let claims = make_claims(now - 86_400, now + 3600);
+        let result = validate_claims(&claims, None, Some(DEFAULT_MAX_IAT_AGE));
+        assert!(result.is_ok(), "Token at exact boundary should pass: {result:?}");
+    }
+
+    #[test]
+    fn test_validate_claims_iat_one_second_beyond_boundary() {
+        let now = Utc::now().timestamp() as u64;
+        // iat 24h + 1s ago — should fail
+        let claims = make_claims(now - 86_401, now + 3600);
+        let result = validate_claims(&claims, None, Some(DEFAULT_MAX_IAT_AGE));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, AuthError::TokenTooOld { .. }), "Expected TokenTooOld, got: {err:?}");
+    }
+
+    #[test]
+    fn test_token_too_old_detail_includes_diagnostic_info() {
+        let err = AuthError::token_too_old(1_700_000_000, 86_400);
+        let detail = err.detail();
+        assert!(detail.contains("1700000000"), "detail should include iat timestamp: {detail}");
+        assert!(detail.contains("86400"), "detail should include max_age_secs: {detail}");
+    }
+
+    #[test]
+    fn test_token_too_old_display_does_not_leak_internals() {
+        let err = AuthError::token_too_old(1_700_000_000, 86_400);
+        let display = format!("{err}");
+        assert!(
+            !display.contains("1700000000"),
+            "Display should not contain iat timestamp: {display}"
+        );
+        assert_eq!(display.split(" [span=").next(), Some("Token too old"));
+    }
+
     mod proptests {
         use proptest::prelude::*;
 
@@ -667,9 +800,13 @@ mod tests {
             let _ = decode_jwt_header(token);
             let claims_result = decode_jwt_claims(token);
             if let Ok(ref claims) = claims_result {
-                let _ = validate_claims(claims, None);
-                let _ = validate_claims(claims, Some("https://api.inferadb.com/evaluate"));
-                let _ = validate_claims(claims, Some(&claims.aud));
+                let _ = validate_claims(claims, None, Some(DEFAULT_MAX_IAT_AGE));
+                let _ = validate_claims(
+                    claims,
+                    Some("https://api.inferadb.com/evaluate"),
+                    Some(DEFAULT_MAX_IAT_AGE),
+                );
+                let _ = validate_claims(claims, Some(&claims.aud), None);
             }
             claims_result.is_ok()
         }

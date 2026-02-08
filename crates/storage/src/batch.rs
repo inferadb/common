@@ -479,6 +479,7 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
     ///
     /// This is a convenience wrapper around [`flush`](Self::flush) that returns
     /// the first error encountered, providing the simpler all-or-nothing API.
+    #[must_use = "flush may fail and partial results must be handled"]
     pub async fn flush_all(&mut self) -> StorageResult<BatchFlushStats> {
         self.flush().await.into_result()
     }
@@ -491,6 +492,7 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
     /// remaining sub-batches.
     ///
     /// Use [`flush_all`](Self::flush_all) for the simpler all-or-nothing API.
+    #[must_use = "flush results contain per-operation errors that must be inspected"]
     pub async fn flush(&mut self) -> BatchResult {
         if self.operations.is_empty() {
             return BatchResult { results: Vec::new(), stats: BatchFlushStats::default() };

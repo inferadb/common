@@ -261,8 +261,10 @@ impl SigningKeyCache {
 
         // L1: Check local cache (TTL-based)
         if let Some(key) = self.cache.get(&cache_key).await {
+            tracing::debug!(cache = "L1", "cache hit");
             return Ok(key);
         }
+        tracing::debug!(cache = "L1", "cache miss");
 
         // Snapshot the invalidation generation before the L2 fetch.
         // If `invalidate()` runs concurrently, it bumps this counter.
@@ -307,7 +309,7 @@ impl SigningKeyCache {
                     )
                     .await;
 
-                tracing::debug!(namespace_id = %namespace_id, kid, "Cached signing key from Ledger");
+                tracing::debug!(cache = "L2", "cache hit — populated L1 + L3");
 
                 Ok(decoding_key)
             },
@@ -320,11 +322,9 @@ impl SigningKeyCache {
                 {
                     let age = entry.inserted_at.elapsed();
                     tracing::warn!(
-                        namespace_id = %namespace_id,
-                        kid,
-                        error = %storage_error,
+                        cache = "L3",
                         fallback_age_secs = age.as_secs(),
-                        "Ledger unavailable, using fallback cached key (age: {age:?})"
+                        "cache hit (fallback) — ledger unavailable"
                     );
                     return Ok(entry.key);
                 }
@@ -345,6 +345,7 @@ impl SigningKeyCache {
     ///
     /// Call this when a key is known to be revoked or deleted.
     /// The next lookup will fetch fresh state from Ledger.
+    #[tracing::instrument(skip(self))]
     pub async fn invalidate(&self, org_id: NamespaceId, kid: &str) {
         let cache_key = format!("{org_id}:{kid}");
         // Bump generation first so any in-flight L2 reads will detect the change
@@ -365,6 +366,7 @@ impl SigningKeyCache {
     /// An audit event is emitted at INFO level for compliance tracking.
     /// Use sparingly - this causes a spike in Ledger fetches. Useful during
     /// key rotation events where all cached keys should be refreshed.
+    #[tracing::instrument(skip(self))]
     pub async fn clear_all(&self) {
         let l1_count = self.cache.entry_count();
         let fallback_count = self.fallback.entry_count();

@@ -150,6 +150,10 @@ pub enum AuthError {
 
     /// Token too old (issued at exceeds max age).
     TokenTooOld {
+        /// The `iat` timestamp from the token (seconds since epoch).
+        iat_timestamp: u64,
+        /// The maximum allowed age in seconds.
+        max_age_secs: u64,
         /// Span ID captured at error creation for trace correlation.
         span_id: Option<tracing::span::Id>,
     },
@@ -324,7 +328,7 @@ impl fmt::Display for AuthError {
                 write!(f, "Missing required tenant identifier")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::TokenTooOld { span_id } => {
+            Self::TokenTooOld { span_id, .. } => {
                 write!(f, "Token too old")?;
                 fmt_span_suffix(f, span_id)
             },
@@ -474,9 +478,14 @@ impl AuthError {
     }
 
     /// Creates a new `TokenTooOld` error.
+    ///
+    /// # Arguments
+    ///
+    /// * `iat_timestamp` — The `iat` value from the token (seconds since epoch)
+    /// * `max_age_secs` — The maximum allowed age in seconds
     #[must_use]
-    pub fn token_too_old() -> Self {
-        Self::TokenTooOld { span_id: current_span_id() }
+    pub fn token_too_old(iat_timestamp: u64, max_age_secs: u64) -> Self {
+        Self::TokenTooOld { iat_timestamp, max_age_secs, span_id: current_span_id() }
     }
 
     /// Creates a new `KeyNotFound` error.
@@ -649,6 +658,9 @@ impl AuthError {
             },
             Self::InvalidKid { message, .. } => {
                 format!("Invalid kid: {message}")
+            },
+            Self::TokenTooOld { iat_timestamp, max_age_secs, .. } => {
+                format!("Token too old: iat={iat_timestamp}, max_age={max_age_secs}s")
             },
             // Variants with no additional context — detail matches Display
             _ => self.to_string(),
@@ -1001,7 +1013,7 @@ mod tests {
             ("InvalidIntrospectionResponse", AuthError::invalid_introspection_response("bad json")),
             ("TokenInactive", AuthError::token_inactive()),
             ("MissingTenantId", AuthError::missing_tenant_id()),
-            ("TokenTooOld", AuthError::token_too_old()),
+            ("TokenTooOld", AuthError::token_too_old(1_000_000, 86400)),
             ("KeyNotFound", AuthError::key_not_found("kid-1")),
             ("KeyInactive", AuthError::key_inactive("kid-1")),
             ("KeyRevoked", AuthError::key_revoked("kid-1")),

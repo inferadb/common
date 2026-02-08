@@ -56,7 +56,7 @@ pub mod validation;
 
 // Re-export key types for convenience
 pub use error::{AuthError, Result};
-pub use jwt::JwtClaims;
+pub use jwt::{DEFAULT_MAX_IAT_AGE, JwtClaims};
 pub use replay::{InMemoryReplayDetector, ReplayDetector};
 pub use signing_key_cache::{
     DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, DEFAULT_FALLBACK_CAPACITY, DEFAULT_FALLBACK_TTL,

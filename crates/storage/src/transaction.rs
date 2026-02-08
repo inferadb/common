@@ -111,6 +111,7 @@ pub trait Transaction: Send {
     /// - `Ok(Some(bytes))` if the key exists
     /// - `Ok(None)` if the key doesn't exist or was deleted in this transaction
     /// - `Err(...)` on storage errors
+    #[must_use = "transaction operations may fail and errors must be handled"]
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>>;
 
     /// Buffers a set operation within the transaction.
@@ -163,6 +164,7 @@ pub trait Transaction: Send {
     /// The condition is checked at commit time, not when this method is called.
     /// If the condition fails at commit time, the entire transaction fails
     /// and no operations are applied.
+    #[must_use = "compare-and-set may fail with a size limit error and must be handled"]
     fn compare_and_set(
         &mut self,
         key: Vec<u8>,
@@ -191,5 +193,6 @@ pub trait Transaction: Send {
     ///
     /// This method consumes the transaction. After commit (successful or not),
     /// the transaction cannot be used further.
+    #[must_use = "transaction commit may fail and errors must be handled"]
     async fn commit(self: Box<Self>) -> StorageResult<()>;
 }
