@@ -86,7 +86,7 @@ pub const DEFAULT_FALLBACK_CAPACITY: u64 = 10_000;
 /// Entries older than this are evicted even if the Ledger remains unreachable.
 /// This bounds the window during which a revoked key could still be served
 /// from the fallback cache during an outage. Operators can tune this via
-/// [`SigningKeyCache::builder`] based on their security posture:
+/// [`SigningKeyCache::with_fallback_ttl`] based on their security posture:
 ///
 /// - **Shorter TTL** (e.g., 15 minutes): tighter security, higher risk of total outage if Ledger is
 ///   down for longer

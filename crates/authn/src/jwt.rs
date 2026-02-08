@@ -398,7 +398,8 @@ pub async fn verify_with_signing_key_cache(
 ///
 /// * `token` — The JWT token string to verify
 /// * `signing_key_cache` — Ledger-backed signing key cache
-/// * `replay_detector` — Implementation of [`ReplayDetector`] for JTI tracking
+/// * `replay_detector` — Implementation of [`ReplayDetector`](crate::ReplayDetector) for JTI
+///   tracking
 ///
 /// # Errors
 ///

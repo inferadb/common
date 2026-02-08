@@ -32,7 +32,7 @@ fn current_span_id() -> Option<tracing::span::Id> {
 ///
 /// Each variant carries an optional `span_id` captured from the active
 /// [`tracing::Span`] at error creation time. When present, the span ID
-/// is included in the [`Display`] output for log correlation.
+/// is included in the [`Display`](std::fmt::Display) output for log correlation.
 ///
 /// # Non-exhaustive
 ///
@@ -142,7 +142,7 @@ impl LedgerStorageError {
 
     /// Returns a detailed diagnostic string for server-side logging.
     ///
-    /// Unlike [`Display`], which produces generic messages safe for external
+    /// Unlike [`Display`](std::fmt::Display), which produces generic messages safe for external
     /// consumers, this method includes the full SDK error message and other
     /// internal context. **Never expose this output to external callers.**
     #[must_use]

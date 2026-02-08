@@ -28,7 +28,7 @@ fn fmt_span_suffix(f: &mut fmt::Formatter<'_>, span_id: &Option<tracing::span::I
 ///
 /// Each variant carries an optional `span_id` captured from the active
 /// [`tracing::Span`] at error creation time. When present, the span ID is
-/// included in the [`Display`] output for log correlation.
+/// included in the [`Display`](std::fmt::Display) output for log correlation.
 ///
 /// # Non-exhaustive
 ///
@@ -404,7 +404,7 @@ impl AuthError {
     /// Creates a new `InvalidIssuer` error.
     ///
     /// The `message` is preserved for [`detail()`](Self::detail) but redacted
-    /// from [`Display`] to avoid leaking server configuration.
+    /// from [`Display`](std::fmt::Display) to avoid leaking server configuration.
     #[must_use]
     pub fn invalid_issuer(message: impl Into<String>) -> Self {
         let message = message.into();
@@ -415,7 +415,7 @@ impl AuthError {
     /// Creates a new `InvalidAudience` error.
     ///
     /// The `message` is preserved for [`detail()`](Self::detail) but redacted
-    /// from [`Display`] to avoid leaking expected audience configuration.
+    /// from [`Display`](std::fmt::Display) to avoid leaking expected audience configuration.
     #[must_use]
     pub fn invalid_audience(message: impl Into<String>) -> Self {
         let message = message.into();
@@ -584,7 +584,7 @@ impl AuthError {
 
     /// Returns a detailed diagnostic string for server-side logging.
     ///
-    /// Unlike [`Display`], which produces generic messages safe for API
+    /// Unlike [`Display`](std::fmt::Display), which produces generic messages safe for API
     /// responses, this method returns the full internal context including
     /// expected values, key IDs, and backend error details. **Never expose
     /// this output to external callers.**
