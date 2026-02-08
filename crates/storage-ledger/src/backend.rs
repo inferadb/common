@@ -13,8 +13,8 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use inferadb_common_storage::{
-    HealthMetadata, HealthStatus, KeyValue, NamespaceId, SizeLimits, StorageBackend, StorageError,
-    StorageResult, Transaction, VaultId, validate_sizes,
+    HealthMetadata, HealthStatus, KeyValue, Metrics, NamespaceId, SizeLimits, StorageBackend,
+    StorageError, StorageResult, Transaction, VaultId, validate_sizes,
 };
 use inferadb_ledger_sdk::{
     LedgerClient, ListEntitiesOpts, Operation, ReadConsistency, SetCondition,
@@ -116,6 +116,9 @@ pub struct LedgerBackend {
 
     /// Optional circuit breaker for fail-fast during backend outages.
     circuit_breaker: Option<crate::circuit_breaker::CircuitBreaker>,
+
+    /// Metrics collector for per-namespace operation tracking.
+    metrics: Metrics,
 }
 
 impl std::fmt::Debug for LedgerBackend {
@@ -192,6 +195,7 @@ impl LedgerBackend {
             timeout_config,
             size_limits,
             circuit_breaker,
+            metrics: Metrics::new(),
         })
     }
 
@@ -224,6 +228,7 @@ impl LedgerBackend {
             timeout_config: TimeoutConfig::default(),
             size_limits: None,
             circuit_breaker: None,
+            metrics: Metrics::new(),
         }
     }
 
@@ -322,6 +327,17 @@ impl LedgerBackend {
         self.circuit_breaker.as_ref().map(crate::circuit_breaker::CircuitBreaker::state)
     }
 
+    /// Returns a reference to the metrics collector.
+    #[must_use]
+    pub fn storage_metrics(&self) -> &Metrics {
+        &self.metrics
+    }
+
+    /// Returns the namespace ID as a string for metric recording.
+    fn ns_str(&self) -> String {
+        self.namespace_id.to_string()
+    }
+
     /// Performs a read with the configured consistency level.
     async fn do_read(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, LedgerStorageError> {
         let result = match self.read_consistency {
@@ -360,11 +376,18 @@ impl LedgerBackend {
     }
 }
 
+impl inferadb_common_storage::MetricsCollector for LedgerBackend {
+    fn metrics(&self) -> &Metrics {
+        &self.metrics
+    }
+}
+
 #[async_trait]
 impl StorageBackend for LedgerBackend {
     #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
         self.check_circuit()?;
+        let start = std::time::Instant::now();
         let encoded_key = encode_key(key);
 
         let result = with_retry_timeout(
@@ -382,6 +405,10 @@ impl StorageBackend for LedgerBackend {
         )
         .await;
         self.record_circuit_result(&result);
+        self.metrics.record_get_ns(start.elapsed(), &self.ns_str());
+        if result.is_err() {
+            self.metrics.record_error_ns(&self.ns_str());
+        }
         result
     }
 
@@ -389,6 +416,7 @@ impl StorageBackend for LedgerBackend {
     async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()> {
         self.check_circuit()?;
         self.check_sizes(&key, &value)?;
+        let start = std::time::Instant::now();
         let encoded_key = encode_key(&key);
 
         let result = with_retry_timeout(
@@ -410,6 +438,10 @@ impl StorageBackend for LedgerBackend {
         )
         .await;
         self.record_circuit_result(&result);
+        self.metrics.record_set_ns(start.elapsed(), &self.ns_str());
+        if result.is_err() {
+            self.metrics.record_error_ns(&self.ns_str());
+        }
         result
     }
 
@@ -422,6 +454,7 @@ impl StorageBackend for LedgerBackend {
     ) -> StorageResult<()> {
         self.check_circuit()?;
         self.check_sizes(key, &new_value)?;
+        let start = std::time::Instant::now();
         let encoded_key = encode_key(key);
 
         let condition = match expected {
@@ -461,12 +494,17 @@ impl StorageBackend for LedgerBackend {
         )
         .await;
         self.record_circuit_result(&result);
+        self.metrics.record_set_ns(start.elapsed(), &self.ns_str());
+        if result.is_err() {
+            self.metrics.record_error_ns(&self.ns_str());
+        }
         result
     }
 
     #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {
         self.check_circuit()?;
+        let start = std::time::Instant::now();
         let encoded_key = encode_key(key);
 
         let result = with_retry_timeout(
@@ -488,6 +526,10 @@ impl StorageBackend for LedgerBackend {
         )
         .await;
         self.record_circuit_result(&result);
+        self.metrics.record_delete_ns(start.elapsed(), &self.ns_str());
+        if result.is_err() {
+            self.metrics.record_error_ns(&self.ns_str());
+        }
         result
     }
 
@@ -497,6 +539,7 @@ impl StorageBackend for LedgerBackend {
         R: RangeBounds<Vec<u8>> + Send,
     {
         self.check_circuit()?;
+        let start = std::time::Instant::now();
 
         // Convert range bounds to hex-encoded strings
         let (start_key, start_inclusive) = match range.start_bound() {
@@ -619,6 +662,10 @@ impl StorageBackend for LedgerBackend {
         .await
         .unwrap_or(Err(StorageError::timeout()));
         self.record_circuit_result(&result);
+        self.metrics.record_get_range_ns(start.elapsed(), &self.ns_str());
+        if result.is_err() {
+            self.metrics.record_error_ns(&self.ns_str());
+        }
         result
     }
 
@@ -628,6 +675,7 @@ impl StorageBackend for LedgerBackend {
         R: RangeBounds<Vec<u8>> + Send,
     {
         self.check_circuit()?;
+        let start = std::time::Instant::now();
 
         // First, get all keys in the range (retried per-page internally)
         let keys_to_delete = self.get_range(range).await?;
@@ -658,6 +706,10 @@ impl StorageBackend for LedgerBackend {
         )
         .await;
         self.record_circuit_result(&result);
+        self.metrics.record_clear_range_ns(start.elapsed(), &self.ns_str());
+        if result.is_err() {
+            self.metrics.record_error_ns(&self.ns_str());
+        }
         result
     }
 
@@ -676,6 +728,7 @@ impl StorageBackend for LedgerBackend {
     async fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> StorageResult<()> {
         self.check_circuit()?;
         self.check_sizes(&key, &value)?;
+        let start = std::time::Instant::now();
         let encoded_key = encode_key(&key);
         let expires_at = Self::compute_expiration_timestamp(ttl)?;
 
@@ -702,18 +755,24 @@ impl StorageBackend for LedgerBackend {
         )
         .await;
         self.record_circuit_result(&result);
+        self.metrics.record_set_ns(start.elapsed(), &self.ns_str());
+        if result.is_err() {
+            self.metrics.record_error_ns(&self.ns_str());
+        }
         result
     }
 
     #[tracing::instrument(skip(self))]
     async fn transaction(&self) -> StorageResult<Box<dyn Transaction>> {
         self.check_circuit()?;
+        let start = std::time::Instant::now();
         let txn = LedgerTransaction::new(
             Arc::clone(&self.client),
             self.namespace_id,
             self.vault_id,
             self.read_consistency,
         );
+        self.metrics.record_transaction_ns(start.elapsed(), &self.ns_str());
         Ok(Box::new(txn))
     }
 

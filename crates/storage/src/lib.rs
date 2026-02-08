@@ -103,7 +103,10 @@ pub use batch::{BatchConfig, BatchFlushStats, BatchOperation, BatchResult, Batch
 pub use error::{BoxError, ConfigError, StorageError, StorageResult};
 pub use health::{HealthMetadata, HealthStatus};
 pub use memory::MemoryBackend;
-pub use metrics::{LatencyPercentiles, Metrics, MetricsCollector, MetricsSnapshot};
+pub use metrics::{
+    DEFAULT_MAX_TRACKED_NAMESPACES, LatencyPercentiles, Metrics, MetricsCollector, MetricsSnapshot,
+    NamespaceOperationSnapshot,
+};
 pub use rate_limiter::{
     NamespaceExtractor, RateLimitConfig, RateLimitMetricsSnapshot, RateLimitedBackend,
     TokenBucketLimiter,
