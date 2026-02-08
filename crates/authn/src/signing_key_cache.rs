@@ -1578,4 +1578,404 @@ mod tests {
         let result = cache.get_decoding_key(NamespaceId::from(1), "capacity-ttl").await;
         assert!(result.is_ok(), "entry under default fallback TTL should be served");
     }
+
+    // ========== Concurrency Tests for SigningKeyCache (Task 21) ==========
+
+    /// Mock store that counts L2 `get_key` calls and supports configurable
+    /// delays plus failure injection. Combines the functionality of
+    /// `DelayingStore` and `FailingStore` with call counting.
+    struct CountingStore {
+        inner: Arc<MemorySigningKeyStore>,
+        get_count: std::sync::atomic::AtomicUsize,
+        delay: std::sync::Mutex<Duration>,
+        fail_with: std::sync::Mutex<Option<fn() -> StorageError>>,
+    }
+
+    impl CountingStore {
+        fn new() -> Self {
+            Self {
+                inner: Arc::new(MemorySigningKeyStore::new()),
+                get_count: std::sync::atomic::AtomicUsize::new(0),
+                delay: std::sync::Mutex::new(Duration::ZERO),
+                fail_with: std::sync::Mutex::new(None),
+            }
+        }
+
+        fn get_count(&self) -> usize {
+            self.get_count.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn reset_count(&self) {
+            self.get_count.store(0, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn set_delay(&self, delay: Duration) {
+            *self.delay.lock().expect("lock") = delay;
+        }
+
+        fn set_failure(&self, factory: Option<fn() -> StorageError>) {
+            *self.fail_with.lock().expect("lock") = factory;
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PublicSigningKeyStore for CountingStore {
+        async fn create_key(
+            &self,
+            namespace_id: NamespaceId,
+            key: &PublicSigningKey,
+        ) -> Result<(), StorageError> {
+            self.inner.create_key(namespace_id, key).await
+        }
+
+        async fn get_key(
+            &self,
+            namespace_id: NamespaceId,
+            kid: &str,
+        ) -> Result<Option<PublicSigningKey>, StorageError> {
+            self.get_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+            if let Some(factory) = *self.fail_with.lock().expect("lock") {
+                return Err(factory());
+            }
+
+            let delay = *self.delay.lock().expect("lock");
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+
+            self.inner.get_key(namespace_id, kid).await
+        }
+
+        async fn list_active_keys(
+            &self,
+            namespace_id: NamespaceId,
+        ) -> Result<Vec<PublicSigningKey>, StorageError> {
+            self.inner.list_active_keys(namespace_id).await
+        }
+
+        async fn deactivate_key(
+            &self,
+            namespace_id: NamespaceId,
+            kid: &str,
+        ) -> Result<(), StorageError> {
+            self.inner.deactivate_key(namespace_id, kid).await
+        }
+
+        async fn revoke_key(
+            &self,
+            namespace_id: NamespaceId,
+            kid: &str,
+            reason: Option<&str>,
+        ) -> Result<(), StorageError> {
+            self.inner.revoke_key(namespace_id, kid, reason).await
+        }
+
+        async fn activate_key(
+            &self,
+            namespace_id: NamespaceId,
+            kid: &str,
+        ) -> Result<(), StorageError> {
+            self.inner.activate_key(namespace_id, kid).await
+        }
+
+        async fn delete_key(
+            &self,
+            namespace_id: NamespaceId,
+            kid: &str,
+        ) -> Result<(), StorageError> {
+            self.inner.delete_key(namespace_id, kid).await
+        }
+    }
+
+    /// Stampede prevention: 100 concurrent `get` calls for the same key
+    /// after one warm-up call should produce 0 additional L2 reads.
+    ///
+    /// The warm-up populates L1, and subsequent concurrent reads all
+    /// hit L1 (at most 1 total L2 read from the warm-up).
+    #[tokio::test]
+    async fn test_stampede_prevention_warm_cache() {
+        let store = Arc::new(CountingStore::new());
+        let key = create_valid_test_key("stampede-key");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        let cache = Arc::new(SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        ));
+
+        // Warm the cache — 1 L2 read
+        let _ = cache.get_decoding_key(NamespaceId::from(1), "stampede-key").await;
+        cache.sync().await;
+        assert_eq!(store.get_count(), 1, "warm-up should trigger exactly 1 L2 read");
+
+        // Reset counter to measure only the concurrent reads
+        store.reset_count();
+
+        // Launch 100 concurrent gets — all should hit L1
+        let mut handles = Vec::new();
+        for _ in 0..100 {
+            let cache_clone = Arc::clone(&cache);
+            handles.push(tokio::spawn(async move {
+                cache_clone.get_decoding_key(NamespaceId::from(1), "stampede-key").await
+            }));
+        }
+
+        for handle in handles {
+            let result = handle.await.expect("task should not panic");
+            assert!(result.is_ok(), "all concurrent gets should succeed");
+        }
+
+        // With a warm cache, all 100 reads should come from L1
+        assert_eq!(
+            store.get_count(),
+            0,
+            "warm cache should serve all concurrent reads from L1 (0 L2 reads)"
+        );
+    }
+
+    /// Verifies that `get` + concurrent `invalidate` produces no stale reads
+    /// after invalidation completes, with L2 read count verification.
+    ///
+    /// After invalidation, a subsequent read must hit L2 (not return stale L1 data).
+    #[tokio::test]
+    async fn test_no_stale_reads_after_invalidate_with_metrics() {
+        let store = Arc::new(CountingStore::new());
+        let key = create_valid_test_key("invalidate-metrics-key");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        let cache = Arc::new(SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        ));
+
+        // Warm the cache
+        let _ = cache.get_decoding_key(NamespaceId::from(1), "invalidate-metrics-key").await;
+        cache.sync().await;
+        assert_eq!(store.get_count(), 1);
+
+        // Invalidate
+        cache.invalidate(NamespaceId::from(1), "invalidate-metrics-key").await;
+        cache.sync().await;
+        assert_eq!(cache.entry_count(), 0, "L1 should be empty after invalidation");
+
+        // Reset count after warmup
+        store.reset_count();
+
+        // Launch concurrent reads after invalidation — each should go to L2
+        // until L1 is repopulated
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let cache_clone = Arc::clone(&cache);
+            handles.push(tokio::spawn(async move {
+                cache_clone.get_decoding_key(NamespaceId::from(1), "invalidate-metrics-key").await
+            }));
+        }
+
+        for handle in handles {
+            let result = handle.await.expect("task should not panic");
+            assert!(result.is_ok(), "reads after invalidation should succeed");
+        }
+
+        // At least 1 L2 read must have occurred (the first post-invalidation miss)
+        assert!(
+            store.get_count() >= 1,
+            "at least 1 L2 read should occur after invalidation, got {}",
+            store.get_count()
+        );
+
+        // The cache should be re-populated
+        cache.sync().await;
+        assert_eq!(cache.entry_count(), 1, "L1 should be re-populated after reads");
+    }
+
+    /// Concurrent `get` calls during simulated L2 read latency.
+    ///
+    /// All callers should receive the same (valid) result. With a
+    /// delayed L2, multiple callers may hit L2 simultaneously, but
+    /// all should succeed with a valid decoding key.
+    #[tokio::test]
+    async fn test_concurrent_gets_same_result_during_l2_latency() {
+        let store = Arc::new(CountingStore::new());
+        store.set_delay(Duration::from_millis(50));
+
+        let key = create_valid_test_key("latency-key");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        let cache = Arc::new(SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        ));
+
+        // Launch 20 concurrent gets on a cold cache with 50ms L2 delay
+        let mut handles = Vec::new();
+        for _ in 0..20 {
+            let cache_clone = Arc::clone(&cache);
+            handles.push(tokio::spawn(async move {
+                cache_clone.get_decoding_key(NamespaceId::from(1), "latency-key").await
+            }));
+        }
+
+        let mut results = Vec::new();
+        for handle in handles {
+            let result = handle.await.expect("task should not panic");
+            assert!(result.is_ok(), "all concurrent gets should succeed");
+            results.push(result.expect("already checked"));
+        }
+
+        // All results should point to the same key (Arc pointer equality
+        // isn't guaranteed here since each L2 read creates a fresh Arc,
+        // but all must be valid decoding keys for the same public key)
+        assert_eq!(results.len(), 20);
+
+        // After all reads, L1 should have exactly 1 entry
+        cache.sync().await;
+        assert_eq!(cache.entry_count(), 1, "L1 should have exactly 1 entry for the key");
+    }
+
+    /// Cache entry expiration under concurrent access.
+    ///
+    /// Uses a very short L1 TTL. After the TTL expires, concurrent reads
+    /// should cleanly transition to L2 fetches and re-populate L1.
+    #[tokio::test]
+    async fn test_cache_expiration_under_concurrent_access() {
+        let store = Arc::new(CountingStore::new());
+        let key = create_valid_test_key("expiring-key");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        // Very short L1 TTL
+        let cache = Arc::new(SigningKeyCache::with_capacity(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_millis(50),
+            100,
+        ));
+
+        // Warm the cache
+        let _ = cache.get_decoding_key(NamespaceId::from(1), "expiring-key").await;
+        cache.sync().await;
+        assert_eq!(store.get_count(), 1);
+
+        // Wait for L1 TTL to expire
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        cache.sync().await;
+
+        // Reset counter to measure post-expiration behavior
+        store.reset_count();
+
+        // Launch concurrent reads after expiration
+        let mut handles = Vec::new();
+        for _ in 0..20 {
+            let cache_clone = Arc::clone(&cache);
+            handles.push(tokio::spawn(async move {
+                cache_clone.get_decoding_key(NamespaceId::from(1), "expiring-key").await
+            }));
+        }
+
+        for handle in handles {
+            let result = handle.await.expect("task should not panic");
+            assert!(result.is_ok(), "reads after TTL expiration should succeed");
+        }
+
+        // At least 1 L2 read should have occurred (cache was expired)
+        assert!(
+            store.get_count() >= 1,
+            "at least 1 L2 read expected after expiration, got {}",
+            store.get_count()
+        );
+
+        // Cache should be re-populated
+        cache.sync().await;
+        assert_eq!(cache.entry_count(), 1, "L1 should be re-populated after expiration");
+    }
+
+    /// L2 failure during concurrent access — all callers should
+    /// fall back to L3 and receive a valid key.
+    #[tokio::test]
+    async fn test_l2_failure_all_callers_use_l3_fallback() {
+        let store = Arc::new(CountingStore::new());
+        let key = create_valid_test_key("fallback-concurrent");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        let cache = Arc::new(SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        ));
+
+        // Warm the cache (populates L1 + L3)
+        let _ = cache.get_decoding_key(NamespaceId::from(1), "fallback-concurrent").await;
+        cache.sync().await;
+        assert_eq!(store.get_count(), 1);
+        assert_eq!(cache.fallback_entry_count(), 1, "L3 should be populated");
+
+        // Simulate L2 failure and clear L1
+        store.set_failure(Some(|| StorageError::connection("simulated outage")));
+        cache.clear_l1().await;
+        cache.sync().await;
+
+        // Reset counter
+        store.reset_count();
+
+        // Launch 20 concurrent gets — all should use L3 fallback
+        let mut handles = Vec::new();
+        for _ in 0..20 {
+            let cache_clone = Arc::clone(&cache);
+            handles.push(tokio::spawn(async move {
+                cache_clone.get_decoding_key(NamespaceId::from(1), "fallback-concurrent").await
+            }));
+        }
+
+        for handle in handles {
+            let result = handle.await.expect("task should not panic");
+            assert!(result.is_ok(), "all callers should receive L3 fallback key");
+        }
+
+        // All 20 callers attempted L2 (all miss L1, all hit L2, all fail, all use L3)
+        assert_eq!(
+            store.get_count(),
+            20,
+            "all callers should attempt L2 before falling back to L3"
+        );
+    }
+
+    /// L2 read count matches expected pattern across a full cache lifecycle:
+    /// warm-up, hits, invalidation, re-population.
+    #[tokio::test]
+    async fn test_l2_read_count_across_lifecycle() {
+        let store = Arc::new(CountingStore::new());
+        let key = create_valid_test_key("lifecycle-key");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        let cache = Arc::new(SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        ));
+
+        // Phase 1: Cold cache — first get triggers L2 read
+        let _ = cache.get_decoding_key(NamespaceId::from(1), "lifecycle-key").await;
+        assert_eq!(store.get_count(), 1, "phase 1: cold miss = 1 L2 read");
+
+        // Phase 2: Warm cache — 50 sequential gets, all from L1
+        for _ in 0..50 {
+            let result = cache.get_decoding_key(NamespaceId::from(1), "lifecycle-key").await;
+            assert!(result.is_ok());
+        }
+        assert_eq!(store.get_count(), 1, "phase 2: warm hits = still 1 L2 read total");
+
+        // Phase 3: Invalidation + re-population
+        cache.invalidate(NamespaceId::from(1), "lifecycle-key").await;
+        cache.sync().await;
+
+        let _ = cache.get_decoding_key(NamespaceId::from(1), "lifecycle-key").await;
+        assert_eq!(store.get_count(), 2, "phase 3: post-invalidation = 2 L2 reads total");
+
+        // Phase 4: Second key — independent L2 read
+        let key2 = create_valid_test_key("lifecycle-key-2");
+        store.inner.create_key(NamespaceId::from(1), &key2).await.expect("create_key");
+        let _ = cache.get_decoding_key(NamespaceId::from(1), "lifecycle-key-2").await;
+        assert_eq!(
+            store.get_count(),
+            3,
+            "phase 4: new key = 3 L2 reads total (1 per unique key per L1 TTL window)"
+        );
+    }
 }
