@@ -56,6 +56,7 @@ use tokio::{select, sync::watch, time::sleep};
 use crate::{
     backend::StorageBackend,
     error::{StorageError, StorageResult},
+    size_limits::{validate_sizes, SizeLimits},
     transaction::Transaction,
     types::KeyValue,
 };
@@ -96,6 +97,8 @@ pub struct MemoryBackend {
     /// (and [`ShutdownGuard`] is deallocated), the sender is dropped, which
     /// closes the watch channel and signals the cleanup task to exit.
     shutdown_guard: Arc<ShutdownGuard>,
+    /// Optional key/value size limits enforced on write operations.
+    size_limits: Option<SizeLimits>,
 }
 
 impl MemoryBackend {
@@ -117,11 +120,33 @@ impl MemoryBackend {
     /// }
     /// ```
     pub fn new() -> Self {
+        Self::build(None)
+    }
+
+    /// Creates a new in-memory storage backend with key/value size limits.
+    ///
+    /// Write operations (`set`, `compare_and_set`, `set_with_ttl`, and
+    /// transaction `commit`) will reject keys or values that exceed the
+    /// configured [`SizeLimits`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use inferadb_common_storage::{MemoryBackend, SizeLimits};
+    ///
+    /// let backend = MemoryBackend::with_size_limits(SizeLimits::new(256, 1024));
+    /// ```
+    pub fn with_size_limits(limits: SizeLimits) -> Self {
+        Self::build(Some(limits))
+    }
+
+    fn build(size_limits: Option<SizeLimits>) -> Self {
         let (shutdown_tx, shutdown_rx) = watch::channel(());
         let backend = Self {
             data: Arc::new(RwLock::new(BTreeMap::new())),
             ttl_data: Arc::new(RwLock::new(BTreeMap::new())),
             shutdown_guard: Arc::new(ShutdownGuard { shutdown_tx }),
+            size_limits,
         };
 
         // Start background TTL cleanup task
@@ -189,6 +214,14 @@ impl MemoryBackend {
         }
         false
     }
+
+    /// Validates key and value sizes against configured limits, if any.
+    fn check_sizes(&self, key: &[u8], value: &[u8]) -> StorageResult<()> {
+        if let Some(ref limits) = self.size_limits {
+            validate_sizes(key, value, limits)?;
+        }
+        Ok(())
+    }
 }
 
 impl Default for MemoryBackend {
@@ -210,6 +243,7 @@ impl StorageBackend for MemoryBackend {
     }
 
     async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()> {
+        self.check_sizes(&key, &value)?;
         let mut data = self.data.write();
         data.insert(key.clone(), Bytes::from(value));
 
@@ -228,6 +262,7 @@ impl StorageBackend for MemoryBackend {
         expected: Option<&[u8]>,
         new_value: Vec<u8>,
     ) -> StorageResult<()> {
+        self.check_sizes(key, &new_value)?;
         let mut data = self.data.write();
 
         let current = if self.is_expired(key) { None } else { data.get(key).cloned() };
@@ -319,6 +354,7 @@ impl StorageBackend for MemoryBackend {
     }
 
     async fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> StorageResult<()> {
+        self.check_sizes(&key, &value)?;
         let mut data = self.data.write();
         let mut ttl_data = self.ttl_data.write();
 
@@ -391,12 +427,22 @@ impl Transaction for MemoryTransaction {
         expected: Option<Vec<u8>>,
         new_value: Vec<u8>,
     ) -> StorageResult<()> {
+        self.backend.check_sizes(&key, &new_value)?;
         // Buffer the CAS operation - it will be verified at commit time
         self.pending_cas.push(CasOperation { key, expected, new_value });
         Ok(())
     }
 
     async fn commit(self: Box<Self>) -> StorageResult<()> {
+        // Validate sizes for all buffered writes before acquiring the data lock
+        if let Some(ref limits) = self.backend.size_limits {
+            for (key, value) in &self.pending_writes {
+                if let Some(v) = value {
+                    validate_sizes(key, v, limits)?;
+                }
+            }
+        }
+
         let mut data = self.backend.data.write();
 
         // First, verify all CAS conditions hold
@@ -749,6 +795,121 @@ mod tests {
         assert_eq!(value, Some(Bytes::from("value")));
     }
 
+    // ── Size limits ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn set_within_limits_succeeds() {
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(10, 20));
+        backend.set(vec![0u8; 10], vec![0u8; 20]).await.unwrap();
+        let val = backend.get(&[0u8; 10]).await.unwrap();
+        assert!(val.is_some());
+    }
+
+    #[tokio::test]
+    async fn set_key_over_limit_fails() {
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 100));
+        let err = backend.set(vec![0u8; 6], vec![0u8; 1]).await.unwrap_err();
+        assert!(
+            matches!(err, StorageError::SizeLimitExceeded { kind: "key", actual: 6, limit: 5, .. })
+        );
+    }
+
+    #[tokio::test]
+    async fn set_value_over_limit_fails() {
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(100, 10));
+        let err = backend.set(vec![0u8; 1], vec![0u8; 11]).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                StorageError::SizeLimitExceeded { kind: "value", actual: 11, limit: 10, .. }
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn compare_and_set_over_limit_fails() {
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10));
+        let err = backend
+            .compare_and_set(&[0u8; 3], None, vec![0u8; 11])
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::SizeLimitExceeded { kind: "value", actual: 11, limit: 10, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn set_with_ttl_over_limit_fails() {
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10));
+        let err = backend
+            .set_with_ttl(vec![0u8; 6], vec![0u8; 1], Duration::from_secs(60))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, StorageError::SizeLimitExceeded { kind: "key", actual: 6, limit: 5, .. })
+        );
+    }
+
+    #[tokio::test]
+    async fn transaction_set_over_limit_fails_at_commit() {
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10));
+        let mut txn = backend.transaction().await.unwrap();
+        // Transaction::set is infallible — validation happens at commit time
+        txn.set(vec![0u8; 6], vec![0u8; 1]);
+        let err = txn.commit().await.unwrap_err();
+        assert!(
+            matches!(err, StorageError::SizeLimitExceeded { kind: "key", actual: 6, limit: 5, .. })
+        );
+    }
+
+    #[tokio::test]
+    async fn transaction_cas_over_limit_fails_immediately() {
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10));
+        let mut txn = backend.transaction().await.unwrap();
+        let err = txn
+            .compare_and_set(vec![0u8; 3], None, vec![0u8; 11])
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::SizeLimitExceeded { kind: "value", actual: 11, limit: 10, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn no_limits_allows_any_size() {
+        let backend = MemoryBackend::new();
+        // Large key and value should succeed without limits
+        backend.set(vec![0u8; 10_000], vec![0u8; 1_000_000]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn size_limit_does_not_write_on_failure() {
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(5, 10));
+        let key = vec![0u8; 3];
+        // First write succeeds
+        backend.set(key.clone(), vec![1u8; 5]).await.unwrap();
+        // Second write fails (value too large)
+        let _ = backend.set(key.clone(), vec![2u8; 11]).await;
+        // Original value should remain unchanged
+        let val = backend.get(&key).await.unwrap().unwrap();
+        assert_eq!(&val[..], &[1u8; 5]);
+    }
+
+    #[tokio::test]
+    async fn transaction_commit_rejects_all_on_size_violation() {
+        let backend = MemoryBackend::with_size_limits(SizeLimits::new(10, 20));
+        let mut txn = backend.transaction().await.unwrap();
+        // First op is valid, second is oversized
+        txn.set(b"good_key".to_vec(), b"good_value".to_vec());
+        txn.set(vec![0u8; 11], b"value".to_vec());
+        let err = txn.commit().await;
+        assert!(err.is_err());
+        // Neither write should be visible
+        let val = backend.get(b"good_key").await.unwrap();
+        assert!(val.is_none());
+    }
+
     mod proptests {
         use proptest::prelude::*;
 
@@ -904,6 +1065,60 @@ mod tests {
                     let results = backend.get_range(start..end).await.unwrap();
                     for pair in results.windows(2) {
                         prop_assert!(pair[0].key <= pair[1].key);
+                    }
+
+                    Ok(())
+                })?;
+            }
+
+            /// Size limits are consistently enforced: writes within bounds
+            /// succeed and writes exceeding bounds fail.
+            #[test]
+            fn size_limits_consistently_enforced(
+                key_len in 0_usize..64,
+                value_len in 0_usize..1024,
+                max_key in 1_usize..32,
+                max_value in 1_usize..512,
+            ) {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+
+                rt.block_on(async {
+                    let limits = SizeLimits::new(max_key, max_value);
+                    let backend = MemoryBackend::with_size_limits(limits);
+
+                    // Use key_len + 1 to avoid empty keys in storage
+                    let key = vec![0xAA; key_len + 1];
+                    let value = vec![0xBB; value_len];
+
+                    let result = backend.set(key.clone(), value.clone()).await;
+
+                    if key.len() > max_key {
+                        prop_assert!(result.is_err(), "expected key size error");
+                        let err = result.unwrap_err();
+                        prop_assert!(matches!(
+                            err,
+                            StorageError::SizeLimitExceeded { kind: "key", .. }
+                        ));
+                        // Verify nothing was stored
+                        let val = backend.get(&key).await.unwrap();
+                        prop_assert!(val.is_none());
+                    } else if value.len() > max_value {
+                        prop_assert!(result.is_err(), "expected value size error");
+                        let err = result.unwrap_err();
+                        prop_assert!(matches!(
+                            err,
+                            StorageError::SizeLimitExceeded { kind: "value", .. }
+                        ));
+                        // Verify nothing was stored
+                        let val = backend.get(&key).await.unwrap();
+                        prop_assert!(val.is_none());
+                    } else {
+                        prop_assert!(result.is_ok(), "expected success within limits");
+                        let val = backend.get(&key).await.unwrap();
+                        prop_assert!(val.is_some());
                     }
 
                     Ok(())

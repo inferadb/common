@@ -199,6 +199,22 @@ pub enum StorageError {
         /// Span ID captured at error creation for trace correlation.
         span_id: Option<tracing::span::Id>,
     },
+
+    /// Key or value exceeds the configured size limit.
+    ///
+    /// This error is returned when a write operation provides a key or
+    /// value whose byte length exceeds the backend's configured
+    /// [`SizeLimits`](crate::SizeLimits).
+    SizeLimitExceeded {
+        /// Whether the oversized payload was `"key"` or `"value"`.
+        kind: &'static str,
+        /// The actual size of the payload in bytes.
+        actual: usize,
+        /// The configured maximum size in bytes.
+        limit: usize,
+        /// Span ID captured at error creation for trace correlation.
+        span_id: Option<tracing::span::Id>,
+    },
 }
 
 /// Appends ` [span=<id>]` to a formatter when a span ID is present.
@@ -209,24 +225,24 @@ fn fmt_span_suffix(f: &mut fmt::Formatter<'_>, span_id: &Option<tracing::span::I
 impl fmt::Display for StorageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotFound { key, span_id } => {
-                write!(f, "Key not found: {key}")?;
+            Self::NotFound { span_id, .. } => {
+                write!(f, "Key not found")?;
                 fmt_span_suffix(f, span_id)
             },
             Self::Conflict { span_id } => {
                 write!(f, "Transaction conflict")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::Connection { message, span_id, .. } => {
-                write!(f, "Connection error: {message}")?;
+            Self::Connection { span_id, .. } => {
+                write!(f, "Connection error")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::Serialization { message, span_id, .. } => {
-                write!(f, "Serialization error: {message}")?;
+            Self::Serialization { span_id, .. } => {
+                write!(f, "Serialization error")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::Internal { message, span_id, .. } => {
-                write!(f, "Internal error: {message}")?;
+            Self::Internal { span_id, .. } => {
+                write!(f, "Internal error")?;
                 fmt_span_suffix(f, span_id)
             },
             Self::Timeout { span_id } => {
@@ -235,6 +251,13 @@ impl fmt::Display for StorageError {
             },
             Self::CasRetriesExhausted { attempts, span_id } => {
                 write!(f, "CAS retries exhausted after {attempts} attempts")?;
+                fmt_span_suffix(f, span_id)
+            },
+            Self::SizeLimitExceeded { kind, actual, limit, span_id } => {
+                write!(
+                    f,
+                    "Size limit exceeded: {kind} is {actual} bytes, limit is {limit} bytes"
+                )?;
                 fmt_span_suffix(f, span_id)
             },
         }
@@ -343,6 +366,15 @@ impl StorageError {
         Self::CasRetriesExhausted { attempts, span_id: current_span_id() }
     }
 
+    /// Creates a new `SizeLimitExceeded` error.
+    ///
+    /// `kind` should be `"key"` or `"value"`. Captures the current tracing
+    /// span ID for log correlation.
+    #[must_use]
+    pub fn size_limit_exceeded(kind: &'static str, actual: usize, limit: usize) -> Self {
+        Self::SizeLimitExceeded { kind, actual, limit, span_id: current_span_id() }
+    }
+
     /// Returns the tracing span ID captured when this error was created,
     /// if a tracing subscriber was active at that time.
     ///
@@ -357,7 +389,8 @@ impl StorageError {
             | Self::Serialization { span_id, .. }
             | Self::Internal { span_id, .. }
             | Self::Timeout { span_id, .. }
-            | Self::CasRetriesExhausted { span_id, .. } => span_id.as_ref(),
+            | Self::CasRetriesExhausted { span_id, .. }
+            | Self::SizeLimitExceeded { span_id, .. } => span_id.as_ref(),
         }
     }
 
@@ -372,6 +405,32 @@ impl StorageError {
     #[must_use]
     pub fn is_transient(&self) -> bool {
         matches!(self, Self::Connection { .. } | Self::Timeout { .. })
+    }
+
+    /// Returns a detailed diagnostic string for server-side logging.
+    ///
+    /// Unlike [`Display`], which produces generic messages safe for external
+    /// consumers, this method includes internal details such as connection
+    /// error messages, key names, and backend-specific context. **Never
+    /// expose this output to external callers.**
+    #[must_use]
+    pub fn detail(&self) -> String {
+        match self {
+            Self::NotFound { key, .. } => {
+                format!("Key not found: {key}")
+            },
+            Self::Connection { message, .. } => {
+                format!("Connection error: {message}")
+            },
+            Self::Serialization { message, .. } => {
+                format!("Serialization error: {message}")
+            },
+            Self::Internal { message, .. } => {
+                format!("Internal error: {message}")
+            },
+            // Variants with no additional private context — detail matches Display
+            _ => self.to_string(),
+        }
     }
 }
 
@@ -456,5 +515,73 @@ mod tests {
             assert!(StorageError::timeout().span_id().is_some());
             assert!(StorageError::cas_retries_exhausted(3).span_id().is_some());
         });
+    }
+
+    #[test]
+    fn display_is_generic_for_connection() {
+        let err = StorageError::connection("tcp://ledger.internal:9200 connection refused");
+        assert_eq!(err.to_string(), "Connection error");
+    }
+
+    #[test]
+    fn display_is_generic_for_internal() {
+        let err = StorageError::internal("Auth error: permission denied for user admin");
+        assert_eq!(err.to_string(), "Internal error");
+    }
+
+    #[test]
+    fn display_is_generic_for_serialization() {
+        let err = StorageError::serialization("invalid key format at path /vault/secret");
+        assert_eq!(err.to_string(), "Serialization error");
+    }
+
+    #[test]
+    fn display_is_generic_for_not_found() {
+        let err = StorageError::not_found("ns-123/vault-456/secret-key");
+        assert_eq!(err.to_string(), "Key not found");
+    }
+
+    #[test]
+    fn detail_preserves_internal_context() {
+        let err = StorageError::connection("tcp://ledger.internal:9200 refused");
+        assert_eq!(err.detail(), "Connection error: tcp://ledger.internal:9200 refused");
+
+        let err = StorageError::not_found("ns-123/vault-456/key");
+        assert_eq!(err.detail(), "Key not found: ns-123/vault-456/key");
+
+        let err = StorageError::internal("Auth error: admin denied");
+        assert_eq!(err.detail(), "Internal error: Auth error: admin denied");
+    }
+
+    #[test]
+    fn display_never_contains_internal_details() {
+        let cases = vec![
+            (
+                StorageError::connection("tcp://ledger.internal:9200 connection refused"),
+                vec!["ledger.internal", "9200", "tcp://", "connection refused"],
+            ),
+            (
+                StorageError::internal("Auth error: denied for user admin@org"),
+                vec!["admin@org", "denied", "Auth error"],
+            ),
+            (
+                StorageError::serialization("invalid format at /vault/secret"),
+                vec!["/vault/secret", "invalid format"],
+            ),
+            (
+                StorageError::not_found("ns-123/vault-456/secret-key"),
+                vec!["ns-123", "vault-456", "secret-key"],
+            ),
+        ];
+
+        for (err, forbidden_substrings) in cases {
+            let display = err.to_string();
+            for forbidden in forbidden_substrings {
+                assert!(
+                    !display.contains(forbidden),
+                    "Display must not contain '{forbidden}', got: {display}",
+                );
+            }
+        }
     }
 }

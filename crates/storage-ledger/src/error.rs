@@ -84,20 +84,20 @@ fn fmt_span_suffix(f: &mut fmt::Formatter<'_>, span_id: &Option<tracing::span::I
 impl fmt::Display for LedgerStorageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Sdk { source, span_id } => {
-                write!(f, "Ledger SDK error: {source}")?;
+            Self::Sdk { span_id, .. } => {
+                write!(f, "Ledger SDK error")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::Config { message, span_id } => {
-                write!(f, "Configuration error: {message}")?;
+            Self::Config { span_id, .. } => {
+                write!(f, "Configuration error")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::KeyEncoding { message, span_id } => {
-                write!(f, "Key encoding error: {message}")?;
+            Self::KeyEncoding { span_id, .. } => {
+                write!(f, "Key encoding error")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::Transaction { message, span_id } => {
-                write!(f, "Transaction error: {message}")?;
+            Self::Transaction { span_id, .. } => {
+                write!(f, "Transaction error")?;
                 fmt_span_suffix(f, span_id)
             },
         }
@@ -137,6 +137,29 @@ impl LedgerStorageError {
             | Self::Config { span_id, .. }
             | Self::KeyEncoding { span_id, .. }
             | Self::Transaction { span_id, .. } => span_id.as_ref(),
+        }
+    }
+
+    /// Returns a detailed diagnostic string for server-side logging.
+    ///
+    /// Unlike [`Display`], which produces generic messages safe for external
+    /// consumers, this method includes the full SDK error message and other
+    /// internal context. **Never expose this output to external callers.**
+    #[must_use]
+    pub fn detail(&self) -> String {
+        match self {
+            Self::Sdk { source, .. } => {
+                format!("Ledger SDK error: {source}")
+            },
+            Self::Config { message, .. } => {
+                format!("Configuration error: {message}")
+            },
+            Self::KeyEncoding { message, .. } => {
+                format!("Key encoding error: {message}")
+            },
+            Self::Transaction { message, .. } => {
+                format!("Transaction error: {message}")
+            },
         }
     }
 }
@@ -537,15 +560,31 @@ mod tests {
     }
 
     #[test]
-    fn test_error_display() {
-        let err = LedgerStorageError::config("test error");
-        assert_eq!(err.to_string(), "Configuration error: test error");
+    fn test_error_display_is_generic() {
+        // Display should NOT contain the internal message
+        let err = LedgerStorageError::config("missing endpoint https://ledger.internal:9200");
+        assert_eq!(err.to_string(), "Configuration error");
 
         let err = LedgerStorageError::key_encoding("bad hex");
-        assert_eq!(err.to_string(), "Key encoding error: bad hex");
+        assert_eq!(err.to_string(), "Key encoding error");
 
-        let err = LedgerStorageError::transaction("commit failed");
-        assert_eq!(err.to_string(), "Transaction error: commit failed");
+        let err = LedgerStorageError::transaction("commit failed at block 42");
+        assert_eq!(err.to_string(), "Transaction error");
+    }
+
+    #[test]
+    fn test_detail_preserves_internal_context() {
+        let err = LedgerStorageError::config("missing endpoint https://ledger.internal:9200");
+        assert_eq!(
+            err.detail(),
+            "Configuration error: missing endpoint https://ledger.internal:9200"
+        );
+
+        let err = LedgerStorageError::key_encoding("bad hex");
+        assert_eq!(err.detail(), "Key encoding error: bad hex");
+
+        let err = LedgerStorageError::transaction("commit failed at block 42");
+        assert_eq!(err.detail(), "Transaction error: commit failed at block 42");
     }
 
     /// Installs a minimal tracing subscriber for the duration of the closure.

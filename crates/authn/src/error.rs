@@ -259,8 +259,8 @@ pub enum AuthError {
 impl fmt::Display for AuthError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidTokenFormat { message, span_id } => {
-                write!(f, "Invalid token format: {message}")?;
+            Self::InvalidTokenFormat { span_id, .. } => {
+                write!(f, "Invalid token format")?;
                 fmt_span_suffix(f, span_id)
             },
             Self::TokenExpired { span_id } => {
@@ -275,40 +275,40 @@ impl fmt::Display for AuthError {
                 write!(f, "Invalid signature")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::InvalidIssuer { message, span_id } => {
-                write!(f, "Invalid issuer: {message}")?;
+            Self::InvalidIssuer { span_id, .. } => {
+                write!(f, "Invalid issuer")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::InvalidAudience { message, span_id } => {
-                write!(f, "Invalid audience: {message}")?;
+            Self::InvalidAudience { span_id, .. } => {
+                write!(f, "Invalid audience")?;
                 fmt_span_suffix(f, span_id)
             },
             Self::MissingClaim { claim, span_id } => {
-                write!(f, "Missing claim: {claim}")?;
+                write!(f, "Missing required claim: {claim}")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::InvalidScope { message, span_id } => {
-                write!(f, "Invalid scope: {message}")?;
+            Self::InvalidScope { span_id, .. } => {
+                write!(f, "Invalid scope")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::UnsupportedAlgorithm { message, span_id } => {
-                write!(f, "Unsupported algorithm: {message}")?;
+            Self::UnsupportedAlgorithm { span_id, .. } => {
+                write!(f, "Unsupported algorithm")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::JwksError { message, span_id } => {
-                write!(f, "JWKS error: {message}")?;
+            Self::JwksError { span_id, .. } => {
+                write!(f, "JWKS error")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::OidcDiscoveryFailed { message, span_id } => {
-                write!(f, "OIDC discovery failed: {message}")?;
+            Self::OidcDiscoveryFailed { span_id, .. } => {
+                write!(f, "OIDC discovery failed")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::IntrospectionFailed { message, span_id } => {
-                write!(f, "Introspection failed: {message}")?;
+            Self::IntrospectionFailed { span_id, .. } => {
+                write!(f, "Token introspection failed")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::InvalidIntrospectionResponse { message, span_id } => {
-                write!(f, "Invalid introspection response: {message}")?;
+            Self::InvalidIntrospectionResponse { span_id, .. } => {
+                write!(f, "Invalid introspection response")?;
                 fmt_span_suffix(f, span_id)
             },
             Self::TokenInactive { span_id } => {
@@ -316,51 +316,51 @@ impl fmt::Display for AuthError {
                 fmt_span_suffix(f, span_id)
             },
             Self::MissingTenantId { span_id } => {
-                write!(f, "Missing tenant_id claim in OAuth token")?;
+                write!(f, "Missing required tenant identifier")?;
                 fmt_span_suffix(f, span_id)
             },
             Self::TokenTooOld { span_id } => {
                 write!(f, "Token too old")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::KeyNotFound { kid, span_id } => {
-                write!(f, "Signing key not found: {kid}")?;
+            Self::KeyNotFound { span_id, .. } => {
+                write!(f, "Signing key not found")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::KeyInactive { kid, span_id } => {
-                write!(f, "Signing key is inactive: {kid}")?;
+            Self::KeyInactive { span_id, .. } => {
+                write!(f, "Signing key is inactive")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::KeyRevoked { kid, span_id } => {
-                write!(f, "Signing key revoked: {kid}")?;
+            Self::KeyRevoked { span_id, .. } => {
+                write!(f, "Signing key has been revoked")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::KeyNotYetValid { kid, span_id } => {
-                write!(f, "Signing key not yet valid: {kid}")?;
+            Self::KeyNotYetValid { span_id, .. } => {
+                write!(f, "Signing key is not yet valid")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::KeyExpired { kid, span_id } => {
-                write!(f, "Signing key expired: {kid}")?;
+            Self::KeyExpired { span_id, .. } => {
+                write!(f, "Signing key has expired")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::InvalidPublicKey { message, span_id } => {
-                write!(f, "Invalid public key: {message}")?;
+            Self::InvalidPublicKey { span_id, .. } => {
+                write!(f, "Invalid public key")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::KeyStorageError { source, span_id } => {
-                write!(f, "Key storage error: {source}")?;
+            Self::KeyStorageError { span_id, .. } => {
+                write!(f, "Key storage error")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::TokenReplayed { jti, span_id } => {
-                write!(f, "Token replayed: JTI '{jti}' has already been presented")?;
+            Self::TokenReplayed { span_id, .. } => {
+                write!(f, "Token has already been presented")?;
                 fmt_span_suffix(f, span_id)
             },
             Self::MissingJti { span_id } => {
                 write!(f, "Missing jti claim: replay detection requires a jti claim")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::InvalidKid { message, span_id } => {
-                write!(f, "Invalid kid: {message}")?;
+            Self::InvalidKid { span_id, .. } => {
+                write!(f, "Invalid kid")?;
                 fmt_span_suffix(f, span_id)
             },
         }
@@ -393,15 +393,25 @@ impl AuthError {
     }
 
     /// Creates a new `InvalidIssuer` error.
+    ///
+    /// The `message` is preserved for [`detail()`](Self::detail) but redacted
+    /// from [`Display`] to avoid leaking server configuration.
     #[must_use]
     pub fn invalid_issuer(message: impl Into<String>) -> Self {
-        Self::InvalidIssuer { message: message.into(), span_id: current_span_id() }
+        let message = message.into();
+        tracing::debug!(detail = %message, "Invalid issuer");
+        Self::InvalidIssuer { message, span_id: current_span_id() }
     }
 
     /// Creates a new `InvalidAudience` error.
+    ///
+    /// The `message` is preserved for [`detail()`](Self::detail) but redacted
+    /// from [`Display`] to avoid leaking expected audience configuration.
     #[must_use]
     pub fn invalid_audience(message: impl Into<String>) -> Self {
-        Self::InvalidAudience { message: message.into(), span_id: current_span_id() }
+        let message = message.into();
+        tracing::debug!(detail = %message, "Invalid audience");
+        Self::InvalidAudience { message, span_id: current_span_id() }
     }
 
     /// Creates a new `MissingClaim` error.
@@ -557,6 +567,88 @@ impl AuthError {
             | Self::InvalidKid { span_id, .. } => span_id.as_ref(),
         }
     }
+
+    /// Returns a detailed diagnostic string for server-side logging.
+    ///
+    /// Unlike [`Display`], which produces generic messages safe for API
+    /// responses, this method returns the full internal context including
+    /// expected values, key IDs, and backend error details. **Never expose
+    /// this output to external callers.**
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use inferadb_common_authn::error::AuthError;
+    ///
+    /// let err = AuthError::invalid_audience("expected 'api.example.com', got 'evil.com'");
+    /// // Display (safe for API responses): "Invalid audience"
+    /// // detail (server-side only): "Invalid audience: expected 'api.example.com', got 'evil.com'"
+    /// tracing::debug!(detail = err.detail(), "auth error");
+    /// ```
+    #[must_use]
+    pub fn detail(&self) -> String {
+        match self {
+            Self::InvalidTokenFormat { message, .. } => {
+                format!("Invalid token format: {message}")
+            },
+            Self::InvalidIssuer { message, .. } => {
+                format!("Invalid issuer: {message}")
+            },
+            Self::InvalidAudience { message, .. } => {
+                format!("Invalid audience: {message}")
+            },
+            Self::MissingClaim { claim, .. } => {
+                format!("Missing required claim: {claim}")
+            },
+            Self::InvalidScope { message, .. } => {
+                format!("Invalid scope: {message}")
+            },
+            Self::UnsupportedAlgorithm { message, .. } => {
+                format!("Unsupported algorithm: {message}")
+            },
+            Self::JwksError { message, .. } => {
+                format!("JWKS error: {message}")
+            },
+            Self::OidcDiscoveryFailed { message, .. } => {
+                format!("OIDC discovery failed: {message}")
+            },
+            Self::IntrospectionFailed { message, .. } => {
+                format!("Token introspection failed: {message}")
+            },
+            Self::InvalidIntrospectionResponse { message, .. } => {
+                format!("Invalid introspection response: {message}")
+            },
+            Self::KeyNotFound { kid, .. } => {
+                format!("Signing key not found: kid={kid}")
+            },
+            Self::KeyInactive { kid, .. } => {
+                format!("Signing key is inactive: kid={kid}")
+            },
+            Self::KeyRevoked { kid, .. } => {
+                format!("Signing key has been revoked: kid={kid}")
+            },
+            Self::KeyNotYetValid { kid, .. } => {
+                format!("Signing key is not yet valid: kid={kid}")
+            },
+            Self::KeyExpired { kid, .. } => {
+                format!("Signing key has expired: kid={kid}")
+            },
+            Self::InvalidPublicKey { message, .. } => {
+                format!("Invalid public key: {message}")
+            },
+            Self::KeyStorageError { source, .. } => {
+                format!("Key storage error: {source}")
+            },
+            Self::TokenReplayed { jti, .. } => {
+                format!("Token replayed: jti={jti}")
+            },
+            Self::InvalidKid { message, .. } => {
+                format!("Invalid kid: {message}")
+            },
+            // Variants with no additional context — detail matches Display
+            _ => self.to_string(),
+        }
+    }
 }
 
 impl From<jsonwebtoken::errors::Error> for AuthError {
@@ -593,15 +685,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_error_display() {
-        let err = AuthError::invalid_token_format("test");
-        assert_eq!(err.to_string(), "Invalid token format: test");
+    fn test_error_display_is_generic() {
+        // Display should NOT contain internal details
+        let err = AuthError::invalid_token_format("JWT missing segment 3");
+        assert_eq!(err.to_string(), "Invalid token format");
 
         let err = AuthError::token_expired();
         assert_eq!(err.to_string(), "Token expired");
 
         let err = AuthError::missing_claim("tenant_id");
-        assert_eq!(err.to_string(), "Missing claim: tenant_id");
+        assert_eq!(err.to_string(), "Missing required claim: tenant_id");
+    }
+
+    #[test]
+    fn test_detail_preserves_internal_context() {
+        let err = AuthError::invalid_token_format("JWT missing segment 3");
+        assert_eq!(err.detail(), "Invalid token format: JWT missing segment 3");
+
+        let err = AuthError::invalid_audience("expected 'api.example.com', got 'evil.com'");
+        assert_eq!(err.detail(), "Invalid audience: expected 'api.example.com', got 'evil.com'");
+
+        let err = AuthError::invalid_issuer("expected 'auth.internal', got 'attacker.com'");
+        assert_eq!(err.detail(), "Invalid issuer: expected 'auth.internal', got 'attacker.com'");
     }
 
     #[test]
@@ -614,46 +719,64 @@ mod tests {
     }
 
     #[test]
-    fn test_oauth_error_variants() {
+    fn test_oauth_error_display_is_generic() {
         let err = AuthError::oidc_discovery_failed("endpoint not found");
-        assert_eq!(err.to_string(), "OIDC discovery failed: endpoint not found");
+        assert_eq!(err.to_string(), "OIDC discovery failed");
 
         let err = AuthError::introspection_failed("connection refused");
-        assert_eq!(err.to_string(), "Introspection failed: connection refused");
+        assert_eq!(err.to_string(), "Token introspection failed");
 
         let err = AuthError::invalid_introspection_response("malformed JSON");
-        assert_eq!(err.to_string(), "Invalid introspection response: malformed JSON");
+        assert_eq!(err.to_string(), "Invalid introspection response");
 
         let err = AuthError::token_inactive();
         assert_eq!(err.to_string(), "Token is inactive");
 
         let err = AuthError::missing_tenant_id();
-        assert_eq!(err.to_string(), "Missing tenant_id claim in OAuth token");
+        assert_eq!(err.to_string(), "Missing required tenant identifier");
     }
 
     #[test]
-    fn test_key_error_variants() {
+    fn test_key_error_display_is_generic() {
+        // Display should NOT contain the kid
         let err = AuthError::key_not_found("key-123");
-        assert_eq!(err.to_string(), "Signing key not found: key-123");
+        assert_eq!(err.to_string(), "Signing key not found");
 
         let err = AuthError::key_inactive("key-456");
-        assert_eq!(err.to_string(), "Signing key is inactive: key-456");
+        assert_eq!(err.to_string(), "Signing key is inactive");
 
         let err = AuthError::key_revoked("key-789");
-        assert_eq!(err.to_string(), "Signing key revoked: key-789");
+        assert_eq!(err.to_string(), "Signing key has been revoked");
 
         let err = AuthError::key_not_yet_valid("key-abc");
-        assert_eq!(err.to_string(), "Signing key not yet valid: key-abc");
+        assert_eq!(err.to_string(), "Signing key is not yet valid");
 
         let err = AuthError::key_expired("key-def");
-        assert_eq!(err.to_string(), "Signing key expired: key-def");
+        assert_eq!(err.to_string(), "Signing key has expired");
     }
 
     #[test]
-    fn test_key_storage_error_display() {
+    fn test_key_error_detail_includes_kid() {
+        let err = AuthError::key_not_found("key-123");
+        assert_eq!(err.detail(), "Signing key not found: kid=key-123");
+
+        let err = AuthError::key_revoked("key-789");
+        assert_eq!(err.detail(), "Signing key has been revoked: kid=key-789");
+    }
+
+    #[test]
+    fn test_key_storage_error_display_is_generic() {
         let storage_err = inferadb_common_storage::StorageError::connection("connection refused");
         let err = AuthError::key_storage_error(storage_err);
-        assert_eq!(err.to_string(), "Key storage error: Connection error: connection refused");
+        // Display should NOT contain the underlying storage error message
+        assert_eq!(err.to_string(), "Key storage error");
+    }
+
+    #[test]
+    fn test_key_storage_error_detail_includes_source() {
+        let storage_err = inferadb_common_storage::StorageError::connection("connection refused");
+        let err = AuthError::key_storage_error(storage_err);
+        assert_eq!(err.detail(), "Key storage error: Connection error");
     }
 
     #[test]
@@ -667,8 +790,9 @@ mod tests {
         let source = auth_err.source();
         assert!(source.is_some(), "source chain must be preserved");
 
+        // Source Display is also sanitized
         let source = source.expect("source exists");
-        assert_eq!(source.to_string(), "Connection error: connection refused");
+        assert_eq!(source.to_string(), "Connection error");
     }
 
     #[test]
@@ -676,7 +800,7 @@ mod tests {
         let storage_err = inferadb_common_storage::StorageError::timeout();
         let auth_err: AuthError = storage_err.into();
         assert!(matches!(auth_err, AuthError::KeyStorageError { .. }));
-        assert_eq!(auth_err.to_string(), "Key storage error: Operation timeout");
+        assert_eq!(auth_err.to_string(), "Key storage error");
     }
 
     #[test]
@@ -689,9 +813,9 @@ mod tests {
         );
         let auth_err = AuthError::key_storage_error(storage_err);
 
-        // Level 1: AuthError → StorageError
+        // Level 1: AuthError → StorageError (sanitized Display)
         let level_1 = auth_err.source().expect("level 1 source");
-        assert_eq!(level_1.to_string(), "Connection error: connection failed");
+        assert_eq!(level_1.to_string(), "Connection error");
 
         // Level 2: StorageError → inner error
         let level_2 = level_1.source().expect("level 2 source");
@@ -699,12 +823,19 @@ mod tests {
     }
 
     #[test]
-    fn test_replay_error_variants() {
+    fn test_replay_error_display_is_generic() {
         let err = AuthError::token_replayed("jti-abc-123");
-        assert_eq!(err.to_string(), "Token replayed: JTI 'jti-abc-123' has already been presented");
+        // Display should NOT contain the actual JTI
+        assert_eq!(err.to_string(), "Token has already been presented");
 
         let err = AuthError::missing_jti();
         assert_eq!(err.to_string(), "Missing jti claim: replay detection requires a jti claim");
+    }
+
+    #[test]
+    fn test_replay_error_detail_includes_jti() {
+        let err = AuthError::token_replayed("jti-abc-123");
+        assert_eq!(err.detail(), "Token replayed: jti=jti-abc-123");
     }
 
     #[test]
@@ -714,5 +845,44 @@ mod tests {
 
         let err = AuthError::missing_jti();
         let _ = format!("{:?}", err);
+    }
+
+    #[test]
+    fn test_display_never_contains_internal_details() {
+        // Security test: verify Display output doesn't contain internal values
+        let cases = vec![
+            (
+                AuthError::invalid_audience("expected 'api.example.com', got 'evil.com'"),
+                vec!["api.example.com", "evil.com", "expected"],
+            ),
+            (
+                AuthError::invalid_issuer("expected 'auth.internal'"),
+                vec!["auth.internal", "expected"],
+            ),
+            (AuthError::unsupported_algorithm("Algorithm 'HS256' is not allowed"), vec!["HS256"]),
+            (AuthError::key_not_found("org-12345.key-v2"), vec!["org-12345", "key-v2"]),
+            (
+                AuthError::key_storage_error(inferadb_common_storage::StorageError::connection(
+                    "tcp://ledger.internal:9200 connection refused",
+                )),
+                vec!["ledger.internal", "9200", "tcp://"],
+            ),
+            (AuthError::token_replayed("550e8400-e29b-41d4-a716-446655440000"), vec!["550e8400"]),
+            (
+                AuthError::invalid_kid("kid contains invalid char '/' at position 5"),
+                vec!["/", "position"],
+            ),
+        ];
+
+        for (err, forbidden_substrings) in cases {
+            let display = err.to_string();
+            for forbidden in forbidden_substrings {
+                assert!(
+                    !display.contains(forbidden),
+                    "Display of {:?} must not contain '{forbidden}', got: {display}",
+                    std::mem::discriminant(&err),
+                );
+            }
+        }
     }
 }

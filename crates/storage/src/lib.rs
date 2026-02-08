@@ -88,6 +88,7 @@ pub mod batch;
 pub mod error;
 pub mod memory;
 pub mod metrics;
+pub mod size_limits;
 #[cfg(any(test, feature = "testutil"))]
 #[allow(clippy::expect_used)]
 pub mod testutil;
@@ -100,6 +101,9 @@ pub use batch::{BatchConfig, BatchFlushStats, BatchOperation, BatchWriter};
 pub use error::{BoxError, ConfigError, StorageError, StorageResult};
 pub use memory::MemoryBackend;
 pub use metrics::{LatencyPercentiles, Metrics, MetricsCollector, MetricsSnapshot};
+pub use size_limits::{
+    validate_key_size, validate_sizes, SizeLimits, DEFAULT_MAX_KEY_SIZE, DEFAULT_MAX_VALUE_SIZE,
+};
 pub use transaction::Transaction;
 pub use types::{CertId, ClientId, KeyValue, NamespaceId, VaultId};
 pub use zeroize::Zeroizing;

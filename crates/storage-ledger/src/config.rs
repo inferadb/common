@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use inferadb_common_storage::{ConfigError, NamespaceId, VaultId};
+use inferadb_common_storage::{ConfigError, NamespaceId, SizeLimits, VaultId};
 use inferadb_ledger_sdk::{ClientConfig, ReadConsistency};
 
 /// Default number of entities fetched per page during range queries.
@@ -404,6 +404,13 @@ pub struct LedgerBackendConfig {
     /// including all retry attempts. Defaults to 5s reads, 10s writes,
     /// 30s list operations.
     pub(crate) timeout_config: TimeoutConfig,
+
+    /// Optional key/value size limits.
+    ///
+    /// When set, write operations (`set`, `compare_and_set`, `set_with_ttl`)
+    /// validate key and value sizes before sending to the ledger. This
+    /// provides clear error messages instead of opaque downstream failures.
+    pub(crate) size_limits: Option<SizeLimits>,
 }
 
 #[bon::bon]
@@ -436,6 +443,7 @@ impl LedgerBackendConfig {
         #[builder(default = DEFAULT_MAX_RANGE_RESULTS)] max_range_results: usize,
         #[builder(default)] retry_config: RetryConfig,
         #[builder(default)] timeout_config: TimeoutConfig,
+        size_limits: Option<SizeLimits>,
     ) -> Result<Self, ConfigError> {
         if page_size == 0 {
             return Err(ConfigError::BelowMinimum {
@@ -460,6 +468,7 @@ impl LedgerBackendConfig {
             max_range_results,
             retry_config,
             timeout_config,
+            size_limits,
         })
     }
 
@@ -509,6 +518,12 @@ impl LedgerBackendConfig {
     #[must_use]
     pub fn timeout_config(&self) -> &TimeoutConfig {
         &self.timeout_config
+    }
+
+    /// Returns the configured size limits, if any.
+    #[must_use]
+    pub fn size_limits(&self) -> Option<SizeLimits> {
+        self.size_limits
     }
 
     /// Returns the SDK client configuration for building a client.
