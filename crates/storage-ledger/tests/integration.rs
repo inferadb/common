@@ -31,7 +31,8 @@ async fn create_test_backend(server: &MockLedgerServer) -> LedgerBackend {
         .client(test_client_config(server, "test-client"))
         .namespace_id(1)
         .vault_id(VaultId::from(0))
-        .build();
+        .build()
+        .expect("valid default config");
 
     LedgerBackend::new(config).await.expect("backend creation should succeed")
 }
@@ -409,13 +410,15 @@ async fn test_vault_isolation() {
         .client(test_client_config(&server, "client-vault-1"))
         .namespace_id(1)
         .vault_id(VaultId::from(100))
-        .build();
+        .build()
+        .expect("valid config");
 
     let config2 = LedgerBackendConfig::builder()
         .client(test_client_config(&server, "client-vault-2"))
         .namespace_id(1)
         .vault_id(VaultId::from(200))
-        .build();
+        .build()
+        .expect("valid config");
 
     let backend1 = LedgerBackend::new(config1).await.unwrap();
     let backend2 = LedgerBackend::new(config2).await.unwrap();
@@ -553,7 +556,7 @@ mod signing_key_store {
 
         // Create again should fail with conflict
         let result = store.create_key(namespace_id, &key).await;
-        assert!(matches!(result, Err(StorageError::Conflict)));
+        assert!(matches!(result, Err(StorageError::Conflict { .. })));
     }
 
     #[tokio::test]
@@ -1082,7 +1085,8 @@ mod backend_tests {
             .client(test_client(&server, "test-client"))
             .namespace_id(42)
             .vault_id(VaultId::from(100))
-            .build();
+            .build()
+            .expect("valid config");
 
         let backend = LedgerBackend::new(config).await.expect("backend");
         let debug_str = format!("{:?}", backend);
@@ -1099,7 +1103,8 @@ mod backend_tests {
             .client(test_client(&server, "test-client"))
             .namespace_id(123)
             .vault_id(VaultId::from(456))
-            .build();
+            .build()
+            .expect("valid config");
 
         let backend = LedgerBackend::new(config).await.expect("backend");
 
@@ -1143,7 +1148,8 @@ mod backend_tests {
             .client(test_client(&server, "test-client"))
             .namespace_id(1)
             .read_consistency(ReadConsistency::Eventual)
-            .build();
+            .build()
+            .expect("valid config");
 
         let backend = LedgerBackend::new(config).await.expect("backend");
 
@@ -1159,7 +1165,8 @@ mod backend_tests {
         let config = LedgerBackendConfig::builder()
             .client(test_client(&server, "test-client"))
             .namespace_id(1)
-            .build();
+            .build()
+            .expect("valid config");
 
         let backend = LedgerBackend::new(config).await.expect("backend");
 
@@ -1193,7 +1200,8 @@ mod transaction_tests {
             .client(test_client(&server))
             .namespace_id(1)
             .read_consistency(ReadConsistency::Eventual)
-            .build();
+            .build()
+            .expect("valid config");
 
         let backend = LedgerBackend::new(config).await.expect("backend");
 
@@ -1210,8 +1218,11 @@ mod transaction_tests {
     #[tokio::test]
     async fn test_transaction_read_deleted_key() {
         let server = MockLedgerServer::start().await.expect("mock server");
-        let config =
-            LedgerBackendConfig::builder().client(test_client(&server)).namespace_id(1).build();
+        let config = LedgerBackendConfig::builder()
+            .client(test_client(&server))
+            .namespace_id(1)
+            .build()
+            .expect("valid config");
 
         let backend = LedgerBackend::new(config).await.expect("backend");
 
@@ -1251,7 +1262,8 @@ async fn create_paginated_backend(
         .vault_id(VaultId::from(0))
         .page_size(page_size)
         .max_range_results(max_range_results)
-        .build();
+        .build()
+        .expect("valid pagination config");
 
     LedgerBackend::new(config).await.expect("backend creation should succeed")
 }

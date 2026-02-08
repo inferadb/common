@@ -72,7 +72,7 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
 ///     let config = LedgerBackendConfig::builder()
 ///         .client(client)
 ///         .namespace_id(1)
-///         .build();
+///         .build()?;
 ///
 ///     let backend = LedgerBackend::new(config).await?;
 ///
@@ -150,7 +150,7 @@ impl LedgerBackend {
     /// let config = LedgerBackendConfig::builder()
     ///     .client(client)
     ///     .namespace_id(1)
-    ///     .build();
+    ///     .build()?;
     ///
     /// let backend = LedgerBackend::new(config).await?;
     /// # Ok(())
@@ -379,7 +379,7 @@ impl StorageBackend for LedgerBackend {
                 {
                     Ok(_) => Ok(()),
                     Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
-                        Err(StorageError::Conflict)
+                        Err(StorageError::conflict())
                     },
                     Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
                 }
@@ -512,15 +512,12 @@ impl StorageBackend for LedgerBackend {
 
                 // Check safety bound before continuing to the next page
                 if all_key_values.len() > self.max_range_results {
-                    return Err(StorageError::Internal {
-                        message: format!(
-                            "range query exceeded safety limit of {} results (got {}); \
+                    return Err(StorageError::internal(format!(
+                        "range query exceeded safety limit of {} results (got {}); \
                          increase max_range_results in LedgerBackendConfig if this is expected",
-                            self.max_range_results,
-                            all_key_values.len(),
-                        ),
-                        source: None,
-                    });
+                        self.max_range_results,
+                        all_key_values.len(),
+                    )));
                 }
 
                 // Continue to next page or break
@@ -537,7 +534,7 @@ impl StorageBackend for LedgerBackend {
             Ok(all_key_values)
         })
         .await
-        .unwrap_or(Err(StorageError::Timeout))
+        .unwrap_or(Err(StorageError::timeout()))
     }
 
     async fn clear_range<R>(&self, range: R) -> StorageResult<()>

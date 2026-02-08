@@ -3,7 +3,7 @@
 //! This module provides comprehensive metrics for storage backends including:
 //!
 //! - Operation counts (get, set, delete, range queries, transactions)
-//! - Operation latencies (cumulative microseconds)
+//! - Operation latencies (cumulative microseconds and p50/p95/p99 percentiles)
 //! - Error rates by type
 //! - Cache hit/miss rates (for caching backends)
 //!
@@ -27,6 +27,17 @@
 //!   intervals) and approximate zeroing is acceptable — a concurrent increment racing with reset
 //!   may be lost, which is fine for periodic telemetry.
 //!
+//! # Percentile Tracking
+//!
+//! Latency percentiles (p50, p95, p99) are computed from a bounded sliding window of recent
+//! samples. Each operation type maintains its own [`LatencyHistogram`] — a circular buffer of
+//! the most recent 1024 latency values (in microseconds). The buffer is protected by a
+//! [`parking_lot::Mutex`] held only for the duration of a single push (O(1)).
+//!
+//! Percentiles are computed at snapshot time by sorting a copy of the buffer. This keeps the
+//! recording hot path fast (sub-microsecond) while deferring the O(n log n) sort to the
+//! infrequent snapshot path.
+//!
 //! # Usage
 //!
 //! ```
@@ -39,10 +50,11 @@
 //! metrics.record_get(Duration::from_micros(100));
 //! metrics.record_set(Duration::from_micros(200));
 //!
-//! // Get a snapshot
+//! // Get a snapshot with percentiles
 //! let snapshot = metrics.snapshot();
 //! assert_eq!(snapshot.get_count, 1);
 //! assert_eq!(snapshot.avg_get_latency_us(), 100.0);
+//! assert_eq!(snapshot.get_percentiles.p50, 100);
 //! ```
 
 use std::{
@@ -53,7 +65,107 @@ use std::{
     time::Duration,
 };
 
+use parking_lot::Mutex;
 use tracing::warn;
+
+/// Default number of latency samples retained per operation type.
+const DEFAULT_HISTOGRAM_WINDOW_SIZE: usize = 1024;
+
+// ── LatencyPercentiles ──────────────────────────────────────────────────
+
+/// Latency percentiles for a single operation type, in microseconds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LatencyPercentiles {
+    /// 50th percentile (median) latency in microseconds.
+    pub p50: u64,
+    /// 95th percentile latency in microseconds.
+    pub p95: u64,
+    /// 99th percentile latency in microseconds.
+    pub p99: u64,
+}
+
+// ── LatencyHistogram ────────────────────────────────────────────────────
+
+/// A bounded circular buffer of latency samples for streaming percentile computation.
+///
+/// Records the most recent `capacity` latency values (in microseconds). Older values
+/// are overwritten when the buffer is full. Percentiles are computed on demand by sorting
+/// a snapshot of the current buffer contents.
+pub(crate) struct LatencyHistogram {
+    inner: Mutex<HistogramInner>,
+}
+
+struct HistogramInner {
+    /// Circular buffer of latency samples.
+    buf: Vec<u64>,
+    /// Next write position in the circular buffer.
+    pos: usize,
+    /// Maximum number of samples to retain.
+    capacity: usize,
+}
+
+impl LatencyHistogram {
+    /// Creates a new histogram with the given window size.
+    pub(crate) fn new(capacity: usize) -> Self {
+        Self {
+            inner: Mutex::new(HistogramInner {
+                buf: Vec::with_capacity(capacity),
+                pos: 0,
+                capacity,
+            }),
+        }
+    }
+
+    /// Records a latency sample in microseconds.
+    pub(crate) fn record(&self, value_us: u64) {
+        let mut inner = self.inner.lock();
+        let pos = inner.pos;
+        if inner.buf.len() < inner.capacity {
+            inner.buf.push(value_us);
+        } else {
+            inner.buf[pos] = value_us;
+        }
+        inner.pos = (pos + 1) % inner.capacity;
+    }
+
+    /// Computes p50, p95, p99 percentiles from the current buffer contents.
+    ///
+    /// Returns `LatencyPercentiles::default()` (all zeros) if no samples have been recorded.
+    pub(crate) fn percentiles(&self) -> LatencyPercentiles {
+        let inner = self.inner.lock();
+        if inner.buf.is_empty() {
+            return LatencyPercentiles::default();
+        }
+        let mut sorted = inner.buf.clone();
+        sorted.sort_unstable();
+        let len = sorted.len();
+        LatencyPercentiles {
+            p50: sorted[percentile_index(len, 50)],
+            p95: sorted[percentile_index(len, 95)],
+            p99: sorted[percentile_index(len, 99)],
+        }
+    }
+
+    /// Resets the histogram, discarding all samples.
+    pub(crate) fn reset(&self) {
+        let mut inner = self.inner.lock();
+        inner.buf.clear();
+        inner.pos = 0;
+    }
+}
+
+/// Computes the index for a given percentile in a sorted array of `len` elements.
+///
+/// Uses nearest-rank method: `index = ceil(percentile/100 * len) - 1`, clamped to valid range.
+fn percentile_index(len: usize, percentile: u32) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let rank = (u64::from(percentile) * len as u64).div_ceil(100) as usize;
+    rank.saturating_sub(1).min(len - 1)
+}
+
+// ── MetricsSnapshot ─────────────────────────────────────────────────────
 
 /// Metrics snapshot for export
 #[derive(Debug, Clone, Default, bon::Builder)]
@@ -95,6 +207,25 @@ pub struct MetricsSnapshot {
     /// Total TRANSACTION latency in microseconds
     #[builder(default)]
     pub transaction_latency_us: u64,
+
+    /// GET latency percentiles (p50/p95/p99) in microseconds.
+    #[builder(default)]
+    pub get_percentiles: LatencyPercentiles,
+    /// SET latency percentiles (p50/p95/p99) in microseconds.
+    #[builder(default)]
+    pub set_percentiles: LatencyPercentiles,
+    /// DELETE latency percentiles (p50/p95/p99) in microseconds.
+    #[builder(default)]
+    pub delete_percentiles: LatencyPercentiles,
+    /// GET_RANGE latency percentiles (p50/p95/p99) in microseconds.
+    #[builder(default)]
+    pub get_range_percentiles: LatencyPercentiles,
+    /// CLEAR_RANGE latency percentiles (p50/p95/p99) in microseconds.
+    #[builder(default)]
+    pub clear_range_percentiles: LatencyPercentiles,
+    /// TRANSACTION latency percentiles (p50/p95/p99) in microseconds.
+    #[builder(default)]
+    pub transaction_percentiles: LatencyPercentiles,
 
     /// Total errors
     #[builder(default)]
@@ -220,6 +351,8 @@ impl MetricsSnapshot {
     }
 }
 
+// ── Metrics / MetricsInner ──────────────────────────────────────────────
+
 /// Metrics collector for storage operations
 #[derive(Clone)]
 pub struct Metrics {
@@ -243,6 +376,14 @@ struct MetricsInner {
     get_range_latency_us: AtomicU64,
     clear_range_latency_us: AtomicU64,
     transaction_latency_us: AtomicU64,
+
+    // Latency histograms for percentile computation
+    get_histogram: LatencyHistogram,
+    set_histogram: LatencyHistogram,
+    delete_histogram: LatencyHistogram,
+    get_range_histogram: LatencyHistogram,
+    clear_range_histogram: LatencyHistogram,
+    transaction_histogram: LatencyHistogram,
 
     // Errors
     error_count: AtomicU64,
@@ -281,6 +422,12 @@ impl Metrics {
                 get_range_latency_us: AtomicU64::new(0),
                 clear_range_latency_us: AtomicU64::new(0),
                 transaction_latency_us: AtomicU64::new(0),
+                get_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+                set_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+                delete_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+                get_range_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+                clear_range_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+                transaction_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
                 error_count: AtomicU64::new(0),
                 clear_range_error_count: AtomicU64::new(0),
                 conflict_count: AtomicU64::new(0),
@@ -297,32 +444,42 @@ impl Metrics {
 
     /// Record a GET operation
     pub fn record_get(&self, duration: Duration) {
+        let us = duration.as_micros() as u64;
         self.inner.get_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.get_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.get_latency_us.fetch_add(us, Ordering::Relaxed);
+        self.inner.get_histogram.record(us);
     }
 
     /// Record a SET operation
     pub fn record_set(&self, duration: Duration) {
+        let us = duration.as_micros() as u64;
         self.inner.set_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.set_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.set_latency_us.fetch_add(us, Ordering::Relaxed);
+        self.inner.set_histogram.record(us);
     }
 
     /// Record a DELETE operation
     pub fn record_delete(&self, duration: Duration) {
+        let us = duration.as_micros() as u64;
         self.inner.delete_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.delete_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.delete_latency_us.fetch_add(us, Ordering::Relaxed);
+        self.inner.delete_histogram.record(us);
     }
 
     /// Record a GET_RANGE operation
     pub fn record_get_range(&self, duration: Duration) {
+        let us = duration.as_micros() as u64;
         self.inner.get_range_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.get_range_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.get_range_latency_us.fetch_add(us, Ordering::Relaxed);
+        self.inner.get_range_histogram.record(us);
     }
 
     /// Record a CLEAR_RANGE operation
     pub fn record_clear_range(&self, duration: Duration) {
+        let us = duration.as_micros() as u64;
         self.inner.clear_range_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.clear_range_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.clear_range_latency_us.fetch_add(us, Ordering::Relaxed);
+        self.inner.clear_range_histogram.record(us);
     }
 
     /// Record a CLEAR_RANGE error
@@ -333,8 +490,10 @@ impl Metrics {
 
     /// Record a TRANSACTION operation
     pub fn record_transaction(&self, duration: Duration) {
+        let us = duration.as_micros() as u64;
         self.inner.transaction_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.transaction_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.transaction_latency_us.fetch_add(us, Ordering::Relaxed);
+        self.inner.transaction_histogram.record(us);
     }
 
     /// Record an error
@@ -394,6 +553,9 @@ impl Metrics {
     /// consistent — individual counter values are accurate, but counters may
     /// reflect different points in time relative to each other. See the module-level
     /// documentation for the full ordering rationale.
+    ///
+    /// Percentiles are computed from the sliding window of recent latency samples
+    /// for each operation type.
     #[must_use]
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
@@ -409,6 +571,12 @@ impl Metrics {
             get_range_latency_us: self.inner.get_range_latency_us.load(Ordering::Relaxed),
             clear_range_latency_us: self.inner.clear_range_latency_us.load(Ordering::Relaxed),
             transaction_latency_us: self.inner.transaction_latency_us.load(Ordering::Relaxed),
+            get_percentiles: self.inner.get_histogram.percentiles(),
+            set_percentiles: self.inner.set_histogram.percentiles(),
+            delete_percentiles: self.inner.delete_histogram.percentiles(),
+            get_range_percentiles: self.inner.get_range_histogram.percentiles(),
+            clear_range_percentiles: self.inner.clear_range_histogram.percentiles(),
+            transaction_percentiles: self.inner.transaction_histogram.percentiles(),
             error_count: self.inner.error_count.load(Ordering::Relaxed),
             clear_range_error_count: self.inner.clear_range_error_count.load(Ordering::Relaxed),
             conflict_count: self.inner.conflict_count.load(Ordering::Relaxed),
@@ -436,6 +604,12 @@ impl Metrics {
         self.inner.get_range_latency_us.store(0, Ordering::Relaxed);
         self.inner.clear_range_latency_us.store(0, Ordering::Relaxed);
         self.inner.transaction_latency_us.store(0, Ordering::Relaxed);
+        self.inner.get_histogram.reset();
+        self.inner.set_histogram.reset();
+        self.inner.delete_histogram.reset();
+        self.inner.get_range_histogram.reset();
+        self.inner.clear_range_histogram.reset();
+        self.inner.transaction_histogram.reset();
         self.inner.error_count.store(0, Ordering::Relaxed);
         self.inner.clear_range_error_count.store(0, Ordering::Relaxed);
         self.inner.conflict_count.store(0, Ordering::Relaxed);
@@ -468,6 +642,10 @@ impl Metrics {
             avg_delete_latency_us = snapshot.avg_delete_latency_us(),
             avg_clear_range_latency_us = snapshot.avg_clear_range_latency_us(),
             avg_transaction_latency_us = snapshot.avg_transaction_latency_us(),
+            get_p50 = snapshot.get_percentiles.p50,
+            get_p95 = snapshot.get_percentiles.p95,
+            get_p99 = snapshot.get_percentiles.p99,
+            set_p99 = snapshot.set_percentiles.p99,
             error_count = snapshot.error_count,
             error_rate = snapshot.error_rate(),
             conflict_count = snapshot.conflict_count,
@@ -516,6 +694,147 @@ pub trait MetricsCollector {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    // ── LatencyHistogram unit tests ─────────────────────────────────────
+
+    #[test]
+    fn test_histogram_empty_percentiles() {
+        let h = LatencyHistogram::new(16);
+        let p = h.percentiles();
+        assert_eq!(p, LatencyPercentiles::default());
+    }
+
+    #[test]
+    fn test_histogram_single_sample() {
+        let h = LatencyHistogram::new(16);
+        h.record(42);
+        let p = h.percentiles();
+        assert_eq!(p.p50, 42);
+        assert_eq!(p.p95, 42);
+        assert_eq!(p.p99, 42);
+    }
+
+    #[test]
+    fn test_histogram_known_distribution() {
+        let h = LatencyHistogram::new(1024);
+        // Record values 1..=100
+        for v in 1..=100 {
+            h.record(v);
+        }
+        let p = h.percentiles();
+        assert_eq!(p.p50, 50);
+        assert_eq!(p.p95, 95);
+        assert_eq!(p.p99, 99);
+    }
+
+    #[test]
+    fn test_histogram_circular_eviction() {
+        let h = LatencyHistogram::new(10);
+        // Write 20 values — only the last 10 should remain
+        for v in 1..=20 {
+            h.record(v);
+        }
+        let p = h.percentiles();
+        // Buffer contains [11..=20], so p50 ≈ 15, p99 = 20
+        assert_eq!(p.p50, 15);
+        assert_eq!(p.p99, 20);
+    }
+
+    #[test]
+    fn test_histogram_reset() {
+        let h = LatencyHistogram::new(16);
+        h.record(100);
+        h.record(200);
+        h.reset();
+        let p = h.percentiles();
+        assert_eq!(p, LatencyPercentiles::default());
+    }
+
+    #[test]
+    fn test_percentile_accuracy_within_1_percent() {
+        // PRD acceptance criterion: percentile accuracy within 1% for known distributions
+        let h = LatencyHistogram::new(1024);
+        for v in 1..=1000 {
+            h.record(v);
+        }
+        let p = h.percentiles();
+        // For a uniform distribution 1..=1000:
+        //   Exact p50 = 500, p95 = 950, p99 = 990
+        // Allow 1% error (10 for p50/p95, 10 for p99)
+        assert!((p.p50 as i64 - 500).unsigned_abs() <= 10, "p50={}", p.p50);
+        assert!((p.p95 as i64 - 950).unsigned_abs() <= 10, "p95={}", p.p95);
+        assert!((p.p99 as i64 - 990).unsigned_abs() <= 10, "p99={}", p.p99);
+    }
+
+    // ── Percentile index ────────────────────────────────────────────────
+
+    #[test]
+    fn test_percentile_index_edge_cases() {
+        assert_eq!(percentile_index(0, 50), 0);
+        assert_eq!(percentile_index(1, 50), 0);
+        assert_eq!(percentile_index(1, 99), 0);
+        assert_eq!(percentile_index(100, 50), 49);
+        assert_eq!(percentile_index(100, 95), 94);
+        assert_eq!(percentile_index(100, 99), 98);
+    }
+
+    // ── MetricsSnapshot percentile integration ──────────────────────────
+
+    #[test]
+    fn test_snapshot_includes_percentiles() {
+        let metrics = Metrics::new();
+
+        for v in 1..=100 {
+            metrics.record_get(Duration::from_micros(v));
+        }
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.get_count, 100);
+        assert_eq!(snapshot.get_percentiles.p50, 50);
+        assert_eq!(snapshot.get_percentiles.p95, 95);
+        assert_eq!(snapshot.get_percentiles.p99, 99);
+    }
+
+    #[test]
+    fn test_snapshot_percentiles_all_operation_types() {
+        let metrics = Metrics::new();
+
+        metrics.record_get(Duration::from_micros(100));
+        metrics.record_set(Duration::from_micros(200));
+        metrics.record_delete(Duration::from_micros(300));
+        metrics.record_get_range(Duration::from_micros(400));
+        metrics.record_clear_range(Duration::from_micros(500));
+        metrics.record_transaction(Duration::from_micros(600));
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.get_percentiles.p50, 100);
+        assert_eq!(snapshot.set_percentiles.p50, 200);
+        assert_eq!(snapshot.delete_percentiles.p50, 300);
+        assert_eq!(snapshot.get_range_percentiles.p50, 400);
+        assert_eq!(snapshot.clear_range_percentiles.p50, 500);
+        assert_eq!(snapshot.transaction_percentiles.p50, 600);
+    }
+
+    #[test]
+    fn test_reset_clears_percentiles() {
+        let metrics = Metrics::new();
+
+        metrics.record_get(Duration::from_micros(100));
+        metrics.reset();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.get_percentiles, LatencyPercentiles::default());
+    }
+
+    #[test]
+    fn test_default_snapshot_percentiles_are_zero() {
+        let snapshot = MetricsSnapshot::default();
+        assert_eq!(snapshot.get_percentiles, LatencyPercentiles::default());
+        assert_eq!(snapshot.set_percentiles, LatencyPercentiles::default());
+        assert_eq!(snapshot.delete_percentiles, LatencyPercentiles::default());
+    }
+
+    // ── Existing tests (unchanged) ──────────────────────────────────────
 
     #[test]
     fn test_metrics_recording() {

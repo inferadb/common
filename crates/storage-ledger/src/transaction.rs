@@ -245,7 +245,7 @@ impl Transaction for LedgerTransaction {
             Ok(_) => Ok(()),
             Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
                 // CAS condition failed
-                Err(StorageError::Conflict)
+                Err(StorageError::conflict())
             },
             Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
         }

@@ -5,6 +5,11 @@
 //!
 //! Error chains are preserved through the conversion, enabling debugging tools
 //! to display the full error context from SDK through to storage layer.
+//!
+//! Each variant carries an optional `span_id` captured from the active
+//! [`tracing::Span`] at error creation time for end-to-end trace correlation.
+
+use std::fmt;
 
 use inferadb_common_storage::StorageError;
 use inferadb_ledger_sdk::SdkError;
@@ -14,11 +19,20 @@ use tonic::Code;
 /// Result type alias for Ledger storage operations.
 pub type Result<T> = std::result::Result<T, LedgerStorageError>;
 
+/// Captures the span ID from the current tracing span, if any.
+fn current_span_id() -> Option<tracing::span::Id> {
+    tracing::Span::current().id()
+}
+
 /// Errors specific to the Ledger storage backend.
 ///
 /// This error type wraps SDK errors and provides additional context
 /// for storage-layer failures. The error chain is preserved when
 /// converting to [`StorageError`].
+///
+/// Each variant carries an optional `span_id` captured from the active
+/// [`tracing::Span`] at error creation time. When present, the span ID
+/// is included in the [`Display`] output for log correlation.
 ///
 /// # Non-exhaustive
 ///
@@ -29,31 +43,119 @@ pub type Result<T> = std::result::Result<T, LedgerStorageError>;
 #[non_exhaustive]
 pub enum LedgerStorageError {
     /// Error from the Ledger SDK.
-    #[error("Ledger SDK error: {0}")]
-    Sdk(#[from] SdkError),
+    Sdk {
+        /// The underlying SDK error.
+        #[source]
+        source: SdkError,
+        /// Span ID captured at error creation for trace correlation.
+        span_id: Option<tracing::span::Id>,
+    },
 
     /// Configuration error.
-    #[error("Configuration error: {0}")]
-    Config(String),
+    Config {
+        /// Description of the configuration error.
+        message: String,
+        /// Span ID captured at error creation for trace correlation.
+        span_id: Option<tracing::span::Id>,
+    },
 
     /// Key encoding error.
-    #[error("Key encoding error: {0}")]
-    KeyEncoding(String),
+    KeyEncoding {
+        /// Description of the encoding error.
+        message: String,
+        /// Span ID captured at error creation for trace correlation.
+        span_id: Option<tracing::span::Id>,
+    },
 
     /// Transaction error.
-    #[error("Transaction error: {0}")]
-    Transaction(String),
+    Transaction {
+        /// Description of the transaction error.
+        message: String,
+        /// Span ID captured at error creation for trace correlation.
+        span_id: Option<tracing::span::Id>,
+    },
+}
+
+/// Appends ` [span=<id>]` to a formatter when a span ID is present.
+fn fmt_span_suffix(f: &mut fmt::Formatter<'_>, span_id: &Option<tracing::span::Id>) -> fmt::Result {
+    if let Some(id) = span_id {
+        write!(f, " [span={}]", id.into_u64())
+    } else {
+        Ok(())
+    }
+}
+
+impl fmt::Display for LedgerStorageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sdk { source, span_id } => {
+                write!(f, "Ledger SDK error: {source}")?;
+                fmt_span_suffix(f, span_id)
+            },
+            Self::Config { message, span_id } => {
+                write!(f, "Configuration error: {message}")?;
+                fmt_span_suffix(f, span_id)
+            },
+            Self::KeyEncoding { message, span_id } => {
+                write!(f, "Key encoding error: {message}")?;
+                fmt_span_suffix(f, span_id)
+            },
+            Self::Transaction { message, span_id } => {
+                write!(f, "Transaction error: {message}")?;
+                fmt_span_suffix(f, span_id)
+            },
+        }
+    }
+}
+
+impl From<SdkError> for LedgerStorageError {
+    fn from(source: SdkError) -> Self {
+        Self::Sdk { source, span_id: current_span_id() }
+    }
+}
+
+impl LedgerStorageError {
+    /// Creates a new `Config` error.
+    #[must_use]
+    pub fn config(message: impl Into<String>) -> Self {
+        Self::Config { message: message.into(), span_id: current_span_id() }
+    }
+
+    /// Creates a new `KeyEncoding` error.
+    #[must_use]
+    pub fn key_encoding(message: impl Into<String>) -> Self {
+        Self::KeyEncoding { message: message.into(), span_id: current_span_id() }
+    }
+
+    /// Creates a new `Transaction` error.
+    #[must_use]
+    pub fn transaction(message: impl Into<String>) -> Self {
+        Self::Transaction { message: message.into(), span_id: current_span_id() }
+    }
+
+    /// Returns the tracing span ID captured when this error was created.
+    #[must_use]
+    pub fn span_id(&self) -> Option<&tracing::span::Id> {
+        match self {
+            Self::Sdk { span_id, .. }
+            | Self::Config { span_id, .. }
+            | Self::KeyEncoding { span_id, .. }
+            | Self::Transaction { span_id, .. } => span_id.as_ref(),
+        }
+    }
 }
 
 impl From<LedgerStorageError> for StorageError {
     fn from(err: LedgerStorageError) -> Self {
         match err {
-            LedgerStorageError::Sdk(source) => sdk_error_to_storage_error(source),
-            LedgerStorageError::Config(message) => {
+            LedgerStorageError::Sdk { source, .. } => sdk_error_to_storage_error(source),
+            LedgerStorageError::Config { message, .. } => {
                 StorageError::internal(format!("Config: {message}"))
             },
-            LedgerStorageError::KeyEncoding(message) => StorageError::serialization(message),
-            LedgerStorageError::Transaction(message) => {
+            LedgerStorageError::KeyEncoding { message, .. } => {
+                StorageError::serialization(message)
+            },
+            LedgerStorageError::Transaction { message, .. } => {
                 StorageError::internal(format!("Transaction: {message}"))
             },
         }
@@ -188,7 +290,7 @@ mod tests {
             message: "connection refused".into(),
             location: Location::default(),
         };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Connection { .. }));
         // Verify source chain is preserved
@@ -198,9 +300,9 @@ mod tests {
     #[test]
     fn test_timeout_error_mapping() {
         let sdk_err = SdkError::Timeout { duration_ms: 30000 };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
-        assert!(matches!(storage_err, StorageError::Timeout));
+        assert!(matches!(storage_err, StorageError::Timeout { .. }));
     }
 
     #[test]
@@ -211,7 +313,7 @@ mod tests {
             request_id: None,
             trace_id: None,
         };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::NotFound { .. }));
     }
@@ -224,9 +326,9 @@ mod tests {
             request_id: None,
             trace_id: None,
         };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
-        assert!(matches!(storage_err, StorageError::Conflict));
+        assert!(matches!(storage_err, StorageError::Conflict { .. }));
     }
 
     #[test]
@@ -237,9 +339,9 @@ mod tests {
             request_id: None,
             trace_id: None,
         };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
-        assert!(matches!(storage_err, StorageError::Conflict));
+        assert!(matches!(storage_err, StorageError::Conflict { .. }));
     }
 
     #[test]
@@ -250,7 +352,7 @@ mod tests {
             request_id: None,
             trace_id: None,
         };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Serialization { .. }));
         // Verify source chain is preserved
@@ -259,7 +361,7 @@ mod tests {
 
     #[test]
     fn test_config_error_mapping() {
-        let err = LedgerStorageError::Config("missing endpoint".into());
+        let err = LedgerStorageError::config("missing endpoint");
         let storage_err: StorageError = err.into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
@@ -267,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_key_encoding_error_mapping() {
-        let err = LedgerStorageError::KeyEncoding("invalid hex".into());
+        let err = LedgerStorageError::key_encoding("invalid hex");
         let storage_err: StorageError = err.into();
 
         assert!(matches!(storage_err, StorageError::Serialization { .. }));
@@ -275,7 +377,7 @@ mod tests {
 
     #[test]
     fn test_transaction_error_mapping() {
-        let err = LedgerStorageError::Transaction("commit failed".into());
+        let err = LedgerStorageError::transaction("commit failed");
         let storage_err: StorageError = err.into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
@@ -284,7 +386,7 @@ mod tests {
     #[test]
     fn test_unavailable_error_mapping() {
         let sdk_err = SdkError::Unavailable { message: "service down".into() };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Connection { .. }));
         assert!(storage_err.source().is_some());
@@ -293,7 +395,7 @@ mod tests {
     #[test]
     fn test_stream_disconnected_error_mapping() {
         let sdk_err = SdkError::StreamDisconnected { message: "stream closed".into() };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Connection { .. }));
         assert!(storage_err.source().is_some());
@@ -306,7 +408,7 @@ mod tests {
             last_error: "still down".into(),
             attempt_history: vec![],
         };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Connection { .. }));
         assert!(storage_err.source().is_some());
@@ -315,7 +417,7 @@ mod tests {
     #[test]
     fn test_already_committed_error_mapping() {
         let sdk_err = SdkError::AlreadyCommitted { tx_id: "tx-123".into(), block_height: 42 };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
         assert!(storage_err.source().is_some());
@@ -328,7 +430,7 @@ mod tests {
             conflict_key: None,
             original_tx_id: None,
         };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
         assert!(storage_err.source().is_some());
@@ -337,7 +439,7 @@ mod tests {
     #[test]
     fn test_config_sdk_error_mapping() {
         let sdk_err = SdkError::Config { message: "invalid config".into() };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
         assert!(storage_err.source().is_some());
@@ -347,7 +449,7 @@ mod tests {
     fn test_invalid_url_error_mapping() {
         let sdk_err =
             SdkError::InvalidUrl { url: "not-a-url".into(), message: "parse error".into() };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
         assert!(storage_err.source().is_some());
@@ -356,7 +458,7 @@ mod tests {
     #[test]
     fn test_shutdown_error_mapping() {
         let sdk_err = SdkError::Shutdown;
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Connection { .. }));
         assert!(storage_err.source().is_some());
@@ -365,7 +467,7 @@ mod tests {
     #[test]
     fn test_proof_verification_error_mapping() {
         let sdk_err = SdkError::ProofVerification { reason: "hash mismatch" };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
         assert!(storage_err.source().is_some());
@@ -379,9 +481,9 @@ mod tests {
             request_id: None,
             trace_id: None,
         };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
-        assert!(matches!(storage_err, StorageError::Conflict));
+        assert!(matches!(storage_err, StorageError::Conflict { .. }));
     }
 
     #[test]
@@ -392,7 +494,7 @@ mod tests {
             request_id: None,
             trace_id: None,
         };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
         assert!(storage_err.source().is_some());
@@ -406,7 +508,7 @@ mod tests {
             request_id: None,
             trace_id: None,
         };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
         assert!(storage_err.source().is_some());
@@ -420,7 +522,7 @@ mod tests {
             request_id: None,
             trace_id: None,
         };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
         assert!(storage_err.source().is_some());
@@ -434,7 +536,7 @@ mod tests {
             request_id: None,
             trace_id: None,
         };
-        let storage_err: StorageError = LedgerStorageError::Sdk(sdk_err).into();
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
         assert!(storage_err.source().is_some());
@@ -442,13 +544,13 @@ mod tests {
 
     #[test]
     fn test_error_display() {
-        let err = LedgerStorageError::Config("test error".into());
+        let err = LedgerStorageError::config("test error");
         assert_eq!(err.to_string(), "Configuration error: test error");
 
-        let err = LedgerStorageError::KeyEncoding("bad hex".into());
+        let err = LedgerStorageError::key_encoding("bad hex");
         assert_eq!(err.to_string(), "Key encoding error: bad hex");
 
-        let err = LedgerStorageError::Transaction("commit failed".into());
+        let err = LedgerStorageError::transaction("commit failed");
         assert_eq!(err.to_string(), "Transaction error: commit failed");
     }
 }

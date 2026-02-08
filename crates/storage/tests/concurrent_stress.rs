@@ -107,7 +107,7 @@ async fn cas_exactly_one_winner_per_round() {
         while let Some(result) = set.join_next().await {
             match result.expect("task should not panic") {
                 Ok(()) => successes += 1,
-                Err(StorageError::Conflict) => conflicts += 1,
+                Err(StorageError::Conflict { .. }) => conflicts += 1,
                 Err(e) => panic!("unexpected error in CAS round {round}: {e}"),
             }
         }
@@ -144,7 +144,7 @@ async fn cas_insert_if_absent_one_winner() {
         while let Some(result) = set.join_next().await {
             match result.expect("task should not panic") {
                 Ok(()) => successes += 1,
-                Err(StorageError::Conflict) => conflicts += 1,
+                Err(StorageError::Conflict { .. }) => conflicts += 1,
                 Err(e) => panic!("unexpected error in insert round {round}: {e}"),
             }
         }
@@ -378,7 +378,7 @@ async fn concurrent_transactions_cas_on_same_key() {
         while let Some(result) = set.join_next().await {
             match result.expect("task should not panic") {
                 Ok(()) => successes += 1,
-                Err(StorageError::Conflict) => conflicts += 1,
+                Err(StorageError::Conflict { .. }) => conflicts += 1,
                 Err(e) => panic!("unexpected error in txn CAS round {round}: {e}"),
             }
         }

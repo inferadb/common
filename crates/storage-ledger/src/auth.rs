@@ -59,7 +59,7 @@
 //! # }
 //! ```
 
-use std::{sync::Arc, time::Instant};
+use std::{future::Future, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -75,7 +75,7 @@ use inferadb_ledger_sdk::{
 };
 use tonic::Code;
 
-use crate::LedgerStorageError;
+use crate::{LedgerStorageError, config::CasRetryConfig};
 
 /// Ledger-backed implementation of [`PublicSigningKeyStore`].
 ///
@@ -123,12 +123,14 @@ pub struct LedgerSigningKeyStore {
     client: Arc<LedgerClient>,
     read_consistency: ReadConsistency,
     metrics: Option<SigningKeyMetrics>,
+    cas_retry_config: CasRetryConfig,
 }
 
 impl std::fmt::Debug for LedgerSigningKeyStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LedgerSigningKeyStore")
             .field("read_consistency", &self.read_consistency)
+            .field("cas_retry_config", &self.cas_retry_config)
             .finish_non_exhaustive()
     }
 }
@@ -140,7 +142,12 @@ impl LedgerSigningKeyStore {
     /// Engine always sees the latest key state.
     #[must_use]
     pub fn new(client: Arc<LedgerClient>) -> Self {
-        Self { client, read_consistency: ReadConsistency::Linearizable, metrics: None }
+        Self {
+            client,
+            read_consistency: ReadConsistency::Linearizable,
+            metrics: None,
+            cas_retry_config: CasRetryConfig::default(),
+        }
     }
 
     /// Creates a store with the specified read consistency level.
@@ -150,7 +157,12 @@ impl LedgerSigningKeyStore {
     /// may delay key revocation propagation.
     #[must_use]
     pub fn with_read_consistency(client: Arc<LedgerClient>, consistency: ReadConsistency) -> Self {
-        Self { client, read_consistency: consistency, metrics: None }
+        Self {
+            client,
+            read_consistency: consistency,
+            metrics: None,
+            cas_retry_config: CasRetryConfig::default(),
+        }
     }
 
     /// Enables metrics collection for this store.
@@ -180,6 +192,17 @@ impl LedgerSigningKeyStore {
     #[must_use]
     pub fn with_metrics(mut self, metrics: SigningKeyMetrics) -> Self {
         self.metrics = Some(metrics);
+        self
+    }
+
+    /// Configures the CAS retry policy for write operations.
+    ///
+    /// By default, CAS operations are retried up to 5 times on conflict.
+    /// Use this to tune retry behavior for workloads with high or low
+    /// write contention.
+    #[must_use]
+    pub fn with_cas_retry_config(mut self, config: CasRetryConfig) -> Self {
+        self.cas_retry_config = config;
         self
     }
 
@@ -265,7 +288,7 @@ impl LedgerSigningKeyStore {
         {
             Ok(_) => Ok(()),
             Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
-                Err(StorageError::Conflict)
+                Err(StorageError::conflict())
             },
             Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
         }
@@ -305,17 +328,36 @@ impl LedgerSigningKeyStore {
         {
             Ok(_) => Ok(()),
             Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
-                Err(StorageError::Conflict)
+                Err(StorageError::conflict())
             },
             Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
         }
+    }
+
+    /// Retries a read-modify-write cycle on CAS conflict.
+    ///
+    /// The provided `operation` closure should perform the full cycle:
+    /// read the current value, compute the mutation, and call
+    /// [`cas_write`](Self::cas_write) or [`cas_delete`](Self::cas_delete).
+    ///
+    /// On [`StorageError::Conflict`], the closure is re-invoked (re-reading
+    /// the current value) up to `cas_retry_config.max_retries` times.
+    /// Jitter is applied between retries to reduce contention.
+    ///
+    /// Non-conflict errors are returned immediately without retry.
+    async fn with_cas_retry<F, Fut>(&self, operation: F) -> StorageResult<()>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = StorageResult<()>>,
+    {
+        crate::retry::with_cas_retry(&self.cas_retry_config, operation).await
     }
 
     /// Converts a storage error to a metrics error kind.
     fn error_to_kind(error: &StorageError) -> SigningKeyErrorKind {
         match error {
             StorageError::NotFound { .. } => SigningKeyErrorKind::NotFound,
-            StorageError::Conflict => SigningKeyErrorKind::Conflict,
+            StorageError::Conflict { .. } => SigningKeyErrorKind::Conflict,
             StorageError::Connection { .. } => SigningKeyErrorKind::Connection,
             StorageError::Serialization { .. } => SigningKeyErrorKind::Serialization,
             _ => SigningKeyErrorKind::Other,
@@ -466,20 +508,21 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         let start = Instant::now();
         let storage_key = Self::storage_key(kid);
 
-        let result = async {
-            let bytes = self
-                .do_read(namespace_id, &storage_key)
-                .await?
-                .ok_or_else(|| StorageError::not_found(format!("Key not found: {kid}")))?;
+        let result = self
+            .with_cas_retry(|| async {
+                let bytes = self
+                    .do_read(namespace_id, &storage_key)
+                    .await?
+                    .ok_or_else(|| StorageError::not_found(format!("Key not found: {kid}")))?;
 
-            let mut key = Self::deserialize_key(&bytes)?;
-            key.active = false;
+                let mut key = Self::deserialize_key(&bytes)?;
+                key.active = false;
 
-            let value = Self::serialize_key(&key)?;
+                let value = Self::serialize_key(&key)?;
 
-            self.cas_write(namespace_id, storage_key, value, bytes).await
-        }
-        .await;
+                self.cas_write(namespace_id, storage_key.clone(), value, bytes).await
+            })
+            .await;
 
         if let Err(ref e) = result {
             self.record_error(Self::error_to_kind(e));
@@ -500,27 +543,33 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
     ) -> StorageResult<()> {
         let start = Instant::now();
         let storage_key = Self::storage_key(kid);
+        let reason_owned = reason.map(String::from);
 
-        let result = async {
-            let bytes = self
-                .do_read(namespace_id, &storage_key)
-                .await?
-                .ok_or_else(|| StorageError::not_found(format!("Key not found: {kid}")))?;
+        let result = self
+            .with_cas_retry(|| {
+                let sk = storage_key.clone();
+                let reason_ref = reason_owned.clone();
+                async move {
+                    let bytes = self
+                        .do_read(namespace_id, &sk)
+                        .await?
+                        .ok_or_else(|| StorageError::not_found(format!("Key not found: {kid}")))?;
 
-            let mut key = Self::deserialize_key(&bytes)?;
+                    let mut key = Self::deserialize_key(&bytes)?;
 
-            // Idempotent: if already revoked, keep original timestamp
-            if key.revoked_at.is_none() {
-                key.revoked_at = Some(Utc::now());
-                key.active = false;
-                key.revocation_reason = reason.map(String::from);
-            }
+                    // Idempotent: if already revoked, keep original timestamp
+                    if key.revoked_at.is_none() {
+                        key.revoked_at = Some(Utc::now());
+                        key.active = false;
+                        key.revocation_reason = reason_ref;
+                    }
 
-            let value = Self::serialize_key(&key)?;
+                    let value = Self::serialize_key(&key)?;
 
-            self.cas_write(namespace_id, storage_key, value, bytes).await
-        }
-        .await;
+                    self.cas_write(namespace_id, sk, value, bytes).await
+                }
+            })
+            .await;
 
         if let Err(ref e) = result {
             self.record_error(Self::error_to_kind(e));
@@ -537,28 +586,29 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         let start = Instant::now();
         let storage_key = Self::storage_key(kid);
 
-        let result = async {
-            let bytes = self
-                .do_read(namespace_id, &storage_key)
-                .await?
-                .ok_or_else(|| StorageError::not_found(format!("Key not found: {kid}")))?;
+        let result = self
+            .with_cas_retry(|| async {
+                let bytes = self
+                    .do_read(namespace_id, &storage_key)
+                    .await?
+                    .ok_or_else(|| StorageError::not_found(format!("Key not found: {kid}")))?;
 
-            let mut key = Self::deserialize_key(&bytes)?;
+                let mut key = Self::deserialize_key(&bytes)?;
 
-            // Cannot reactivate a revoked key
-            if key.revoked_at.is_some() {
-                return Err(StorageError::internal(format!(
-                    "Cannot reactivate revoked key: {kid}"
-                )));
-            }
+                // Cannot reactivate a revoked key
+                if key.revoked_at.is_some() {
+                    return Err(StorageError::internal(format!(
+                        "Cannot reactivate revoked key: {kid}"
+                    )));
+                }
 
-            key.active = true;
+                key.active = true;
 
-            let value = Self::serialize_key(&key)?;
+                let value = Self::serialize_key(&key)?;
 
-            self.cas_write(namespace_id, storage_key, value, bytes).await
-        }
-        .await;
+                self.cas_write(namespace_id, storage_key.clone(), value, bytes).await
+            })
+            .await;
 
         if let Err(ref e) = result {
             self.record_error(Self::error_to_kind(e));
@@ -575,15 +625,16 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         let start = Instant::now();
         let storage_key = Self::storage_key(kid);
 
-        let result = async {
-            let bytes = self
-                .do_read(namespace_id, &storage_key)
-                .await?
-                .ok_or_else(|| StorageError::not_found(format!("Key not found: {kid}")))?;
+        let result = self
+            .with_cas_retry(|| async {
+                let bytes = self
+                    .do_read(namespace_id, &storage_key)
+                    .await?
+                    .ok_or_else(|| StorageError::not_found(format!("Key not found: {kid}")))?;
 
-            self.cas_delete(namespace_id, storage_key, bytes).await
-        }
-        .await;
+                self.cas_delete(namespace_id, storage_key.clone(), bytes).await
+            })
+            .await;
 
         if let Err(ref e) = result {
             self.record_error(Self::error_to_kind(e));

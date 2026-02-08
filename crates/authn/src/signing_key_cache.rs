@@ -310,7 +310,7 @@ impl SigningKeyCache {
 /// Non-transient errors (not found, serialization, internal) indicate a
 /// definitive response from Ledger and should not use fallback.
 fn is_transient_error(error: &StorageError) -> bool {
-    matches!(error, StorageError::Connection { .. } | StorageError::Timeout)
+    matches!(error, StorageError::Connection { .. } | StorageError::Timeout { .. })
 }
 
 /// Validates that a key is in a usable state.
@@ -718,7 +718,7 @@ mod tests {
             if let Some(ref error) = *self.fail_with.lock().expect("lock") {
                 return Err(match error {
                     StorageError::Connection { message, .. } => StorageError::connection(message),
-                    StorageError::Timeout => StorageError::timeout(),
+                    StorageError::Timeout { .. } => StorageError::timeout(),
                     StorageError::NotFound { key, .. } => StorageError::not_found(key),
                     StorageError::Internal { message, .. } => StorageError::internal(message),
                     _ => StorageError::internal("unknown"),

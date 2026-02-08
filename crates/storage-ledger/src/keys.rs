@@ -18,7 +18,7 @@ pub(crate) fn encode_key(key: &[u8]) -> String {
 
 /// Decodes a hexadecimal key string back to bytes.
 pub(crate) fn decode_key(key: &str) -> std::result::Result<Vec<u8>, LedgerStorageError> {
-    hex::decode(key).map_err(|e| LedgerStorageError::KeyEncoding(e.to_string()))
+    hex::decode(key).map_err(|e| LedgerStorageError::key_encoding(e.to_string()))
 }
 
 #[cfg(test)]

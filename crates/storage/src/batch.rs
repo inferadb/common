@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, trace, warn};
 
-use crate::{StorageBackend, StorageResult};
+use crate::{ConfigError, StorageBackend, StorageResult};
 
 /// Transaction size limit (10MB with safety margin).
 /// We use 9MB as the effective limit to leave room for metadata overhead.
@@ -46,18 +46,20 @@ pub const DEFAULT_MAX_BATCH_SIZE: usize = 1000;
 /// Default maximum batch byte size (8MB to stay well under transaction limit).
 pub const DEFAULT_MAX_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
-/// Configuration for batch writes
-#[derive(Debug, Clone, bon::Builder)]
+/// Configuration for batch writes.
+///
+/// # Validation
+///
+/// - `max_batch_size` must be `>= 1`
+/// - `max_batch_bytes` must be `>= 1`
+#[derive(Debug, Clone)]
 pub struct BatchConfig {
-    /// Maximum number of operations per batch
-    #[builder(default = DEFAULT_MAX_BATCH_SIZE)]
-    pub max_batch_size: usize,
-    /// Maximum byte size per batch (should be under the 10MB transaction limit)
-    #[builder(default = DEFAULT_MAX_BATCH_BYTES)]
-    pub max_batch_bytes: usize,
-    /// Enable batching (can be disabled for testing)
-    #[builder(default = true)]
-    pub enabled: bool,
+    /// Maximum number of operations per batch.
+    pub(crate) max_batch_size: usize,
+    /// Maximum byte size per batch (should be under the 10MB transaction limit).
+    pub(crate) max_batch_bytes: usize,
+    /// Enable batching (can be disabled for testing).
+    pub(crate) enabled: bool,
 }
 
 impl Default for BatchConfig {
@@ -70,23 +72,72 @@ impl Default for BatchConfig {
     }
 }
 
+#[bon::bon]
 impl BatchConfig {
-    /// Create a disabled batch config
+    /// Creates a new batch configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] if `max_batch_size` or `max_batch_bytes` is zero.
+    #[builder]
+    pub fn new(
+        #[builder(default = DEFAULT_MAX_BATCH_SIZE)] max_batch_size: usize,
+        #[builder(default = DEFAULT_MAX_BATCH_BYTES)] max_batch_bytes: usize,
+        #[builder(default = true)] enabled: bool,
+    ) -> Result<Self, ConfigError> {
+        if max_batch_size == 0 {
+            return Err(ConfigError::BelowMinimum {
+                field: "max_batch_size",
+                min: "1".into(),
+                value: "0".into(),
+            });
+        }
+        if max_batch_bytes == 0 {
+            return Err(ConfigError::BelowMinimum {
+                field: "max_batch_bytes",
+                min: "1".into(),
+                value: "0".into(),
+            });
+        }
+        Ok(Self { max_batch_size, max_batch_bytes, enabled })
+    }
+
+    /// Creates a disabled batch config.
     #[must_use]
     pub fn disabled() -> Self {
-        Self::builder().enabled(false).build()
+        Self {
+            max_batch_size: DEFAULT_MAX_BATCH_SIZE,
+            max_batch_bytes: DEFAULT_MAX_BATCH_BYTES,
+            enabled: false,
+        }
     }
 
-    /// Create a batch config with custom settings
-    #[must_use]
-    pub fn new(max_batch_size: usize, max_batch_bytes: usize) -> Self {
-        Self::builder().max_batch_size(max_batch_size).max_batch_bytes(max_batch_bytes).build()
-    }
-
-    /// Create a batch config optimized for large transactions
+    /// Creates a batch config optimized for large transactions.
     #[must_use]
     pub fn for_large_transactions() -> Self {
-        Self::builder().max_batch_bytes(TRANSACTION_SIZE_LIMIT).build()
+        Self {
+            max_batch_size: DEFAULT_MAX_BATCH_SIZE,
+            max_batch_bytes: TRANSACTION_SIZE_LIMIT,
+            enabled: true,
+        }
+    }
+
+    /// Returns the maximum number of operations per batch.
+    #[must_use]
+    pub fn max_batch_size(&self) -> usize {
+        self.max_batch_size
+    }
+
+    /// Returns the maximum byte size per batch.
+    #[must_use]
+    pub fn max_batch_bytes(&self) -> usize {
+        self.max_batch_bytes
+    }
+
+    /// Returns whether batching is enabled.
+    #[must_use]
+    pub fn enabled(&self) -> bool {
+        self.enabled
     }
 }
 
@@ -341,41 +392,57 @@ mod tests {
     #[test]
     fn test_batch_config_default() {
         let config = BatchConfig::default();
-        assert_eq!(config.max_batch_size, DEFAULT_MAX_BATCH_SIZE);
-        assert_eq!(config.max_batch_bytes, DEFAULT_MAX_BATCH_BYTES);
-        assert!(config.enabled);
+        assert_eq!(config.max_batch_size(), DEFAULT_MAX_BATCH_SIZE);
+        assert_eq!(config.max_batch_bytes(), DEFAULT_MAX_BATCH_BYTES);
+        assert!(config.enabled());
     }
 
     #[test]
     fn test_batch_config_disabled() {
         let config = BatchConfig::disabled();
-        assert!(!config.enabled);
+        assert!(!config.enabled());
     }
 
     #[test]
     fn test_batch_config_builder() {
-        let config = BatchConfig::builder().max_batch_size(500).enabled(true).build();
-        assert_eq!(config.max_batch_size, 500);
-        assert_eq!(config.max_batch_bytes, DEFAULT_MAX_BATCH_BYTES);
-        assert!(config.enabled);
+        let config = BatchConfig::builder().max_batch_size(500).enabled(true).build().unwrap();
+        assert_eq!(config.max_batch_size(), 500);
+        assert_eq!(config.max_batch_bytes(), DEFAULT_MAX_BATCH_BYTES);
+        assert!(config.enabled());
     }
 
     #[test]
     fn test_batch_config_builder_defaults() {
-        let built = BatchConfig::builder().build();
+        let built = BatchConfig::builder().build().unwrap();
         let default = BatchConfig::default();
-        assert_eq!(built.max_batch_size, default.max_batch_size);
-        assert_eq!(built.max_batch_bytes, default.max_batch_bytes);
-        assert_eq!(built.enabled, default.enabled);
+        assert_eq!(built.max_batch_size(), default.max_batch_size());
+        assert_eq!(built.max_batch_bytes(), default.max_batch_bytes());
+        assert_eq!(built.enabled(), default.enabled());
     }
 
     #[test]
     fn test_batch_config_builder_all_fields() {
-        let config =
-            BatchConfig::builder().max_batch_size(100).max_batch_bytes(1024).enabled(false).build();
-        assert_eq!(config.max_batch_size, 100);
-        assert_eq!(config.max_batch_bytes, 1024);
-        assert!(!config.enabled);
+        let config = BatchConfig::builder()
+            .max_batch_size(100)
+            .max_batch_bytes(1024)
+            .enabled(false)
+            .build()
+            .unwrap();
+        assert_eq!(config.max_batch_size(), 100);
+        assert_eq!(config.max_batch_bytes(), 1024);
+        assert!(!config.enabled());
+    }
+
+    #[test]
+    fn test_batch_config_zero_batch_size_rejected() {
+        let err = BatchConfig::builder().max_batch_size(0).build().unwrap_err();
+        assert!(err.to_string().contains("max_batch_size"), "error should name the field: {err}");
+    }
+
+    #[test]
+    fn test_batch_config_zero_batch_bytes_rejected() {
+        let err = BatchConfig::builder().max_batch_bytes(0).build().unwrap_err();
+        assert!(err.to_string().contains("max_batch_bytes"), "error should name the field: {err}");
     }
 
     #[tokio::test]
@@ -419,7 +486,8 @@ mod tests {
     #[tokio::test]
     async fn test_batch_writer_split_by_count() {
         let backend = MemoryBackend::new();
-        let config = BatchConfig::new(5, usize::MAX); // Max 5 ops per batch
+        let config =
+            BatchConfig::builder().max_batch_size(5).max_batch_bytes(usize::MAX).build().unwrap(); // Max 5 ops per batch
         let mut writer = BatchWriter::new(backend, config);
 
         // Add 12 operations - should split into 3 batches (5, 5, 2)
@@ -435,7 +503,8 @@ mod tests {
     #[tokio::test]
     async fn test_should_flush() {
         let backend = MemoryBackend::new();
-        let config = BatchConfig::new(3, usize::MAX);
+        let config =
+            BatchConfig::builder().max_batch_size(3).max_batch_bytes(usize::MAX).build().unwrap();
         let mut writer = BatchWriter::new(backend, config);
 
         assert!(!writer.should_flush());
@@ -474,8 +543,8 @@ mod tests {
     #[test]
     fn test_batch_config_for_large_transactions() {
         let config = BatchConfig::for_large_transactions();
-        assert_eq!(config.max_batch_bytes, TRANSACTION_SIZE_LIMIT);
-        assert!(config.enabled);
+        assert_eq!(config.max_batch_bytes(), TRANSACTION_SIZE_LIMIT);
+        assert!(config.enabled());
     }
 
     #[tokio::test]
@@ -519,7 +588,8 @@ mod tests {
     async fn test_should_flush_by_bytes() {
         let backend = MemoryBackend::new();
         // Set max_batch_bytes to a small value
-        let config = BatchConfig::new(1000, 200);
+        let config =
+            BatchConfig::builder().max_batch_size(1000).max_batch_bytes(200).build().unwrap();
         let mut writer = BatchWriter::new(backend, config);
 
         // Add operations that exceed byte limit (each set is ~160 bytes)
@@ -534,7 +604,8 @@ mod tests {
     async fn test_split_by_bytes() {
         let backend = MemoryBackend::new();
         // Small byte limit to force splits
-        let config = BatchConfig::new(1000, 200);
+        let config =
+            BatchConfig::builder().max_batch_size(1000).max_batch_bytes(200).build().unwrap();
         let mut writer = BatchWriter::new(backend, config);
 
         // Each operation is ~160 bytes, so 2 per batch max with 200 byte limit
@@ -551,7 +622,8 @@ mod tests {
     async fn test_oversized_single_operation() {
         let backend = MemoryBackend::new();
         // Very small byte limit
-        let config = BatchConfig::new(1000, 50);
+        let config =
+            BatchConfig::builder().max_batch_size(1000).max_batch_bytes(50).build().unwrap();
         let mut writer = BatchWriter::new(backend, config);
 
         // Add an operation that exceeds the byte limit by itself
@@ -566,7 +638,8 @@ mod tests {
     #[tokio::test]
     async fn test_mixed_oversized_and_normal_operations() {
         let backend = MemoryBackend::new();
-        let config = BatchConfig::new(1000, 100);
+        let config =
+            BatchConfig::builder().max_batch_size(1000).max_batch_bytes(100).build().unwrap();
         let mut writer = BatchWriter::new(backend, config);
 
         // Add a normal operation
@@ -662,7 +735,7 @@ mod tests {
                 max_batch_size in 1..50usize,
                 max_batch_bytes in 100..2000usize,
             ) {
-                let mut writer = make_writer(BatchConfig::new(max_batch_size, max_batch_bytes));
+                let mut writer = make_writer(BatchConfig::builder().max_batch_size(max_batch_size).max_batch_bytes(max_batch_bytes).build().unwrap());
                 populate(&mut writer, &ops);
 
                 let batches = writer.split_into_batches();
@@ -677,7 +750,13 @@ mod tests {
                 ops in proptest::collection::vec(arb_batch_operation(), 1..50),
                 max_batch_bytes in 100..5000usize,
             ) {
-                let mut writer = make_writer(BatchConfig::new(usize::MAX, max_batch_bytes));
+                let mut writer = make_writer(
+                    BatchConfig::builder()
+                        .max_batch_size(usize::MAX)
+                        .max_batch_bytes(max_batch_bytes)
+                        .build()
+                        .expect("valid config"),
+                );
                 populate(&mut writer, &ops);
 
                 let batches = writer.split_into_batches();
@@ -702,7 +781,13 @@ mod tests {
                 ops in proptest::collection::vec(arb_batch_operation(), 1..100),
                 max_batch_size in 1..20usize,
             ) {
-                let mut writer = make_writer(BatchConfig::new(max_batch_size, usize::MAX));
+                let mut writer = make_writer(
+                    BatchConfig::builder()
+                        .max_batch_size(max_batch_size)
+                        .max_batch_bytes(usize::MAX)
+                        .build()
+                        .expect("valid config"),
+                );
                 populate(&mut writer, &ops);
 
                 let batches = writer.split_into_batches();
@@ -722,7 +807,7 @@ mod tests {
                 max_batch_size in 1..100usize,
                 max_batch_bytes in 100..10000usize,
             ) {
-                let writer = make_writer(BatchConfig::new(max_batch_size, max_batch_bytes));
+                let writer = make_writer(BatchConfig::builder().max_batch_size(max_batch_size).max_batch_bytes(max_batch_bytes).build().unwrap());
                 let batches = writer.split_into_batches();
                 prop_assert!(batches.is_empty());
             }

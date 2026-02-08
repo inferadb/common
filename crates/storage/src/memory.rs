@@ -239,7 +239,7 @@ impl StorageBackend for MemoryBackend {
         };
 
         if !matches {
-            return Err(StorageError::Conflict);
+            return Err(StorageError::conflict());
         }
 
         data.insert(key.to_vec(), Bytes::from(new_value));
@@ -416,7 +416,7 @@ impl Transaction for MemoryTransaction {
             };
 
             if !matches {
-                return Err(crate::StorageError::Conflict);
+                return Err(crate::StorageError::conflict());
             }
         }
 
@@ -630,7 +630,7 @@ mod tests {
         let result =
             backend.compare_and_set(b"key", Some(b"wrong".as_slice()), b"value2".to_vec()).await;
 
-        assert!(matches!(result, Err(StorageError::Conflict)));
+        assert!(matches!(result, Err(StorageError::Conflict { .. })));
 
         // Original value unchanged
         let value = backend.get(b"key").await.unwrap();
@@ -656,7 +656,7 @@ mod tests {
         let result =
             backend.compare_and_set(b"missing", Some(b"value".as_slice()), b"new".to_vec()).await;
 
-        assert!(matches!(result, Err(StorageError::Conflict)));
+        assert!(matches!(result, Err(StorageError::Conflict { .. })));
 
         // Key still doesn't exist
         let value = backend.get(b"missing").await.unwrap();

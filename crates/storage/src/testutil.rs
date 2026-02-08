@@ -81,21 +81,21 @@ pub async fn populated_backend(prefix: &str, count: usize, value_size: usize) ->
 /// use inferadb_common_storage::testutil::assert_conflict;
 /// use inferadb_common_storage::error::{StorageError, StorageResult};
 ///
-/// let result: StorageResult<()> = Err(StorageError::Conflict);
+/// let result: StorageResult<()> = Err(StorageError::conflict());
 /// assert_conflict!(result);
 /// ```
 #[macro_export]
 macro_rules! assert_conflict {
     ($result:expr) => {
         assert!(
-            matches!($result, Err($crate::error::StorageError::Conflict)),
+            matches!($result, Err($crate::error::StorageError::Conflict { .. })),
             "expected StorageError::Conflict, got: {:?}",
             $result,
         );
     };
     ($result:expr, $msg:expr) => {
         assert!(
-            matches!($result, Err($crate::error::StorageError::Conflict)),
+            matches!($result, Err($crate::error::StorageError::Conflict { .. })),
             "{}: expected StorageError::Conflict, got: {:?}",
             $msg,
             $result,
@@ -171,7 +171,7 @@ macro_rules! assert_storage_ok {
 macro_rules! assert_timeout {
     ($result:expr) => {
         assert!(
-            matches!($result, Err($crate::error::StorageError::Timeout)),
+            matches!($result, Err($crate::error::StorageError::Timeout { .. })),
             "expected StorageError::Timeout, got: {:?}",
             $result,
         );
@@ -183,7 +183,7 @@ macro_rules! assert_timeout {
 /// This is a convenience for tests that need to match on error variants
 /// without importing the error type directly.
 pub fn is_conflict<T>(result: &StorageResult<T>) -> bool {
-    matches!(result, Err(StorageError::Conflict))
+    matches!(result, Err(StorageError::Conflict { .. }))
 }
 
 /// Helper to verify that a result is a `NotFound` error.
@@ -193,7 +193,7 @@ pub fn is_not_found<T>(result: &StorageResult<T>) -> bool {
 
 /// Helper to verify that a result is a `Timeout` error.
 pub fn is_timeout<T>(result: &StorageResult<T>) -> bool {
-    matches!(result, Err(StorageError::Timeout))
+    matches!(result, Err(StorageError::Timeout { .. }))
 }
 
 #[cfg(test)]
@@ -242,13 +242,13 @@ mod tests {
 
     #[test]
     fn test_assert_conflict_macro() {
-        let result: StorageResult<()> = Err(StorageError::Conflict);
+        let result: StorageResult<()> = Err(StorageError::conflict());
         assert_conflict!(result);
     }
 
     #[test]
     fn test_assert_not_found_macro() {
-        let result: StorageResult<()> = Err(StorageError::NotFound { key: "missing".into() });
+        let result: StorageResult<()> = Err(StorageError::not_found("missing"));
         assert_not_found!(result);
     }
 
@@ -261,13 +261,13 @@ mod tests {
 
     #[test]
     fn test_is_conflict() {
-        assert!(is_conflict::<()>(&Err(StorageError::Conflict)));
+        assert!(is_conflict::<()>(&Err(StorageError::conflict())));
         assert!(!is_conflict::<()>(&Ok(())));
     }
 
     #[test]
     fn test_is_not_found() {
-        assert!(is_not_found::<()>(&Err(StorageError::NotFound { key: "x".into() })));
+        assert!(is_not_found::<()>(&Err(StorageError::not_found("x"))));
         assert!(!is_not_found::<()>(&Ok(())));
     }
 }

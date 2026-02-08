@@ -84,7 +84,8 @@ async fn create_test_backend() -> LedgerBackend {
         .client(test_client_config(&format!("test-client-{}", unique_vault_id())))
         .namespace_id(ledger_namespace_id())
         .vault_id(unique_vault_id())
-        .build();
+        .build()
+        .expect("valid config");
 
     LedgerBackend::new(config).await.expect("backend creation should succeed")
 }
@@ -95,7 +96,8 @@ async fn create_backend_with_vault(vault_id: VaultId) -> LedgerBackend {
         .client(test_client_config(&format!("test-client-vault-{}", vault_id)))
         .namespace_id(ledger_namespace_id())
         .vault_id(vault_id)
-        .build();
+        .build()
+        .expect("valid config");
 
     LedgerBackend::new(config).await.expect("backend creation should succeed")
 }
@@ -684,8 +686,8 @@ async fn test_real_ledger_concurrent_revoke_conflict() {
 
     // At least one must succeed
     let successes = u32::from(result_a.is_ok()) + u32::from(result_b.is_ok());
-    let conflicts = u32::from(matches!(result_a, Err(StorageError::Conflict)))
-        + u32::from(matches!(result_b, Err(StorageError::Conflict)));
+    let conflicts = u32::from(matches!(result_a, Err(StorageError::Conflict { .. })))
+        + u32::from(matches!(result_b, Err(StorageError::Conflict { .. })));
 
     assert!(
         successes >= 1,

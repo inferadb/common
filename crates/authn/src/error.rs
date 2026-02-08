@@ -229,10 +229,7 @@ mod tests {
 
     #[test]
     fn test_key_storage_error_display() {
-        let storage_err = inferadb_common_storage::StorageError::Connection {
-            message: "connection refused".into(),
-            source: None,
-        };
+        let storage_err = inferadb_common_storage::StorageError::connection("connection refused");
         let err = AuthError::KeyStorageError(storage_err);
         assert_eq!(err.to_string(), "Key storage error: Connection error: connection refused");
     }
@@ -241,10 +238,7 @@ mod tests {
     fn test_key_storage_error_preserves_source_chain() {
         use std::error::Error;
 
-        let storage_err = inferadb_common_storage::StorageError::Connection {
-            message: "connection refused".into(),
-            source: None,
-        };
+        let storage_err = inferadb_common_storage::StorageError::connection("connection refused");
         let auth_err = AuthError::KeyStorageError(storage_err);
 
         // The source chain should expose the StorageError
@@ -257,7 +251,7 @@ mod tests {
 
     #[test]
     fn test_key_storage_error_from_conversion() {
-        let storage_err = inferadb_common_storage::StorageError::Timeout;
+        let storage_err = inferadb_common_storage::StorageError::timeout();
         let auth_err: AuthError = storage_err.into();
         assert!(matches!(auth_err, AuthError::KeyStorageError(_)));
         assert_eq!(auth_err.to_string(), "Key storage error: Operation timeout");
@@ -265,14 +259,12 @@ mod tests {
 
     #[test]
     fn test_key_storage_error_nested_source_chain() {
-        use std::{error::Error, sync::Arc};
+        use std::error::Error;
 
-        let inner_err: Arc<dyn std::error::Error + Send + Sync> =
-            Arc::new(inferadb_common_storage::StorageError::Timeout);
-        let storage_err = inferadb_common_storage::StorageError::Connection {
-            message: "connection failed".into(),
-            source: Some(inner_err),
-        };
+        let storage_err = inferadb_common_storage::StorageError::connection_with_source(
+            "connection failed",
+            inferadb_common_storage::StorageError::timeout(),
+        );
         let auth_err = AuthError::KeyStorageError(storage_err);
 
         // Level 1: AuthError → StorageError

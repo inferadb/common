@@ -76,9 +76,9 @@
 //!
 //! # Feature Flags
 //!
-//! - **`testutil`**: Enables the `testutil` module with shared test helpers (key/value
-//!   generators, backend factories, assertion macros). Enable this in `[dev-dependencies]` for
-//!   integration tests.
+//! - **`testutil`**: Enables the `testutil` module with shared test helpers (key/value generators,
+//!   backend factories, assertion macros). Enable this in `[dev-dependencies]` for integration
+//!   tests.
 
 #![deny(unsafe_code)]
 
@@ -97,9 +97,9 @@ pub mod types;
 // Re-export primary types at crate root for convenience
 pub use backend::StorageBackend;
 pub use batch::{BatchConfig, BatchFlushStats, BatchOperation, BatchWriter};
-pub use error::{BoxError, StorageError, StorageResult};
+pub use error::{BoxError, ConfigError, StorageError, StorageResult};
 pub use memory::MemoryBackend;
-pub use metrics::{Metrics, MetricsCollector, MetricsSnapshot};
+pub use metrics::{LatencyPercentiles, Metrics, MetricsCollector, MetricsSnapshot};
 pub use transaction::Transaction;
 pub use types::{CertId, ClientId, KeyValue, NamespaceId, VaultId};
 pub use zeroize::Zeroizing;

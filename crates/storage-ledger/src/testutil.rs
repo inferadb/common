@@ -61,7 +61,8 @@ pub async fn create_test_backend(server: &MockLedgerServer) -> LedgerBackend {
         .client(test_client_config(server))
         .namespace_id(1)
         .vault_id(VaultId::from(0))
-        .build();
+        .build()
+        .expect("valid default config");
 
     LedgerBackend::new(config).await.expect("backend creation should succeed")
 }
@@ -84,7 +85,8 @@ pub async fn create_paginated_backend(
         .vault_id(VaultId::from(0))
         .page_size(page_size)
         .max_range_results(max_range_results)
-        .build();
+        .build()
+        .expect("valid default config");
 
     LedgerBackend::new(config).await.expect("paginated backend creation should succeed")
 }

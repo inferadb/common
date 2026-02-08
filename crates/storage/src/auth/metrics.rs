@@ -1,8 +1,7 @@
 //! Metrics collection for signing key storage operations.
-//! Metrics collection for signing key storage operations.
 //!
 //! Provides observability into signing key lifecycle operations including
-//! counts, latencies, and error rates.
+//! counts, latencies, percentiles, and error rates.
 //!
 //! # Example
 //!
@@ -18,9 +17,10 @@
 //! // Record an error
 //! metrics.record_error(SigningKeyErrorKind::NotFound);
 //!
-//! // Get a snapshot for reporting
+//! // Get a snapshot with percentiles
 //! let snapshot = metrics.snapshot();
 //! assert_eq!(snapshot.get_count, 1);
+//! assert_eq!(snapshot.get_percentiles.p50, 150);
 //! ```
 
 use std::{
@@ -30,6 +30,11 @@ use std::{
     },
     time::Duration,
 };
+
+use crate::metrics::{LatencyHistogram, LatencyPercentiles};
+
+/// Default histogram window size for signing key metrics.
+const DEFAULT_HISTOGRAM_WINDOW_SIZE: usize = 1024;
 
 /// Error categories for signing key operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +101,29 @@ pub struct SigningKeyMetricsSnapshot {
     /// Total latency for delete operations in microseconds.
     #[builder(default)]
     pub delete_latency_us: u64,
+
+    // Latency percentiles (p50/p95/p99)
+    /// Create latency percentiles in microseconds.
+    #[builder(default)]
+    pub create_percentiles: LatencyPercentiles,
+    /// Get latency percentiles in microseconds.
+    #[builder(default)]
+    pub get_percentiles: LatencyPercentiles,
+    /// List latency percentiles in microseconds.
+    #[builder(default)]
+    pub list_percentiles: LatencyPercentiles,
+    /// Deactivate latency percentiles in microseconds.
+    #[builder(default)]
+    pub deactivate_percentiles: LatencyPercentiles,
+    /// Revoke latency percentiles in microseconds.
+    #[builder(default)]
+    pub revoke_percentiles: LatencyPercentiles,
+    /// Activate latency percentiles in microseconds.
+    #[builder(default)]
+    pub activate_percentiles: LatencyPercentiles,
+    /// Delete latency percentiles in microseconds.
+    #[builder(default)]
+    pub delete_percentiles: LatencyPercentiles,
 
     // Error counts by category
     /// Not found errors.
@@ -189,7 +217,7 @@ impl SigningKeyMetricsSnapshot {
     }
 }
 
-/// Inner storage for atomic counters.
+/// Inner storage for atomic counters and histograms.
 struct SigningKeyMetricsInner {
     // Operation counts
     create_count: AtomicU64,
@@ -208,6 +236,15 @@ struct SigningKeyMetricsInner {
     revoke_latency_us: AtomicU64,
     activate_latency_us: AtomicU64,
     delete_latency_us: AtomicU64,
+
+    // Latency histograms for percentile computation
+    create_histogram: LatencyHistogram,
+    get_histogram: LatencyHistogram,
+    list_histogram: LatencyHistogram,
+    deactivate_histogram: LatencyHistogram,
+    revoke_histogram: LatencyHistogram,
+    activate_histogram: LatencyHistogram,
+    delete_histogram: LatencyHistogram,
 
     // Error counts
     error_not_found: AtomicU64,
@@ -239,7 +276,7 @@ struct SigningKeyMetricsInner {
 /// // Record an error
 /// metrics.record_error(SigningKeyErrorKind::NotFound);
 ///
-/// // Take a snapshot for reporting
+/// // Take a snapshot with percentiles
 /// let snapshot = metrics.snapshot();
 /// assert_eq!(snapshot.get_count, 1);
 /// assert_eq!(snapshot.error_not_found, 1);
@@ -269,6 +306,13 @@ impl SigningKeyMetrics {
                 revoke_latency_us: AtomicU64::new(0),
                 activate_latency_us: AtomicU64::new(0),
                 delete_latency_us: AtomicU64::new(0),
+                create_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+                get_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+                list_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+                deactivate_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+                revoke_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+                activate_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+                delete_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
                 error_not_found: AtomicU64::new(0),
                 error_conflict: AtomicU64::new(0),
                 error_connection: AtomicU64::new(0),
@@ -281,44 +325,58 @@ impl SigningKeyMetrics {
 
     /// Records a create_key operation.
     pub fn record_create(&self, duration: Duration) {
+        let us = duration.as_micros() as u64;
         self.inner.create_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.create_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.create_latency_us.fetch_add(us, Ordering::Relaxed);
+        self.inner.create_histogram.record(us);
     }
 
     /// Records a get_key operation.
     pub fn record_get(&self, duration: Duration) {
+        let us = duration.as_micros() as u64;
         self.inner.get_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.get_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.get_latency_us.fetch_add(us, Ordering::Relaxed);
+        self.inner.get_histogram.record(us);
     }
 
     /// Records a list_active_keys operation.
     pub fn record_list(&self, duration: Duration) {
+        let us = duration.as_micros() as u64;
         self.inner.list_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.list_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.list_latency_us.fetch_add(us, Ordering::Relaxed);
+        self.inner.list_histogram.record(us);
     }
 
     /// Records a deactivate_key operation.
     pub fn record_deactivate(&self, duration: Duration) {
+        let us = duration.as_micros() as u64;
         self.inner.deactivate_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.deactivate_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.deactivate_latency_us.fetch_add(us, Ordering::Relaxed);
+        self.inner.deactivate_histogram.record(us);
     }
 
     /// Records a revoke_key operation.
     pub fn record_revoke(&self, duration: Duration) {
+        let us = duration.as_micros() as u64;
         self.inner.revoke_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.revoke_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.revoke_latency_us.fetch_add(us, Ordering::Relaxed);
+        self.inner.revoke_histogram.record(us);
     }
 
     /// Records an activate_key operation.
     pub fn record_activate(&self, duration: Duration) {
+        let us = duration.as_micros() as u64;
         self.inner.activate_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.activate_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.activate_latency_us.fetch_add(us, Ordering::Relaxed);
+        self.inner.activate_histogram.record(us);
     }
 
     /// Records a delete_key operation.
     pub fn record_delete(&self, duration: Duration) {
+        let us = duration.as_micros() as u64;
         self.inner.delete_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.delete_latency_us.fetch_add(duration.as_micros() as u64, Ordering::Relaxed);
+        self.inner.delete_latency_us.fetch_add(us, Ordering::Relaxed);
+        self.inner.delete_histogram.record(us);
     }
 
     /// Records an error by category.
@@ -345,7 +403,7 @@ impl SigningKeyMetrics {
         }
     }
 
-    /// Returns a snapshot of current metrics.
+    /// Returns a snapshot of current metrics including percentiles.
     #[must_use]
     pub fn snapshot(&self) -> SigningKeyMetricsSnapshot {
         SigningKeyMetricsSnapshot {
@@ -363,6 +421,13 @@ impl SigningKeyMetrics {
             revoke_latency_us: self.inner.revoke_latency_us.load(Ordering::Relaxed),
             activate_latency_us: self.inner.activate_latency_us.load(Ordering::Relaxed),
             delete_latency_us: self.inner.delete_latency_us.load(Ordering::Relaxed),
+            create_percentiles: self.inner.create_histogram.percentiles(),
+            get_percentiles: self.inner.get_histogram.percentiles(),
+            list_percentiles: self.inner.list_histogram.percentiles(),
+            deactivate_percentiles: self.inner.deactivate_histogram.percentiles(),
+            revoke_percentiles: self.inner.revoke_histogram.percentiles(),
+            activate_percentiles: self.inner.activate_histogram.percentiles(),
+            delete_percentiles: self.inner.delete_histogram.percentiles(),
             error_not_found: self.inner.error_not_found.load(Ordering::Relaxed),
             error_conflict: self.inner.error_conflict.load(Ordering::Relaxed),
             error_connection: self.inner.error_connection.load(Ordering::Relaxed),
@@ -388,6 +453,13 @@ impl SigningKeyMetrics {
         self.inner.revoke_latency_us.store(0, Ordering::Relaxed);
         self.inner.activate_latency_us.store(0, Ordering::Relaxed);
         self.inner.delete_latency_us.store(0, Ordering::Relaxed);
+        self.inner.create_histogram.reset();
+        self.inner.get_histogram.reset();
+        self.inner.list_histogram.reset();
+        self.inner.deactivate_histogram.reset();
+        self.inner.revoke_histogram.reset();
+        self.inner.activate_histogram.reset();
+        self.inner.delete_histogram.reset();
         self.inner.error_not_found.store(0, Ordering::Relaxed);
         self.inner.error_conflict.store(0, Ordering::Relaxed);
         self.inner.error_connection.store(0, Ordering::Relaxed);
@@ -412,6 +484,10 @@ impl SigningKeyMetrics {
             error_rate = format!("{:.2}%", snapshot.error_rate() * 100.0),
             avg_get_latency_us = format!("{:.1}", snapshot.avg_get_latency_us()),
             avg_create_latency_us = format!("{:.1}", snapshot.avg_create_latency_us()),
+            get_p50 = snapshot.get_percentiles.p50,
+            get_p95 = snapshot.get_percentiles.p95,
+            get_p99 = snapshot.get_percentiles.p99,
+            create_p99 = snapshot.create_percentiles.p99,
             "signing_key_metrics"
         );
     }
@@ -719,5 +795,80 @@ mod tests {
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.deserialization_errors(), 2, "only serialization errors should count");
         assert_eq!(snapshot.error_serialization, 2);
+    }
+
+    // ── Percentile tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_snapshot_includes_percentiles() {
+        let metrics = SigningKeyMetrics::new();
+
+        for v in 1..=100 {
+            metrics.record_get(Duration::from_micros(v));
+        }
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.get_count, 100);
+        assert_eq!(snapshot.get_percentiles.p50, 50);
+        assert_eq!(snapshot.get_percentiles.p95, 95);
+        assert_eq!(snapshot.get_percentiles.p99, 99);
+    }
+
+    #[test]
+    fn test_snapshot_percentiles_all_operation_types() {
+        let metrics = SigningKeyMetrics::new();
+
+        metrics.record_create(Duration::from_micros(100));
+        metrics.record_get(Duration::from_micros(200));
+        metrics.record_list(Duration::from_micros(300));
+        metrics.record_deactivate(Duration::from_micros(400));
+        metrics.record_revoke(Duration::from_micros(500));
+        metrics.record_activate(Duration::from_micros(600));
+        metrics.record_delete(Duration::from_micros(700));
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.create_percentiles.p50, 100);
+        assert_eq!(snapshot.get_percentiles.p50, 200);
+        assert_eq!(snapshot.list_percentiles.p50, 300);
+        assert_eq!(snapshot.deactivate_percentiles.p50, 400);
+        assert_eq!(snapshot.revoke_percentiles.p50, 500);
+        assert_eq!(snapshot.activate_percentiles.p50, 600);
+        assert_eq!(snapshot.delete_percentiles.p50, 700);
+    }
+
+    #[test]
+    fn test_reset_clears_percentiles() {
+        let metrics = SigningKeyMetrics::new();
+
+        metrics.record_get(Duration::from_micros(100));
+        metrics.reset();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.get_percentiles, LatencyPercentiles::default());
+        assert_eq!(snapshot.create_percentiles, LatencyPercentiles::default());
+    }
+
+    #[test]
+    fn test_default_snapshot_percentiles_are_zero() {
+        let snapshot = SigningKeyMetricsSnapshot::default();
+        assert_eq!(snapshot.get_percentiles, LatencyPercentiles::default());
+        assert_eq!(snapshot.create_percentiles, LatencyPercentiles::default());
+        assert_eq!(snapshot.list_percentiles, LatencyPercentiles::default());
+        assert_eq!(snapshot.deactivate_percentiles, LatencyPercentiles::default());
+        assert_eq!(snapshot.revoke_percentiles, LatencyPercentiles::default());
+        assert_eq!(snapshot.activate_percentiles, LatencyPercentiles::default());
+        assert_eq!(snapshot.delete_percentiles, LatencyPercentiles::default());
+    }
+
+    #[test]
+    fn test_percentile_accuracy_within_1_percent() {
+        let metrics = SigningKeyMetrics::new();
+        for v in 1..=1000 {
+            metrics.record_get(Duration::from_micros(v));
+        }
+        let p = metrics.snapshot().get_percentiles;
+        assert!((p.p50 as i64 - 500).unsigned_abs() <= 10, "p50={}", p.p50);
+        assert!((p.p95 as i64 - 950).unsigned_abs() <= 10, "p95={}", p.p95);
+        assert!((p.p99 as i64 - 990).unsigned_abs() <= 10, "p99={}", p.p99);
     }
 }

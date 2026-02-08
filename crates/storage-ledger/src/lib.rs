@@ -50,7 +50,7 @@
 //!     let config = LedgerBackendConfig::builder()
 //!         .client(client)
 //!         .namespace_id(1)
-//!         .build();
+//!         .build()?;
 //!
 //!     let backend = LedgerBackend::new(config).await?;
 //!
@@ -99,11 +99,13 @@ pub mod testutil;
 
 pub use backend::LedgerBackend;
 pub use config::{
-    DEFAULT_INITIAL_BACKOFF, DEFAULT_LIST_TIMEOUT, DEFAULT_MAX_BACKOFF, DEFAULT_MAX_RANGE_RESULTS,
-    DEFAULT_MAX_RETRIES, DEFAULT_PAGE_SIZE, DEFAULT_READ_TIMEOUT, DEFAULT_WRITE_TIMEOUT,
-    LedgerBackendConfig, RetryConfig, TimeoutConfig,
+    CasRetryConfig, DEFAULT_CAS_RETRY_BASE_DELAY, DEFAULT_INITIAL_BACKOFF, DEFAULT_LIST_TIMEOUT,
+    DEFAULT_MAX_BACKOFF, DEFAULT_MAX_CAS_RETRIES, DEFAULT_MAX_RANGE_RESULTS, DEFAULT_MAX_RETRIES,
+    DEFAULT_PAGE_SIZE, DEFAULT_READ_TIMEOUT, DEFAULT_WRITE_TIMEOUT, LedgerBackendConfig,
+    RetryConfig, TimeoutConfig,
 };
 pub use error::{LedgerStorageError, Result};
+pub use inferadb_common_storage::ConfigError;
 // Re-export SDK types needed to build LedgerBackendConfig
 pub use inferadb_ledger_sdk::{ClientConfig, ReadConsistency, ServerSource};
 pub use transaction::LedgerTransaction;

@@ -46,7 +46,7 @@ async fn test_two_transactions_same_key_cas_conflict() {
     // Commit B — should conflict because the value is now "1", not "0"
     let result_b = txn_b.commit().await;
     assert!(
-        matches!(result_b, Err(StorageError::Conflict)),
+        matches!(result_b, Err(StorageError::Conflict { .. })),
         "second transaction should get Conflict, got: {result_b:?}"
     );
 
@@ -91,7 +91,7 @@ async fn test_concurrent_transaction_cas_exactly_one_winner() {
         while let Some(result) = set.join_next().await {
             match result.expect("task should not panic") {
                 Ok(()) => successes += 1,
-                Err(StorageError::Conflict) => conflicts += 1,
+                Err(StorageError::Conflict { .. }) => conflicts += 1,
                 Err(e) => panic!("unexpected error in round {round}: {e}"),
             }
         }
@@ -124,7 +124,7 @@ async fn test_two_transactions_insert_if_absent_conflict() {
     // B should conflict because the key now exists
     let result_b = txn_b.commit().await;
     assert!(
-        matches!(result_b, Err(StorageError::Conflict)),
+        matches!(result_b, Err(StorageError::Conflict { .. })),
         "insert-if-absent should conflict when key was created, got: {result_b:?}"
     );
 
@@ -144,7 +144,8 @@ async fn test_oversized_batch_splits_correctly() {
     let config = BatchConfig::builder()
         .max_batch_bytes(1024) // 1KB per batch
         .max_batch_size(100)
-        .build();
+        .build()
+        .expect("valid batch config");
     let mut writer = BatchWriter::new(backend.clone(), config);
 
     // Write 10 operations each ~200 bytes → ~2KB total, should split into 2+ batches
@@ -177,7 +178,8 @@ async fn test_batch_split_by_count_limit() {
     let config = BatchConfig::builder()
         .max_batch_size(5) // Only 5 ops per batch
         .max_batch_bytes(usize::MAX)
-        .build();
+        .build()
+        .expect("valid batch config");
     let mut writer = BatchWriter::new(backend.clone(), config);
 
     // 20 operations should split into 4 batches of 5
@@ -206,7 +208,8 @@ async fn test_oversized_single_operation_in_own_batch() {
     let config = BatchConfig::builder()
         .max_batch_bytes(100) // Very small limit
         .max_batch_size(1000)
-        .build();
+        .build()
+        .expect("valid batch config");
     let mut writer = BatchWriter::new(backend.clone(), config);
 
     // Small op, large op, small op
@@ -251,7 +254,8 @@ async fn test_empty_transaction_commit_noop() {
 #[tokio::test]
 async fn test_empty_batch_flush_noop() {
     let backend = MemoryBackend::new();
-    let mut writer = BatchWriter::new(backend, BatchConfig::builder().build());
+    let mut writer =
+        BatchWriter::new(backend, BatchConfig::builder().build().expect("valid batch config"));
 
     let stats = writer.flush().await.expect("empty flush");
     assert_eq!(stats.operations_count, 0);
@@ -318,7 +322,7 @@ async fn test_mixed_transaction_cas_failure_rolls_back_unconditional() {
 
     let result = txn.commit().await;
     assert!(
-        matches!(result, Err(StorageError::Conflict)),
+        matches!(result, Err(StorageError::Conflict { .. })),
         "CAS mismatch should cause Conflict: {result:?}"
     );
 
@@ -378,7 +382,7 @@ async fn test_one_failed_cas_aborts_entire_transaction() {
         .expect("CAS b");
 
     let result = txn.commit().await;
-    assert!(matches!(result, Err(StorageError::Conflict)));
+    assert!(matches!(result, Err(StorageError::Conflict { .. })));
 
     // Neither key should be modified — all-or-nothing
     assert_eq!(
