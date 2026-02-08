@@ -143,9 +143,9 @@ pub trait Transaction: Send {
 
     /// Buffers a compare-and-set operation within the transaction.
     ///
-    /// Unlike [`StorageBackend::compare_and_set`], which executes immediately,
-    /// this method only records the operation. The precondition is evaluated at
-    /// [`commit`](Transaction::commit) time:
+    /// Unlike [`StorageBackend::compare_and_set`](crate::StorageBackend::compare_and_set), which
+    /// executes immediately, this method only records the operation. The precondition is
+    /// evaluated at [`commit`](Transaction::commit) time:
     ///
     /// 1. The backend acquires its write lock.
     /// 2. All buffered CAS conditions are verified against the current state.

@@ -30,7 +30,7 @@
 //! # Percentile Tracking
 //!
 //! Latency percentiles (p50, p95, p99) are computed from a bounded sliding window of recent
-//! samples. Each operation type maintains its own [`LatencyHistogram`] — a circular buffer of
+//! samples. Each operation type maintains its own `LatencyHistogram` — a circular buffer of
 //! the most recent 1024 latency values (in microseconds). The buffer is protected by a
 //! [`parking_lot::Mutex`] held only for the duration of a single push (O(1)).
 //!

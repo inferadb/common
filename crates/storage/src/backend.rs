@@ -21,7 +21,7 @@
 //!
 //! 1. Implement the [`StorageBackend`] trait
 //! 2. Implement a corresponding [`Transaction`] type
-//! 3. Map backend-specific errors to [`StorageError`](crate::StorageError)
+//! 3. Map backend-specific errors to [`StorageError`]
 //!
 //! See [`MemoryBackend`](crate::MemoryBackend) for a reference implementation.
 
@@ -159,8 +159,8 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// - [`StorageError::Conflict`](crate::StorageError::Conflict) — the current value does not
     ///   match `expected`.
-    /// - [`StorageError::SizeLimitExceeded`](crate::StorageError::SizeLimitExceeded) — `key` or
-    ///   `new_value` exceeds the configured size limits.
+    /// - [`StorageError::SizeLimitExceeded`] — `key` or `new_value` exceeds the configured size
+    ///   limits.
     ///
     /// # Retry Pattern
     ///

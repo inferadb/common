@@ -142,7 +142,7 @@ impl std::fmt::Display for TimeoutContext {
 ///
 /// Each variant carries an optional `span_id` captured from the active
 /// [`tracing::Span`] at error creation time. When present, the span ID is
-/// included in the [`Display`] output for log correlation.
+/// included in the [`Display`](std::fmt::Display) output for log correlation.
 ///
 /// # Non-exhaustive
 ///
@@ -550,7 +550,7 @@ impl StorageError {
 
     /// Returns a detailed diagnostic string for server-side logging.
     ///
-    /// Unlike [`Display`], which produces generic messages safe for external
+    /// Unlike [`Display`](std::fmt::Display), which produces generic messages safe for external
     /// consumers, this method includes internal details such as connection
     /// error messages, key names, and backend-specific context. **Never
     /// expose this output to external callers.**

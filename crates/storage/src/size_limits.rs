@@ -45,7 +45,8 @@ impl SizeLimits {
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigError::BelowMinimum`] if either limit is zero.
+    /// Returns [`ConfigError::BelowMinimum`](crate::ConfigError::BelowMinimum) if either limit is
+    /// zero.
     pub fn new(max_key_size: usize, max_value_size: usize) -> Result<Self, crate::ConfigError> {
         if max_key_size == 0 {
             return Err(crate::ConfigError::BelowMinimum {

@@ -1,6 +1,6 @@
 //! Rate limiting for storage backends.
 //!
-//! Provides a [`RateLimiter`] trait and [`TokenBucketLimiter`] implementation
+//! Provides a [`TokenBucketLimiter`] implementation
 //! that protect backends from overload. The [`RateLimitedBackend`] wrapper
 //! applies rate limiting transparently before delegating to the inner backend.
 //!
@@ -74,7 +74,8 @@ impl RateLimitConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigError::BelowMinimum`] if `rate` or `burst` is zero.
+    /// Returns [`ConfigError::BelowMinimum`](crate::ConfigError::BelowMinimum) if `rate` or `burst`
+    /// is zero.
     pub fn new(rate: u64, burst: u64) -> Result<Self, crate::ConfigError> {
         if rate == 0 {
             return Err(crate::ConfigError::BelowMinimum {
