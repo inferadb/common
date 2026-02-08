@@ -22,6 +22,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
 use jsonwebtoken::{Algorithm, DecodingKey, Header, Validation, decode, decode_header};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::{
     error::AuthError,
@@ -158,15 +159,21 @@ pub fn decode_jwt_claims(token: &str) -> Result<JwtClaims, AuthError> {
         return Err(AuthError::invalid_token_format("JWT must have 3 parts separated by dots"));
     }
 
-    // Decode payload (part 1) using base64 URL-safe encoding
-    let payload_bytes = URL_SAFE_NO_PAD.decode(parts[1]).map_err(|e| {
-        AuthError::invalid_token_format(format!("Failed to decode JWT payload: {}", e))
-    })?;
+    // Decode payload (part 1) using base64 URL-safe encoding.
+    // Wrap in Zeroizing because JWT claims may contain sensitive data
+    // (org_id, client_id, scopes) that should not persist in memory.
+    let payload_bytes: Zeroizing<Vec<u8>> =
+        Zeroizing::new(URL_SAFE_NO_PAD.decode(parts[1]).map_err(|e| {
+            AuthError::invalid_token_format(format!("Failed to decode JWT payload: {}", e))
+        })?);
 
     // Parse as JSON
     let claims: JwtClaims = serde_json::from_slice(&payload_bytes).map_err(|e| {
         AuthError::invalid_token_format(format!("Failed to parse JWT claims: {}", e))
     })?;
+
+    // Explicitly drop decoded payload bytes now that claims are parsed.
+    drop(payload_bytes);
 
     // Validate required claims are present
     if claims.iss.is_empty() {

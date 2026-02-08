@@ -418,6 +418,14 @@ pub struct LedgerBackendConfig {
     /// failures by failing fast when the ledger is unreachable, and
     /// periodically probing to detect recovery.
     pub(crate) circuit_breaker_config: Option<crate::circuit_breaker::CircuitBreakerConfig>,
+
+    /// Optional cancellation token for graceful shutdown.
+    ///
+    /// When set and cancelled, the backend rejects new operations with
+    /// [`StorageError::ShuttingDown`](inferadb_common_storage::StorageError::ShuttingDown).
+    /// In-flight operations that were already past the cancellation check
+    /// are allowed to complete.
+    pub(crate) cancellation_token: Option<tokio_util::sync::CancellationToken>,
 }
 
 #[bon::bon]
@@ -452,6 +460,7 @@ impl LedgerBackendConfig {
         #[builder(default)] timeout_config: TimeoutConfig,
         size_limits: Option<SizeLimits>,
         circuit_breaker_config: Option<crate::circuit_breaker::CircuitBreakerConfig>,
+        cancellation_token: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<Self, ConfigError> {
         if page_size == 0 {
             return Err(ConfigError::BelowMinimum {
@@ -478,6 +487,7 @@ impl LedgerBackendConfig {
             timeout_config,
             size_limits,
             circuit_breaker_config,
+            cancellation_token,
         })
     }
 
@@ -541,6 +551,12 @@ impl LedgerBackendConfig {
         self.circuit_breaker_config.as_ref()
     }
 
+    /// Returns the configured cancellation token, if any.
+    #[must_use]
+    pub fn cancellation_token(&self) -> Option<&tokio_util::sync::CancellationToken> {
+        self.cancellation_token.as_ref()
+    }
+
     /// Returns the SDK client configuration for building a client.
     pub(crate) fn into_client_config(self) -> ClientConfig {
         self.client
@@ -551,6 +567,7 @@ impl LedgerBackendConfig {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use inferadb_ledger_sdk::ServerSource;
+    use rstest::rstest;
 
     use super::*;
 
@@ -617,22 +634,19 @@ mod tests {
         assert_eq!(config.list_timeout(), DEFAULT_LIST_TIMEOUT);
     }
 
-    #[test]
-    fn timeout_config_zero_read_timeout_rejected() {
-        let err = TimeoutConfig::builder().read_timeout(Duration::ZERO).build().unwrap_err();
-        assert!(err.to_string().contains("read_timeout"), "error should name the field: {err}");
-    }
-
-    #[test]
-    fn timeout_config_zero_write_timeout_rejected() {
-        let err = TimeoutConfig::builder().write_timeout(Duration::ZERO).build().unwrap_err();
-        assert!(err.to_string().contains("write_timeout"), "error should name the field: {err}");
-    }
-
-    #[test]
-    fn timeout_config_zero_list_timeout_rejected() {
-        let err = TimeoutConfig::builder().list_timeout(Duration::ZERO).build().unwrap_err();
-        assert!(err.to_string().contains("list_timeout"), "error should name the field: {err}");
+    #[rstest]
+    #[case::read_timeout("read_timeout")]
+    #[case::write_timeout("write_timeout")]
+    #[case::list_timeout("list_timeout")]
+    fn timeout_config_zero_field_rejected(#[case] field: &str) {
+        let result = match field {
+            "read_timeout" => TimeoutConfig::builder().read_timeout(Duration::ZERO).build(),
+            "write_timeout" => TimeoutConfig::builder().write_timeout(Duration::ZERO).build(),
+            "list_timeout" => TimeoutConfig::builder().list_timeout(Duration::ZERO).build(),
+            _ => unreachable!(),
+        };
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains(field), "error should name the field: {err}");
     }
 
     #[test]
@@ -789,5 +803,35 @@ mod tests {
         assert_eq!(tc.read_timeout(), Duration::from_secs(2));
         assert_eq!(tc.write_timeout(), Duration::from_secs(4));
         assert_eq!(tc.list_timeout(), Duration::from_secs(15));
+    }
+
+    // ── Trace propagation ──────────────────────────────────────────
+
+    #[test]
+    fn ledger_config_trace_disabled_by_default() {
+        let config =
+            LedgerBackendConfig::builder().client(test_client()).namespace_id(1).build().unwrap();
+
+        assert!(
+            !config.client().trace().is_enabled(),
+            "trace propagation should be disabled by default"
+        );
+    }
+
+    #[test]
+    fn ledger_config_trace_enabled_passthrough() {
+        let client = ClientConfig::builder()
+            .servers(ServerSource::from_static(["http://localhost:50051"]))
+            .client_id("test-client")
+            .trace(inferadb_ledger_sdk::TraceConfig::enabled())
+            .build()
+            .unwrap();
+
+        let config = LedgerBackendConfig::builder().client(client).namespace_id(1).build().unwrap();
+
+        assert!(
+            config.client().trace().is_enabled(),
+            "trace propagation should be preserved through LedgerBackendConfig"
+        );
     }
 }

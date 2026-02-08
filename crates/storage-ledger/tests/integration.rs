@@ -8,9 +8,10 @@
 use std::{ops::Bound, time::Duration};
 
 use bytes::Bytes;
-use inferadb_common_storage::{StorageBackend, StorageError, VaultId};
-use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
+use inferadb_common_storage::{HealthProbe, StorageBackend, StorageError, VaultId};
+use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig, TraceConfig};
 use inferadb_ledger_sdk::{ClientConfig, ServerSource, mock::MockLedgerServer};
+use tokio_util::sync::CancellationToken;
 
 // ============================================================================
 // Test Helpers
@@ -33,6 +34,22 @@ async fn create_test_backend(server: &MockLedgerServer) -> LedgerBackend {
         .vault_id(VaultId::from(0))
         .build()
         .expect("valid default config");
+
+    LedgerBackend::new(config).await.expect("backend creation should succeed")
+}
+
+/// Creates a LedgerBackend with a cancellation token for shutdown tests.
+async fn create_backend_with_token(
+    server: &MockLedgerServer,
+    token: CancellationToken,
+) -> LedgerBackend {
+    let config = LedgerBackendConfig::builder()
+        .client(test_client_config(server, "test-shutdown"))
+        .namespace_id(1)
+        .vault_id(VaultId::from(0))
+        .cancellation_token(token)
+        .build()
+        .expect("valid config with token");
 
     LedgerBackend::new(config).await.expect("backend creation should succeed")
 }
@@ -393,7 +410,7 @@ async fn test_health_check_healthy() {
     let server = MockLedgerServer::start().await.expect("mock server start");
     let backend = create_test_backend(&server).await;
 
-    let status = backend.health_check().await.expect("health check");
+    let status = backend.health_check(HealthProbe::Readiness).await.expect("health check");
     assert!(status.is_healthy());
     assert_eq!(status.metadata().backend, "ledger");
     assert!(status.metadata().details.contains_key("connection_latency_ms"));
@@ -516,7 +533,7 @@ mod signing_key_store {
     fn create_test_key(kid: &str) -> PublicSigningKey {
         let now = Utc::now();
         PublicSigningKey::builder()
-            .kid(kid.to_owned())
+            .kid(kid)
             .public_key("MCowBQYDK2VwAyEAtest_public_key_data".to_owned())
             .client_id(12345)
             .cert_id(42)
@@ -822,7 +839,7 @@ mod signing_key_store {
         // Create a key that's already expired
         let now = Utc::now();
         let expired_key = PublicSigningKey::builder()
-            .kid("expired-key".to_owned())
+            .kid("expired-key")
             .public_key("MCowBQYDK2VwAyEAtest".to_owned())
             .client_id(1)
             .cert_id(1)
@@ -853,7 +870,7 @@ mod signing_key_store {
         // Create a key that's not yet valid
         let now = Utc::now();
         let future_key = PublicSigningKey::builder()
-            .kid("future-key".to_owned())
+            .kid("future-key")
             .public_key("MCowBQYDK2VwAyEAtest".to_owned())
             .client_id(1)
             .cert_id(1)
@@ -1790,4 +1807,257 @@ async fn test_ledger_range_results_sorted() {
             window[1].key
         );
     }
+}
+
+// ============================================================================
+// Graceful Shutdown Tests
+// ============================================================================
+
+/// A freshly constructed backend with a token is not shutting down.
+#[tokio::test]
+async fn test_is_shutting_down_initially_false() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let token = CancellationToken::new();
+    let backend = create_backend_with_token(&server, token).await;
+
+    assert!(!backend.is_shutting_down());
+}
+
+/// After `shutdown()`, `is_shutting_down()` returns true.
+#[tokio::test]
+async fn test_shutdown_sets_shutting_down_flag() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let token = CancellationToken::new();
+    let backend = create_backend_with_token(&server, token).await;
+
+    backend.shutdown();
+
+    assert!(backend.is_shutting_down());
+}
+
+/// `shutdown()` is idempotent — calling it twice does not panic.
+#[tokio::test]
+async fn test_shutdown_is_idempotent() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let token = CancellationToken::new();
+    let backend = create_backend_with_token(&server, token).await;
+
+    backend.shutdown();
+    backend.shutdown();
+
+    assert!(backend.is_shutting_down());
+}
+
+/// After shutdown, `get` returns `ShuttingDown`.
+#[tokio::test]
+async fn test_get_after_shutdown_returns_shutting_down() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let token = CancellationToken::new();
+    let backend = create_backend_with_token(&server, token).await;
+
+    backend.shutdown();
+
+    let result = backend.get(b"key").await;
+    assert!(matches!(result, Err(StorageError::ShuttingDown { .. })));
+}
+
+/// After shutdown, `set` returns `ShuttingDown`.
+#[tokio::test]
+async fn test_set_after_shutdown_returns_shutting_down() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let token = CancellationToken::new();
+    let backend = create_backend_with_token(&server, token).await;
+
+    backend.shutdown();
+
+    let result = backend.set(b"key".to_vec(), b"value".to_vec()).await;
+    assert!(matches!(result, Err(StorageError::ShuttingDown { .. })));
+}
+
+/// After shutdown, `delete` returns `ShuttingDown`.
+#[tokio::test]
+async fn test_delete_after_shutdown_returns_shutting_down() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let token = CancellationToken::new();
+    let backend = create_backend_with_token(&server, token).await;
+
+    backend.shutdown();
+
+    let result = backend.delete(b"key").await;
+    assert!(matches!(result, Err(StorageError::ShuttingDown { .. })));
+}
+
+/// After shutdown, `get_range` returns `ShuttingDown`.
+#[tokio::test]
+async fn test_get_range_after_shutdown_returns_shutting_down() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let token = CancellationToken::new();
+    let backend = create_backend_with_token(&server, token).await;
+
+    backend.shutdown();
+
+    let result = backend.get_range(b"a".to_vec()..b"z".to_vec()).await;
+    assert!(matches!(result, Err(StorageError::ShuttingDown { .. })));
+}
+
+/// After shutdown, `clear_range` returns `ShuttingDown`.
+#[tokio::test]
+async fn test_clear_range_after_shutdown_returns_shutting_down() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let token = CancellationToken::new();
+    let backend = create_backend_with_token(&server, token).await;
+
+    backend.shutdown();
+
+    let result = backend.clear_range(b"a".to_vec()..b"z".to_vec()).await;
+    assert!(matches!(result, Err(StorageError::ShuttingDown { .. })));
+}
+
+/// After shutdown, `compare_and_set` returns `ShuttingDown`.
+#[tokio::test]
+async fn test_compare_and_set_after_shutdown_returns_shutting_down() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let token = CancellationToken::new();
+    let backend = create_backend_with_token(&server, token).await;
+
+    backend.shutdown();
+
+    let result = backend.compare_and_set(b"key", None, b"value".to_vec()).await;
+    assert!(matches!(result, Err(StorageError::ShuttingDown { .. })));
+}
+
+/// After shutdown, `transaction` returns `ShuttingDown`.
+#[tokio::test]
+async fn test_transaction_after_shutdown_returns_shutting_down() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let token = CancellationToken::new();
+    let backend = create_backend_with_token(&server, token).await;
+
+    backend.shutdown();
+
+    let result = backend.transaction().await;
+    assert!(matches!(result, Err(StorageError::ShuttingDown { .. })));
+}
+
+/// `health_check` bypasses shutdown — it should succeed even after shutdown.
+#[tokio::test]
+async fn test_health_check_bypasses_shutdown() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let token = CancellationToken::new();
+    let backend = create_backend_with_token(&server, token).await;
+
+    backend.shutdown();
+
+    let result = backend.health_check(HealthProbe::Readiness).await;
+    assert!(result.is_ok(), "health_check should bypass shutdown: {result:?}");
+}
+
+/// Cancelling the external token shuts down the backend.
+#[tokio::test]
+async fn test_external_token_cancellation_shuts_down_backend() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let token = CancellationToken::new();
+    let backend = create_backend_with_token(&server, token.clone()).await;
+
+    assert!(!backend.is_shutting_down());
+
+    // Cancel the external token (simulating an orchestrator-level shutdown).
+    token.cancel();
+
+    assert!(backend.is_shutting_down());
+    let result = backend.get(b"key").await;
+    assert!(matches!(result, Err(StorageError::ShuttingDown { .. })));
+}
+
+/// Operations that started before shutdown succeed; new ones after fail.
+#[tokio::test]
+async fn test_operations_before_shutdown_succeed() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let token = CancellationToken::new();
+    let backend = create_backend_with_token(&server, token).await;
+
+    // Write and read before shutdown.
+    backend.set(b"key".to_vec(), b"value".to_vec()).await.expect("set should succeed pre-shutdown");
+    let value = backend.get(b"key").await.expect("get should succeed pre-shutdown");
+    assert_eq!(value, Some(Bytes::from("value")));
+
+    // Now shut down.
+    backend.shutdown();
+
+    // Post-shutdown operations fail.
+    let result = backend.get(b"key").await;
+    assert!(matches!(result, Err(StorageError::ShuttingDown { .. })));
+}
+
+/// A backend constructed without a token: `is_shutting_down()` is false,
+/// `shutdown()` is a no-op.
+#[tokio::test]
+async fn test_backend_without_token_shutdown_is_noop() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    assert!(!backend.is_shutting_down());
+
+    // Shutdown should be a safe no-op.
+    backend.shutdown();
+
+    // Still not shutting down — no token was configured.
+    assert!(!backend.is_shutting_down());
+
+    // Operations still work.
+    backend.set(b"key".to_vec(), b"value".to_vec()).await.expect("set should still work");
+    let value = backend.get(b"key").await.expect("get should still work");
+    assert_eq!(value, Some(Bytes::from("value")));
+}
+
+// ============================================================================
+// Distributed Tracing Tests
+// ============================================================================
+
+/// A backend with trace propagation enabled can perform operations normally.
+/// The trace context headers are injected by the SDK's interceptor — here
+/// we verify that enabling the feature does not break the request path.
+#[tokio::test]
+async fn test_trace_enabled_backend_operations_succeed() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+
+    let client = ClientConfig::builder()
+        .servers(ServerSource::from_static([server.endpoint()]))
+        .client_id("test-trace")
+        .trace(TraceConfig::enabled())
+        .build()
+        .expect("valid client config with trace");
+
+    // Verify the config preserved the trace setting.
+    assert!(client.trace().is_enabled());
+
+    let config = LedgerBackendConfig::builder()
+        .client(client)
+        .namespace_id(1)
+        .vault_id(VaultId::from(0))
+        .build()
+        .expect("valid config");
+
+    let backend = LedgerBackend::new(config).await.expect("backend creation should succeed");
+
+    // Operations should work normally with trace headers being injected.
+    backend.set(b"trace-key".to_vec(), b"trace-value".to_vec()).await.expect("set with trace");
+    let value = backend.get(b"trace-key").await.expect("get with trace");
+    assert_eq!(value, Some(Bytes::from("trace-value")));
+
+    backend.delete(b"trace-key").await.expect("delete with trace");
+    let deleted = backend.get(b"trace-key").await.expect("get after delete");
+    assert_eq!(deleted, None);
+}
+
+/// Default config has trace propagation disabled.
+#[tokio::test]
+async fn test_default_config_trace_disabled() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    // Operations work without trace propagation.
+    backend.set(b"key".to_vec(), b"value".to_vec()).await.expect("set should succeed");
+    let value = backend.get(b"key").await.expect("get should succeed");
+    assert_eq!(value, Some(Bytes::from("value")));
 }

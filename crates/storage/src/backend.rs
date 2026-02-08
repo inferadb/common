@@ -29,9 +29,14 @@ use std::{ops::RangeBounds, time::Duration};
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
-    error::StorageResult, health::HealthStatus, transaction::Transaction, types::KeyValue,
+    StorageError,
+    error::StorageResult,
+    health::{HealthProbe, HealthStatus},
+    transaction::Transaction,
+    types::KeyValue,
 };
 
 /// Abstract storage backend for key-value operations.
@@ -97,22 +102,134 @@ pub trait StorageBackend: Send + Sync {
 
     /// Atomically sets a key's value if it matches the expected current value.
     ///
-    /// This operation reads the current value and conditionally updates it in a
-    /// single atomic step. It is useful for optimistic concurrency control,
+    /// Compare-and-set (CAS) reads the current value and conditionally updates it
+    /// in a single atomic step. It is useful for optimistic concurrency control,
     /// distributed locks, and leader election without the overhead of a full
     /// transaction.
     ///
-    /// # Arguments
+    /// # Semantics
     ///
-    /// * `key` - The key to update
-    /// * `expected` - The expected current value. Pass `None` to require the key does not exist
-    ///   (insert-if-absent).
-    /// * `new_value` - The value to store if the precondition holds
+    /// The `expected` parameter controls the precondition:
+    ///
+    /// - **`expected: None`** — insert-if-absent. Succeeds only when the key does not exist (or has
+    ///   expired). Fails with [`Conflict`](crate::StorageError::Conflict) if any value is present.
+    /// - **`expected: Some(value)`** — update-if-unchanged. Succeeds only when the current value is
+    ///   an exact byte-for-byte match of `value`. Fails with
+    ///   [`Conflict`](crate::StorageError::Conflict) if the key is absent or holds a different
+    ///   value.
+    ///
+    /// On success the new value is stored and any existing TTL on the key is
+    /// cleared (the key becomes non-expiring).
+    ///
+    /// # Byte Comparison Rules
+    ///
+    /// The comparison is an exact, length-sensitive byte equality check. Two values
+    /// match if and only if they have the same length and identical bytes at every
+    /// position. There is no normalization, canonicalization, or encoding-aware
+    /// comparison — callers must ensure the expected value is byte-identical to the
+    /// stored value.
+    ///
+    /// **Serialization warning**: If you serialize structured data (e.g., JSON,
+    /// MessagePack) before storing it, the byte representation must be
+    /// deterministic across serialization calls. `serde_json` serializes struct
+    /// fields in declaration order (deterministic), but `HashMap` entries in
+    /// arbitrary order (non-deterministic). Prefer `BTreeMap` or struct types for
+    /// CAS values, or use [`compare_and_set_json`](StorageBackend::compare_and_set_json)
+    /// which handles canonical serialization automatically.
+    ///
+    /// # Interaction with TTL
+    ///
+    /// A key whose TTL has elapsed is treated as absent:
+    ///
+    /// - `expected: None` succeeds on an expired key (insert-if-absent).
+    /// - `expected: Some(old)` fails on an expired key even if `old` matches the stored bytes,
+    ///   because the key is logically absent.
+    ///
+    /// # Behavior Within Transactions
+    ///
+    /// When called through [`Transaction::compare_and_set`], the operation is
+    /// buffered — no comparison occurs immediately. The precondition is evaluated
+    /// at [`Transaction::commit`] time under the backend's write lock. If any
+    /// CAS precondition fails, the entire transaction is rejected with
+    /// [`Conflict`](crate::StorageError::Conflict) and no operations are applied.
+    ///
+    /// See [`Transaction::compare_and_set`] for transaction-specific details.
     ///
     /// # Errors
     ///
-    /// Returns [`crate::error::StorageError::Conflict`] when the current value does not match
-    /// `expected`.
+    /// - [`StorageError::Conflict`](crate::StorageError::Conflict) — the current value does not
+    ///   match `expected`.
+    /// - [`StorageError::SizeLimitExceeded`](crate::StorageError::SizeLimitExceeded) — `key` or
+    ///   `new_value` exceeds the configured size limits.
+    ///
+    /// # Retry Pattern
+    ///
+    /// `Conflict` is **not** transient
+    /// ([`is_transient()`](crate::StorageError::is_transient) returns `false`),
+    /// so automatic retry middleware will not retry it. Instead, implement an
+    /// application-level CAS loop:
+    ///
+    /// ```no_run
+    /// use inferadb_common_storage::{MemoryBackend, StorageBackend};
+    /// use inferadb_common_storage::error::StorageError;
+    ///
+    /// async fn increment(backend: &MemoryBackend, key: &[u8]) -> Result<(), StorageError> {
+    ///     loop {
+    ///         let current = backend.get(key).await?;
+    ///         let (expected, new_value) = match current {
+    ///             Some(bytes) => {
+    ///                 let n: u64 = String::from_utf8_lossy(&bytes).parse().unwrap_or(0);
+    ///                 (Some(bytes.to_vec()), (n + 1).to_string().into_bytes())
+    ///             },
+    ///             None => (None, b"1".to_vec()),
+    ///         };
+    ///         match backend.compare_and_set(key, expected.as_deref(), new_value).await {
+    ///             Ok(()) => return Ok(()),
+    ///             Err(StorageError::Conflict { .. }) => continue, // retry
+    ///             Err(e) => return Err(e),
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Examples
+    ///
+    /// Insert a key only if it does not already exist:
+    ///
+    /// ```no_run
+    /// use inferadb_common_storage::{MemoryBackend, StorageBackend};
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let backend = MemoryBackend::new();
+    ///
+    /// // Insert-if-absent: succeeds because key is new
+    /// backend.compare_and_set(b"lock", None, b"holder-1".to_vec()).await?;
+    ///
+    /// // Insert-if-absent again: fails with Conflict because key already exists
+    /// let result = backend.compare_and_set(b"lock", None, b"holder-2".to_vec()).await;
+    /// assert!(result.is_err());
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Update a key only if its current value matches:
+    ///
+    /// ```no_run
+    /// use inferadb_common_storage::{MemoryBackend, StorageBackend};
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let backend = MemoryBackend::new();
+    /// backend.set(b"version".to_vec(), b"1".to_vec()).await?;
+    ///
+    /// // Succeeds: current value is "1", expected is "1"
+    /// backend.compare_and_set(b"version", Some(b"1"), b"2".to_vec()).await?;
+    ///
+    /// // Fails: current value is now "2", but expected is "1"
+    /// let result = backend.compare_and_set(b"version", Some(b"1"), b"3".to_vec()).await;
+    /// assert!(result.is_err());
+    /// # Ok(())
+    /// # }
+    /// ```
     #[must_use = "compare-and-set may fail with a conflict and errors must be handled"]
     async fn compare_and_set(
         &self,
@@ -120,6 +237,84 @@ pub trait StorageBackend: Send + Sync {
         expected: Option<&[u8]>,
         new_value: Vec<u8>,
     ) -> StorageResult<()>;
+
+    /// Atomically sets a key's JSON value if the current value deserializes to the
+    /// expected value.
+    ///
+    /// This is a typed convenience wrapper around
+    /// [`compare_and_set`](StorageBackend::compare_and_set). It serializes `expected` and
+    /// `new_value` to canonical JSON bytes and delegates to the byte-level CAS. Because both
+    /// sides use the same serializer, the comparison is deterministic regardless of the type's
+    /// internal field ordering.
+    ///
+    /// # Canonical Serialization
+    ///
+    /// `serde_json` serializes struct fields in their declaration order, which is
+    /// deterministic. However, this method does **not** sort map keys — if your
+    /// type contains a `HashMap`, use `BTreeMap` instead to guarantee consistent
+    /// byte output.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` - The key to update.
+    /// * `expected` - The expected current value (deserialized form). Use `None` for
+    ///   insert-if-absent.
+    /// * `new_value` - The new value to set.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::Serialization`](crate::StorageError) — `expected` or `new_value` cannot be
+    ///   serialized to JSON.
+    /// - [`StorageError::Conflict`](crate::StorageError) — the current value does not match
+    ///   `expected`.
+    /// - [`StorageError::SizeLimitExceeded`](crate::StorageError) — `key` or serialized `new_value`
+    ///   exceeds configured size limits.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use inferadb_common_storage::{MemoryBackend, StorageBackend};
+    /// use serde::{Deserialize, Serialize};
+    ///
+    /// #[derive(Serialize, Deserialize, Clone)]
+    /// struct Config {
+    ///     version: u32,
+    ///     name: String,
+    /// }
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let backend = MemoryBackend::new();
+    /// let v1 = Config { version: 1, name: "app".into() };
+    ///
+    /// // Insert-if-absent
+    /// backend.compare_and_set_json::<Config>(b"config", None, &v1).await?;
+    ///
+    /// // Update: version 1 → version 2
+    /// let v2 = Config { version: 2, name: "app".into() };
+    /// backend.compare_and_set_json(b"config", Some(&v1), &v2).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use = "compare-and-set may fail with a conflict and errors must be handled"]
+    async fn compare_and_set_json<T>(
+        &self,
+        key: &[u8],
+        expected: Option<&T>,
+        new_value: &T,
+    ) -> StorageResult<()>
+    where
+        T: Serialize + DeserializeOwned + Send + Sync,
+    {
+        let expected_bytes = expected
+            .map(|v| serde_json::to_vec(v))
+            .transpose()
+            .map_err(|e: serde_json::Error| StorageError::serialization(e.to_string()))?;
+
+        let new_bytes = serde_json::to_vec(new_value)
+            .map_err(|e| StorageError::serialization(e.to_string()))?;
+
+        self.compare_and_set(key, expected_bytes.as_deref(), new_bytes).await
+    }
 
     /// Deletes a key.
     ///
@@ -194,7 +389,13 @@ pub trait StorageBackend: Send + Sync {
     #[must_use = "storage operations may fail and errors must be handled"]
     async fn transaction(&self) -> StorageResult<Box<dyn Transaction>>;
 
-    /// Checks backend health and returns detailed status information.
+    /// Checks backend health for the given [`HealthProbe`] type.
+    ///
+    /// Different probes have different semantics:
+    ///
+    /// - **`Liveness`** — process is alive and not deadlocked. Should almost always succeed.
+    /// - **`Readiness`** — backend can serve traffic (connection healthy, caches warm).
+    /// - **`Startup`** — initial warm-up complete (first connection established).
     ///
     /// Returns a [`HealthStatus`] indicating whether the backend is fully
     /// healthy, degraded (operational with reduced capability), or unhealthy.
@@ -203,11 +404,10 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// # Returns
     ///
-    /// - `Ok(HealthStatus::Healthy(_))` — backend is fully operational
-    /// - `Ok(HealthStatus::Degraded(_, reason))` — backend can serve traffic but with reduced
-    ///   capability (e.g., circuit breaker half-open)
-    /// - `Ok(HealthStatus::Unhealthy(_, reason))` — backend cannot serve traffic reliably
+    /// - `Ok(HealthStatus::Healthy(_))` — probe passed
+    /// - `Ok(HealthStatus::Degraded(_, reason))` — probe passed with caveats
+    /// - `Ok(HealthStatus::Unhealthy(_, reason))` — probe failed
     /// - `Err(...)` — the health check itself failed (e.g., timeout)
     #[must_use = "health check results indicate backend availability and must be inspected"]
-    async fn health_check(&self) -> StorageResult<HealthStatus>;
+    async fn health_check(&self, probe: HealthProbe) -> StorageResult<HealthStatus>;
 }

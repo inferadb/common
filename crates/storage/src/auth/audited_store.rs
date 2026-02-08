@@ -299,7 +299,7 @@ mod tests {
 
     fn make_test_key(kid: &str) -> PublicSigningKey {
         PublicSigningKey::builder()
-            .kid(kid.to_owned())
+            .kid(kid)
             .public_key("MCowBQYDK2VwAyEAtest".to_owned())
             .client_id(1)
             .cert_id(1)

@@ -159,6 +159,7 @@ pub fn validate_kid(kid: &str) -> Result<(), AuthError> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::assert_auth_error;
 
     #[test]
     fn test_validate_algorithm_eddsa_accepted() {
@@ -195,7 +196,7 @@ mod tests {
     fn test_validate_algorithm_not_in_list() {
         // ES256 is not in ACCEPTED_ALGORITHMS
         let result = validate_algorithm("ES256");
-        assert!(matches!(result, Err(AuthError::UnsupportedAlgorithm { .. })));
+        assert_auth_error!(result, UnsupportedAlgorithm);
     }
 
     #[test]
@@ -281,7 +282,7 @@ mod tests {
     #[test]
     fn test_validate_kid_null_bytes_rejected() {
         let result = validate_kid("key\0id");
-        assert!(matches!(result, Err(AuthError::InvalidKid { .. })));
+        assert_auth_error!(result, InvalidKid);
     }
 
     #[test]
@@ -295,12 +296,12 @@ mod tests {
     #[test]
     fn test_validate_kid_colon_rejected() {
         let result = validate_kid("ns:kid");
-        assert!(matches!(result, Err(AuthError::InvalidKid { .. })));
+        assert_auth_error!(result, InvalidKid);
     }
 
     #[test]
     fn test_validate_kid_unicode_rejected() {
         let result = validate_kid("kid-\u{00e9}");
-        assert!(matches!(result, Err(AuthError::InvalidKid { .. })));
+        assert_auth_error!(result, InvalidKid);
     }
 }

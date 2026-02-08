@@ -749,31 +749,75 @@ pub type Result<T> = std::result::Result<T, AuthError>;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
-    fn test_error_display_is_generic() {
-        // Display should NOT contain internal details
-        let err = AuthError::invalid_token_format("JWT missing segment 3");
-        assert_eq!(err.to_string(), "Invalid token format");
-
-        let err = AuthError::token_expired();
-        assert_eq!(err.to_string(), "Token expired");
-
-        let err = AuthError::missing_claim("tenant_id");
-        assert_eq!(err.to_string(), "Missing required claim: tenant_id");
+    #[rstest]
+    #[case::invalid_token_format(
+        AuthError::invalid_token_format("JWT missing segment 3"),
+        "Invalid token format"
+    )]
+    #[case::token_expired(AuthError::token_expired(), "Token expired")]
+    #[case::missing_claim(
+        AuthError::missing_claim("tenant_id"),
+        "Missing required claim: tenant_id"
+    )]
+    #[case::oidc_discovery(
+        AuthError::oidc_discovery_failed("endpoint not found"),
+        "OIDC discovery failed"
+    )]
+    #[case::introspection(
+        AuthError::introspection_failed("connection refused"),
+        "Token introspection failed"
+    )]
+    #[case::invalid_introspection(
+        AuthError::invalid_introspection_response("malformed JSON"),
+        "Invalid introspection response"
+    )]
+    #[case::token_inactive(AuthError::token_inactive(), "Token is inactive")]
+    #[case::missing_tenant_id(AuthError::missing_tenant_id(), "Missing required tenant identifier")]
+    #[case::key_not_found(AuthError::key_not_found("key-123"), "Signing key not found")]
+    #[case::key_inactive(AuthError::key_inactive("key-456"), "Signing key is inactive")]
+    #[case::key_revoked(AuthError::key_revoked("key-789"), "Signing key has been revoked")]
+    #[case::key_not_yet_valid(
+        AuthError::key_not_yet_valid("key-abc"),
+        "Signing key is not yet valid"
+    )]
+    #[case::key_expired(AuthError::key_expired("key-def"), "Signing key has expired")]
+    #[case::key_storage(
+        AuthError::key_storage_error(inferadb_common_storage::StorageError::connection(
+            "connection refused"
+        )),
+        "Key storage error"
+    )]
+    fn test_display_is_generic(#[case] err: AuthError, #[case] expected: &str) {
+        assert_eq!(err.to_string(), expected);
     }
 
-    #[test]
-    fn test_detail_preserves_internal_context() {
-        let err = AuthError::invalid_token_format("JWT missing segment 3");
-        assert_eq!(err.detail(), "Invalid token format: JWT missing segment 3");
-
-        let err = AuthError::invalid_audience("expected 'api.example.com', got 'evil.com'");
-        assert_eq!(err.detail(), "Invalid audience: expected 'api.example.com', got 'evil.com'");
-
-        let err = AuthError::invalid_issuer("expected 'auth.internal', got 'attacker.com'");
-        assert_eq!(err.detail(), "Invalid issuer: expected 'auth.internal', got 'attacker.com'");
+    #[rstest]
+    #[case::invalid_token_format(
+        AuthError::invalid_token_format("JWT missing segment 3"),
+        "Invalid token format: JWT missing segment 3"
+    )]
+    #[case::invalid_audience(
+        AuthError::invalid_audience("expected 'api.example.com', got 'evil.com'"),
+        "Invalid audience: expected 'api.example.com', got 'evil.com'"
+    )]
+    #[case::invalid_issuer(
+        AuthError::invalid_issuer("expected 'auth.internal', got 'attacker.com'"),
+        "Invalid issuer: expected 'auth.internal', got 'attacker.com'"
+    )]
+    #[case::key_not_found(
+        AuthError::key_not_found("key-123"),
+        "Signing key not found: kid=key-123"
+    )]
+    #[case::key_revoked(
+        AuthError::key_revoked("key-789"),
+        "Signing key has been revoked: kid=key-789"
+    )]
+    fn test_detail_preserves_internal_context(#[case] err: AuthError, #[case] expected: &str) {
+        assert_eq!(err.detail(), expected);
     }
 
     #[test]
@@ -783,60 +827,6 @@ mod tests {
         let auth_err: AuthError = jwt_err.into();
 
         assert!(matches!(auth_err, AuthError::TokenExpired { .. }));
-    }
-
-    #[test]
-    fn test_oauth_error_display_is_generic() {
-        let err = AuthError::oidc_discovery_failed("endpoint not found");
-        assert_eq!(err.to_string(), "OIDC discovery failed");
-
-        let err = AuthError::introspection_failed("connection refused");
-        assert_eq!(err.to_string(), "Token introspection failed");
-
-        let err = AuthError::invalid_introspection_response("malformed JSON");
-        assert_eq!(err.to_string(), "Invalid introspection response");
-
-        let err = AuthError::token_inactive();
-        assert_eq!(err.to_string(), "Token is inactive");
-
-        let err = AuthError::missing_tenant_id();
-        assert_eq!(err.to_string(), "Missing required tenant identifier");
-    }
-
-    #[test]
-    fn test_key_error_display_is_generic() {
-        // Display should NOT contain the kid
-        let err = AuthError::key_not_found("key-123");
-        assert_eq!(err.to_string(), "Signing key not found");
-
-        let err = AuthError::key_inactive("key-456");
-        assert_eq!(err.to_string(), "Signing key is inactive");
-
-        let err = AuthError::key_revoked("key-789");
-        assert_eq!(err.to_string(), "Signing key has been revoked");
-
-        let err = AuthError::key_not_yet_valid("key-abc");
-        assert_eq!(err.to_string(), "Signing key is not yet valid");
-
-        let err = AuthError::key_expired("key-def");
-        assert_eq!(err.to_string(), "Signing key has expired");
-    }
-
-    #[test]
-    fn test_key_error_detail_includes_kid() {
-        let err = AuthError::key_not_found("key-123");
-        assert_eq!(err.detail(), "Signing key not found: kid=key-123");
-
-        let err = AuthError::key_revoked("key-789");
-        assert_eq!(err.detail(), "Signing key has been revoked: kid=key-789");
-    }
-
-    #[test]
-    fn test_key_storage_error_display_is_generic() {
-        let storage_err = inferadb_common_storage::StorageError::connection("connection refused");
-        let err = AuthError::key_storage_error(storage_err);
-        // Display should NOT contain the underlying storage error message
-        assert_eq!(err.to_string(), "Key storage error");
     }
 
     #[test]
@@ -953,83 +943,57 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_is_transient_key_storage_error_delegates_to_source() {
-        // Transient storage errors → transient auth error
-        let connection_err = AuthError::key_storage_error(
-            inferadb_common_storage::StorageError::connection("network down"),
-        );
-        assert!(
-            connection_err.is_transient(),
-            "KeyStorageError wrapping Connection should be transient"
-        );
-
-        let timeout_err =
-            AuthError::key_storage_error(inferadb_common_storage::StorageError::timeout());
-        assert!(timeout_err.is_transient(), "KeyStorageError wrapping Timeout should be transient");
-
-        let rate_err = AuthError::key_storage_error(
-            inferadb_common_storage::StorageError::rate_limit_exceeded(
-                std::time::Duration::from_millis(100),
-            ),
-        );
-        assert!(
-            rate_err.is_transient(),
-            "KeyStorageError wrapping RateLimitExceeded should be transient"
-        );
-
-        // Non-transient storage errors → non-transient auth error
-        let not_found_err = AuthError::key_storage_error(
-            inferadb_common_storage::StorageError::not_found("missing"),
-        );
-        assert!(
-            !not_found_err.is_transient(),
-            "KeyStorageError wrapping NotFound should NOT be transient"
-        );
-
-        let conflict_err =
-            AuthError::key_storage_error(inferadb_common_storage::StorageError::conflict());
-        assert!(
-            !conflict_err.is_transient(),
-            "KeyStorageError wrapping Conflict should NOT be transient"
+    #[rstest]
+    #[case::connection(inferadb_common_storage::StorageError::connection("network down"), true)]
+    #[case::timeout(inferadb_common_storage::StorageError::timeout(), true)]
+    #[case::rate_limit(
+        inferadb_common_storage::StorageError::rate_limit_exceeded(
+            std::time::Duration::from_millis(100)
+        ),
+        true
+    )]
+    #[case::not_found(inferadb_common_storage::StorageError::not_found("missing"), false)]
+    #[case::conflict(inferadb_common_storage::StorageError::conflict(), false)]
+    fn test_is_transient_key_storage_error_delegates(
+        #[case] storage_err: inferadb_common_storage::StorageError,
+        #[case] expected: bool,
+    ) {
+        let err = AuthError::key_storage_error(storage_err);
+        assert_eq!(
+            err.is_transient(),
+            expected,
+            "KeyStorageError delegation should{} be transient",
+            if expected { "" } else { " NOT" },
         );
     }
 
-    #[test]
-    fn test_is_transient_all_other_variants_are_permanent() {
-        let permanent_errors: Vec<(&str, AuthError)> = vec![
-            ("InvalidTokenFormat", AuthError::invalid_token_format("bad")),
-            ("TokenExpired", AuthError::token_expired()),
-            ("TokenNotYetValid", AuthError::token_not_yet_valid()),
-            ("InvalidSignature", AuthError::invalid_signature()),
-            ("InvalidIssuer", AuthError::invalid_issuer("wrong issuer")),
-            ("InvalidAudience", AuthError::invalid_audience("wrong audience")),
-            ("MissingClaim", AuthError::missing_claim("aud")),
-            ("InvalidScope", AuthError::invalid_scope("read")),
-            ("UnsupportedAlgorithm", AuthError::unsupported_algorithm("HS256")),
-            ("JwksError", AuthError::jwks_error("fetch failed")),
-            ("OidcDiscoveryFailed", AuthError::oidc_discovery_failed("timeout")),
-            ("IntrospectionFailed", AuthError::introspection_failed("error")),
-            ("InvalidIntrospectionResponse", AuthError::invalid_introspection_response("bad json")),
-            ("TokenInactive", AuthError::token_inactive()),
-            ("MissingTenantId", AuthError::missing_tenant_id()),
-            ("TokenTooOld", AuthError::token_too_old(1_000_000, 86400)),
-            ("KeyNotFound", AuthError::key_not_found("kid-1")),
-            ("KeyInactive", AuthError::key_inactive("kid-1")),
-            ("KeyRevoked", AuthError::key_revoked("kid-1")),
-            ("KeyNotYetValid", AuthError::key_not_yet_valid("kid-1")),
-            ("KeyExpired", AuthError::key_expired("kid-1")),
-            ("InvalidPublicKey", AuthError::invalid_public_key("bad pem")),
-            ("TokenReplayed", AuthError::token_replayed("jti-123")),
-            ("MissingJti", AuthError::missing_jti()),
-            ("InvalidKid", AuthError::invalid_kid("invalid char '/' at position 0")),
-        ];
-
-        for (variant_name, err) in permanent_errors {
-            assert!(
-                !err.is_transient(),
-                "{variant_name} should NOT be transient, but is_transient() returned true"
-            );
-        }
+    #[rstest]
+    #[case::invalid_token_format(AuthError::invalid_token_format("bad"))]
+    #[case::token_expired(AuthError::token_expired())]
+    #[case::token_not_yet_valid(AuthError::token_not_yet_valid())]
+    #[case::invalid_signature(AuthError::invalid_signature())]
+    #[case::invalid_issuer(AuthError::invalid_issuer("wrong issuer"))]
+    #[case::invalid_audience(AuthError::invalid_audience("wrong audience"))]
+    #[case::missing_claim(AuthError::missing_claim("aud"))]
+    #[case::invalid_scope(AuthError::invalid_scope("read"))]
+    #[case::unsupported_algorithm(AuthError::unsupported_algorithm("HS256"))]
+    #[case::jwks_error(AuthError::jwks_error("fetch failed"))]
+    #[case::oidc_discovery_failed(AuthError::oidc_discovery_failed("timeout"))]
+    #[case::introspection_failed(AuthError::introspection_failed("error"))]
+    #[case::invalid_introspection_response(AuthError::invalid_introspection_response("bad json"))]
+    #[case::token_inactive(AuthError::token_inactive())]
+    #[case::missing_tenant_id(AuthError::missing_tenant_id())]
+    #[case::token_too_old(AuthError::token_too_old(1_000_000, 86400))]
+    #[case::key_not_found(AuthError::key_not_found("kid-1"))]
+    #[case::key_inactive(AuthError::key_inactive("kid-1"))]
+    #[case::key_revoked(AuthError::key_revoked("kid-1"))]
+    #[case::key_not_yet_valid(AuthError::key_not_yet_valid("kid-1"))]
+    #[case::key_expired(AuthError::key_expired("kid-1"))]
+    #[case::invalid_public_key(AuthError::invalid_public_key("bad pem"))]
+    #[case::token_replayed(AuthError::token_replayed("jti-123"))]
+    #[case::missing_jti(AuthError::missing_jti())]
+    #[case::invalid_kid(AuthError::invalid_kid("invalid char '/' at position 0"))]
+    fn test_permanent_variant_not_transient(#[case] err: AuthError) {
+        assert!(!err.is_transient(), "{:?} should NOT be transient", std::mem::discriminant(&err),);
     }
 }

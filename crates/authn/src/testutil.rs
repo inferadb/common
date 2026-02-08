@@ -28,31 +28,36 @@ use inferadb_common_storage::{CertId, ClientId, auth::PublicSigningKey};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use rand_core::OsRng;
 use serde_json::json;
+use zeroize::Zeroizing;
 
 /// Generate a test Ed25519 key pair.
 ///
 /// Returns `(pkcs8_der, public_key_base64url)` where:
-/// - `pkcs8_der` is the private key in PKCS#8 DER format (suitable for
+/// - `pkcs8_der` is the private key in PKCS#8 DER format wrapped in [`Zeroizing`] (suitable for
 ///   [`EncodingKey::from_ed_der`])
 /// - `public_key_base64url` is the 32-byte public key encoded as base64url without padding
 ///   (suitable for [`PublicSigningKey::public_key`])
 ///
+/// The private key material is wrapped in [`Zeroizing`] to ensure it is scrubbed
+/// from memory on drop, even in test code.
+///
 /// Each call generates a fresh random key pair.
-pub fn generate_test_keypair() -> (Vec<u8>, String) {
+pub fn generate_test_keypair() -> (Zeroizing<Vec<u8>>, String) {
     let signing_key = SigningKey::generate(&mut OsRng);
     let public_key_bytes = signing_key.verifying_key().to_bytes();
     let public_key_b64 = URL_SAFE_NO_PAD.encode(public_key_bytes);
 
-    let private_bytes = signing_key.to_bytes();
-    let mut pkcs8_der = vec![
+    // Wrap intermediate private bytes in Zeroizing to scrub from memory on drop.
+    let private_bytes: Zeroizing<[u8; 32]> = Zeroizing::new(signing_key.to_bytes());
+    let mut pkcs8_der = Zeroizing::new(vec![
         0x30, 0x2e, // SEQUENCE, 46 bytes
         0x02, 0x01, 0x00, // INTEGER version 0
         0x30, 0x05, // SEQUENCE, 5 bytes (algorithm identifier)
         0x06, 0x03, 0x2b, 0x65, 0x70, // OID 1.3.101.112 (Ed25519)
         0x04, 0x22, // OCTET STRING, 34 bytes
         0x04, 0x20, // OCTET STRING, 32 bytes (the actual key)
-    ];
-    pkcs8_der.extend_from_slice(&private_bytes);
+    ]);
+    pkcs8_der.extend_from_slice(&*private_bytes);
 
     (pkcs8_der, public_key_b64)
 }
@@ -141,7 +146,7 @@ pub fn craft_raw_jwt(header_json: &serde_json::Value, payload_json: &serde_json:
 /// Returns `(pkcs8_der, signing_key)` where `pkcs8_der` can be used
 /// with [`create_signed_jwt`] and `signing_key` can be registered in
 /// a key store.
-pub fn create_test_signing_key(kid: &str) -> (Vec<u8>, PublicSigningKey) {
+pub fn create_test_signing_key(kid: &str) -> (Zeroizing<Vec<u8>>, PublicSigningKey) {
     let (pkcs8_der, public_key_b64) = generate_test_keypair();
     let key = PublicSigningKey {
         kid: kid.to_string(),
@@ -176,6 +181,42 @@ pub fn create_test_signing_key_with_pubkey(kid: &str, public_key_b64: &str) -> P
         revoked_at: None,
         revocation_reason: None,
     }
+}
+
+/// Assert that a [`Result<T, AuthError>`] is an `Err` matching the given [`AuthError`] variant.
+///
+/// Works with any `AuthError` variant. On failure, prints the expected variant
+/// and the actual result for debugging.
+///
+/// # Examples
+///
+/// ```no_run
+/// // Requires the `testutil` feature to be enabled.
+/// use inferadb_common_authn::assert_auth_error;
+/// use inferadb_common_authn::error::AuthError;
+///
+/// let result: Result<(), AuthError> = Err(AuthError::token_expired());
+/// assert_auth_error!(result, TokenExpired);
+/// ```
+#[macro_export]
+macro_rules! assert_auth_error {
+    ($result:expr, $variant:ident) => {
+        assert!(
+            matches!($result, Err($crate::error::AuthError::$variant { .. })),
+            "expected AuthError::{}, got: {:?}",
+            stringify!($variant),
+            $result,
+        );
+    };
+    ($result:expr, $variant:ident, $msg:expr) => {
+        assert!(
+            matches!($result, Err($crate::error::AuthError::$variant { .. })),
+            "{}: expected AuthError::{}, got: {:?}",
+            $msg,
+            stringify!($variant),
+            $result,
+        );
+    };
 }
 
 #[cfg(test)]
@@ -233,5 +274,33 @@ mod tests {
         assert_eq!(key.kid, "kid-002");
         assert_eq!(*key.public_key, "fake-pubkey-b64");
         assert!(key.active);
+    }
+
+    #[test]
+    fn test_assert_auth_error_token_expired() {
+        use crate::error::AuthError;
+        let result: Result<(), AuthError> = Err(AuthError::token_expired());
+        assert_auth_error!(result, TokenExpired);
+    }
+
+    #[test]
+    fn test_assert_auth_error_invalid_signature() {
+        use crate::error::AuthError;
+        let result: Result<(), AuthError> = Err(AuthError::invalid_signature());
+        assert_auth_error!(result, InvalidSignature);
+    }
+
+    #[test]
+    fn test_assert_auth_error_key_not_found() {
+        use crate::error::AuthError;
+        let result: Result<(), AuthError> = Err(AuthError::key_not_found("kid-001"));
+        assert_auth_error!(result, KeyNotFound);
+    }
+
+    #[test]
+    fn test_assert_auth_error_with_message() {
+        use crate::error::AuthError;
+        let result: Result<(), AuthError> = Err(AuthError::token_expired());
+        assert_auth_error!(result, TokenExpired, "token should be expired");
     }
 }

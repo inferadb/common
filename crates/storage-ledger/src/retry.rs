@@ -15,6 +15,7 @@
 
 use std::{future::Future, sync::Arc, time::Duration};
 
+use fail::fail_point;
 use inferadb_common_storage::{Metrics, StorageError, StorageResult, TimeoutContext};
 use parking_lot::Mutex;
 use rand::Rng;
@@ -90,6 +91,7 @@ where
                     error = %err,
                     "transient error, retrying after backoff",
                 );
+                fail_point!("retry-before-sleep");
                 tokio::time::sleep(delay).await;
                 last_error = Some(err);
             },
@@ -285,6 +287,7 @@ where
                     delay_ms = delay.as_millis() as u64,
                     "CAS conflict, retrying after jitter",
                 );
+                fail_point!("cas-retry-before-sleep");
                 tokio::time::sleep(delay).await;
             },
             Err(StorageError::Conflict { .. }) => {

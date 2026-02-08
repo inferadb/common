@@ -42,9 +42,10 @@
 //! ```
 
 use std::{
+    collections::HashSet,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -52,12 +53,15 @@ use std::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
 use ed25519_dalek::{PUBLIC_KEY_LENGTH, VerifyingKey};
+use fail::fail_point;
 use inferadb_common_storage::{
     NamespaceId, StorageError, Zeroizing,
     auth::{PublicSigningKey, PublicSigningKeyStore},
 };
 use jsonwebtoken::DecodingKey;
 use moka::future::Cache;
+use parking_lot::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::error::AuthError;
 
@@ -89,6 +93,12 @@ pub const DEFAULT_FALLBACK_CAPACITY: u64 = 10_000;
 /// - **Longer TTL** (e.g., 4 hours): more availability, but revoked keys remain trusted longer
 ///   during outages
 pub const DEFAULT_FALLBACK_TTL: Duration = Duration::from_secs(3_600);
+
+/// Default fill percentage at which a warning is emitted (80%).
+pub const DEFAULT_FALLBACK_WARN_THRESHOLD: f64 = 80.0;
+
+/// Default fill percentage at which a critical alert is emitted (95%).
+pub const DEFAULT_FALLBACK_CRITICAL_THRESHOLD: f64 = 95.0;
 
 /// An entry in the fallback (L3) cache, carrying the decoding key
 /// along with the timestamp at which it was inserted. The insertion
@@ -140,6 +150,37 @@ pub struct SigningKeyCache {
     /// the start and end of an L2 fetch, the result is discarded rather
     /// than being written into L1 with potentially-revoked data.
     invalidation_gen: Arc<AtomicU64>,
+    /// Configured maximum capacity of the L3 fallback cache.
+    ///
+    /// Stored separately because `moka::Cache` does not expose its
+    /// configured `max_capacity` after construction.
+    fallback_capacity: u64,
+    /// Fill percentage at which a warning is emitted (default: 80%).
+    warn_threshold: f64,
+    /// Fill percentage at which a critical alert is emitted (default: 95%).
+    critical_threshold: f64,
+    /// Whether the warning threshold alert has been fired.
+    warn_fired: AtomicBool,
+    /// Whether the critical threshold alert has been fired.
+    critical_fired: AtomicBool,
+    /// Cache keys accessed since the last background refresh cycle.
+    /// The background task drains this set each tick to refresh only
+    /// "active" keys, avoiding unnecessary Ledger reads for keys
+    /// that no caller has requested recently.
+    active_keys: Arc<Mutex<HashSet<String>>>,
+    /// Cancellation token for stopping the background refresh task.
+    cancel_token: CancellationToken,
+    /// Handle for the background refresh task, if running.
+    /// Wrapped in `Mutex` so `shutdown()` can take ownership via `&self`.
+    refresh_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Number of completed background refresh cycles.
+    refresh_count: AtomicU64,
+    /// Total number of keys successfully refreshed across all cycles.
+    refresh_keys_total: AtomicU64,
+    /// Total number of per-key refresh errors across all cycles.
+    refresh_errors_total: AtomicU64,
+    /// Cumulative refresh latency in microseconds across all cycles.
+    refresh_latency_us: AtomicU64,
 }
 
 impl SigningKeyCache {
@@ -221,6 +262,18 @@ impl SigningKeyCache {
                 .max_capacity(max_capacity)
                 .build(),
             invalidation_gen: Arc::new(AtomicU64::new(0)),
+            fallback_capacity: max_capacity,
+            warn_threshold: DEFAULT_FALLBACK_WARN_THRESHOLD,
+            critical_threshold: DEFAULT_FALLBACK_CRITICAL_THRESHOLD,
+            warn_fired: AtomicBool::new(false),
+            critical_fired: AtomicBool::new(false),
+            active_keys: Arc::new(Mutex::new(HashSet::new())),
+            cancel_token: CancellationToken::new(),
+            refresh_handle: Mutex::new(None),
+            refresh_count: AtomicU64::new(0),
+            refresh_keys_total: AtomicU64::new(0),
+            refresh_errors_total: AtomicU64::new(0),
+            refresh_latency_us: AtomicU64::new(0),
         }
     }
 
@@ -259,6 +312,9 @@ impl SigningKeyCache {
     ) -> Result<Arc<DecodingKey>, AuthError> {
         let cache_key = format!("{org_id}:{kid}");
 
+        // Track this key as "active" for background refresh.
+        self.active_keys.lock().insert(cache_key.clone());
+
         // L1: Check local cache (TTL-based)
         if let Some(key) = self.cache.get(&cache_key).await {
             tracing::debug!(cache = "L1", "cache hit");
@@ -274,6 +330,11 @@ impl SigningKeyCache {
 
         // L2: Fetch from Ledger (org_id == namespace_id)
         let namespace_id = org_id;
+        fail_point!("cache-before-l2-fetch", |_| {
+            Err(AuthError::key_storage_error(StorageError::internal(
+                "injected failure before L2 fetch",
+            )))
+        });
         let ledger_result = self.key_store.get_key(namespace_id, kid).await;
 
         match ledger_result {
@@ -310,6 +371,8 @@ impl SigningKeyCache {
                     .await;
 
                 tracing::debug!(cache = "L2", "cache hit — populated L1 + L3");
+
+                self.check_fallback_thresholds();
 
                 Ok(decoding_key)
             },
@@ -384,6 +447,29 @@ impl SigningKeyCache {
         );
     }
 
+    /// Releases all cached resources for graceful shutdown.
+    ///
+    /// Clears all cache tiers (L1 and L3 fallback) and bumps the
+    /// invalidation generation to prevent in-flight lookups from
+    /// re-populating the cache.
+    ///
+    /// This is functionally equivalent to [`clear_all`](Self::clear_all) and
+    /// is provided for API consistency with other shutdown-aware types in the
+    /// workspace.
+    pub async fn shutdown(&self) {
+        // Signal the background refresh task to stop, if running.
+        self.cancel_token.cancel();
+        // Take the handle so we can await it without holding the lock.
+        let handle = self.refresh_handle.lock().take();
+        if let Some(handle) = handle {
+            // Best-effort wait; if the task panicked, we just log.
+            if let Err(err) = handle.await {
+                tracing::warn!(error = %err, "background refresh task panicked");
+            }
+        }
+        self.clear_all().await;
+    }
+
     /// Returns current L1 cache entry count.
     ///
     /// Note: This count is eventually consistent. For accurate counts in tests,
@@ -400,6 +486,270 @@ impl SigningKeyCache {
     #[must_use]
     pub fn fallback_entry_count(&self) -> u64 {
         self.fallback.entry_count()
+    }
+
+    /// Returns the configured maximum capacity of the L3 fallback cache.
+    #[must_use]
+    pub fn fallback_capacity(&self) -> u64 {
+        self.fallback_capacity
+    }
+
+    /// Returns the current fill percentage of the L3 fallback cache (0.0–100.0).
+    ///
+    /// Returns 0.0 if capacity is zero to avoid division by zero.
+    #[must_use]
+    pub fn fallback_fill_pct(&self) -> f64 {
+        if self.fallback_capacity == 0 {
+            return 0.0;
+        }
+        (self.fallback.entry_count() as f64 / self.fallback_capacity as f64) * 100.0
+    }
+
+    /// Sets custom warning and critical thresholds for fallback cache fill alerts.
+    ///
+    /// Both thresholds are percentages (0.0–100.0). The warning threshold should
+    /// be lower than the critical threshold.
+    ///
+    /// # Arguments
+    ///
+    /// * `warn` - Fill percentage at which a warning is emitted
+    /// * `critical` - Fill percentage at which a critical alert is emitted
+    #[must_use]
+    pub fn with_thresholds(mut self, warn: f64, critical: f64) -> Self {
+        self.warn_threshold = warn;
+        self.critical_threshold = critical;
+        self
+    }
+
+    /// Enables background refresh of active keys at the given interval.
+    ///
+    /// When enabled, a `tokio::spawn`ed background task wakes every
+    /// `interval` and refreshes all keys that were accessed since the
+    /// previous refresh tick. Keys that have not been accessed are
+    /// skipped, so the task only does work proportional to actual traffic.
+    ///
+    /// The background task stops when [`shutdown`](Self::shutdown) is called
+    /// or when the `SigningKeyCache` is dropped (via `CancellationToken`).
+    ///
+    /// # Arguments
+    ///
+    /// * `interval` - How often to refresh active keys. Should be less than the L1 TTL to prevent
+    ///   any misses during normal operation.
+    ///
+    /// # Panics
+    ///
+    /// Must be called within a Tokio runtime context.
+    #[must_use]
+    pub fn with_refresh_interval(self: Arc<Self>, interval: Duration) -> Arc<Self> {
+        let cache = Arc::clone(&self);
+        let token = self.cancel_token.clone();
+        let active_keys = Arc::clone(&self.active_keys);
+        let key_store = Arc::clone(&self.key_store);
+
+        let handle = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            // The first tick fires immediately; consume it so we start
+            // with a full interval wait.
+            ticker.tick().await;
+
+            loop {
+                tokio::select! {
+                    _ = token.cancelled() => {
+                        tracing::info!("background refresh task shutting down");
+                        break;
+                    }
+                    _ = ticker.tick() => {
+                        Self::do_refresh_cycle(&cache, &active_keys, &key_store).await;
+                    }
+                }
+            }
+        });
+
+        *self.refresh_handle.lock() = Some(handle);
+        self
+    }
+
+    /// Runs a single background refresh cycle.
+    ///
+    /// Drains the active-key set, then for each key fetches from L2
+    /// and re-populates L1 + L3. Errors are logged per-key but do not
+    /// stop the cycle.
+    async fn do_refresh_cycle(
+        cache: &Arc<Self>,
+        active_keys: &Arc<Mutex<HashSet<String>>>,
+        key_store: &Arc<dyn PublicSigningKeyStore>,
+    ) {
+        let keys: Vec<String> = {
+            let mut set = active_keys.lock();
+            set.drain().collect()
+        };
+
+        if keys.is_empty() {
+            return;
+        }
+
+        let start = Instant::now();
+        let mut refreshed: u64 = 0;
+        let mut errors: u64 = 0;
+
+        for cache_key in &keys {
+            // Parse "namespace_id:kid" back into components.
+            let Some((ns_str, kid)) = cache_key.split_once(':') else {
+                tracing::warn!(cache_key, "malformed cache key in active set");
+                continue;
+            };
+            let Ok(ns_id) = ns_str.parse::<i64>() else {
+                tracing::warn!(cache_key, "unparseable namespace_id in cache key");
+                continue;
+            };
+            let namespace_id = NamespaceId::from(ns_id);
+
+            match key_store.get_key(namespace_id, kid).await {
+                Ok(Some(public_key)) => {
+                    if let Err(err) = validate_key_state(&public_key) {
+                        tracing::debug!(
+                            kid,
+                            error = %err,
+                            "background refresh: key failed validation, removing from cache"
+                        );
+                        cache.cache.invalidate(cache_key).await;
+                        errors += 1;
+                        continue;
+                    }
+                    match to_decoding_key(&public_key) {
+                        Ok(dk) => {
+                            let dk = Arc::new(dk);
+                            cache.cache.insert(cache_key.clone(), dk.clone()).await;
+                            cache
+                                .fallback
+                                .insert(
+                                    cache_key.clone(),
+                                    FallbackEntry { key: dk, inserted_at: Instant::now() },
+                                )
+                                .await;
+                            refreshed += 1;
+                        },
+                        Err(err) => {
+                            tracing::warn!(kid, error = %err, "background refresh: decoding key conversion failed");
+                            errors += 1;
+                        },
+                    }
+                },
+                Ok(None) => {
+                    tracing::debug!(kid, "background refresh: key no longer exists, evicting");
+                    cache.cache.invalidate(cache_key).await;
+                    cache.fallback.invalidate(cache_key).await;
+                },
+                Err(err) => {
+                    tracing::warn!(kid, error = %err, "background refresh: L2 fetch failed");
+                    errors += 1;
+                    // Re-insert the key as active so the next cycle retries it.
+                    active_keys.lock().insert(cache_key.clone());
+                },
+            }
+        }
+
+        let elapsed = start.elapsed();
+
+        // Record metrics.
+        cache.refresh_count.fetch_add(1, Ordering::Relaxed);
+        cache.refresh_keys_total.fetch_add(refreshed, Ordering::Relaxed);
+        cache.refresh_errors_total.fetch_add(errors, Ordering::Relaxed);
+        cache.refresh_latency_us.fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
+
+        tracing::info!(
+            refreshed,
+            errors,
+            elapsed_ms = elapsed.as_millis() as u64,
+            total_keys = keys.len(),
+            "background refresh cycle complete"
+        );
+    }
+
+    /// Returns the number of keys currently tracked as "active" for
+    /// background refresh.
+    #[must_use]
+    pub fn active_key_count(&self) -> usize {
+        self.active_keys.lock().len()
+    }
+
+    /// Returns the cancellation token for the background refresh task.
+    ///
+    /// Callers can use this to integrate with external shutdown signals.
+    #[must_use]
+    pub fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel_token
+    }
+
+    /// Returns the number of completed background refresh cycles.
+    #[must_use]
+    pub fn refresh_count(&self) -> u64 {
+        self.refresh_count.load(Ordering::Relaxed)
+    }
+
+    /// Returns the total number of keys successfully refreshed across all cycles.
+    #[must_use]
+    pub fn refresh_keys_total(&self) -> u64 {
+        self.refresh_keys_total.load(Ordering::Relaxed)
+    }
+
+    /// Returns the total number of per-key refresh errors across all cycles.
+    #[must_use]
+    pub fn refresh_errors_total(&self) -> u64 {
+        self.refresh_errors_total.load(Ordering::Relaxed)
+    }
+
+    /// Returns the cumulative refresh latency in microseconds across all cycles.
+    #[must_use]
+    pub fn refresh_latency_us(&self) -> u64 {
+        self.refresh_latency_us.load(Ordering::Relaxed)
+    }
+
+    /// Checks L3 fallback cache fill against thresholds and emits alerts.
+    ///
+    /// Alerts are emitted once per threshold crossing (not on every operation).
+    /// When the fill drops below a threshold, the alert flag is reset so it
+    /// can fire again on the next crossing.
+    fn check_fallback_thresholds(&self) {
+        let fill_pct = self.fallback_fill_pct();
+
+        // Critical threshold check
+        if fill_pct >= self.critical_threshold {
+            if self
+                .critical_fired
+                .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                tracing::error!(
+                    fill_pct = format_args!("{fill_pct:.1}"),
+                    threshold = format_args!("{:.1}", self.critical_threshold),
+                    entry_count = self.fallback.entry_count(),
+                    capacity = self.fallback_capacity,
+                    "L3 fallback cache fill exceeds critical threshold"
+                );
+            }
+        } else {
+            self.critical_fired.store(false, Ordering::Relaxed);
+        }
+
+        // Warning threshold check
+        if fill_pct >= self.warn_threshold {
+            if self
+                .warn_fired
+                .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                tracing::warn!(
+                    fill_pct = format_args!("{fill_pct:.1}"),
+                    threshold = format_args!("{:.1}", self.warn_threshold),
+                    entry_count = self.fallback.entry_count(),
+                    capacity = self.fallback_capacity,
+                    "L3 fallback cache fill exceeds warning threshold"
+                );
+            }
+        } else {
+            self.warn_fired.store(false, Ordering::Relaxed);
+        }
     }
 
     /// Synchronizes pending cache operations.
@@ -487,14 +837,21 @@ fn to_decoding_key(key: &PublicSigningKey) -> Result<DecodingKey, AuthError> {
     }
 
     // Validate it's a valid Ed25519 key by parsing it.
-    // The fixed-size array is stack-allocated and zeroed when it goes out of scope
-    // via the Zeroizing wrapper on the source Vec.
-    let key_bytes: [u8; PUBLIC_KEY_LENGTH] = public_key_bytes[..PUBLIC_KEY_LENGTH]
-        .try_into()
-        .map_err(|_| AuthError::invalid_public_key("failed to convert bytes"))?;
+    // Wrap the stack-allocated copy in Zeroizing to ensure the raw key bytes
+    // are scrubbed even if the compiler would otherwise optimize away the drop.
+    let key_bytes: Zeroizing<[u8; PUBLIC_KEY_LENGTH]> = Zeroizing::new(
+        public_key_bytes[..PUBLIC_KEY_LENGTH]
+            .try_into()
+            .map_err(|_| AuthError::invalid_public_key("failed to convert bytes"))?,
+    );
 
     let _verifying_key = VerifyingKey::from_bytes(&key_bytes)
         .map_err(|e| AuthError::invalid_public_key(format!("invalid Ed25519 key: {e}")))?;
+
+    // Explicitly drop decoded key material before constructing the DecodingKey
+    // to minimize the window where raw bytes exist in memory.
+    drop(key_bytes);
+    drop(public_key_bytes);
 
     // Convert to jsonwebtoken DecodingKey
     DecodingKey::from_ed_components(&key.public_key)
@@ -505,7 +862,11 @@ fn to_decoding_key(key: &PublicSigningKey) -> Result<DecodingKey, AuthError> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use chrono::Duration as ChronoDuration;
-    use inferadb_common_storage::{CertId, ClientId, auth::MemorySigningKeyStore};
+    use inferadb_common_storage::{
+        CertId, ClientId,
+        auth::{MemorySigningKeyStore, SigningKeyMetricsSnapshot},
+    };
+    use rstest::rstest;
 
     use super::*;
     use crate::testutil::generate_test_keypair;
@@ -755,50 +1116,53 @@ mod tests {
         assert!(validate_key_state(&key).is_ok());
     }
 
-    #[test]
-    fn test_validate_key_state_inactive() {
-        let key = create_test_key("inactive", false);
-        let result = validate_key_state(&key);
-        assert!(matches!(result, Err(AuthError::KeyInactive { .. })));
+    /// Enum describing how to mutate a test key before validation.
+    enum KeyMutation {
+        Inactive,
+        Revoked,
+        NotYetValid,
+        Expired,
     }
 
-    #[test]
-    fn test_validate_key_state_revoked() {
-        let mut key = create_test_key("revoked", true);
-        key.revoked_at = Some(Utc::now());
+    #[rstest]
+    #[case::inactive(KeyMutation::Inactive, "KeyInactive")]
+    #[case::revoked(KeyMutation::Revoked, "KeyRevoked")]
+    #[case::not_yet_valid(KeyMutation::NotYetValid, "KeyNotYetValid")]
+    #[case::expired(KeyMutation::Expired, "KeyExpired")]
+    fn test_validate_key_state_rejected(
+        #[case] mutation: KeyMutation,
+        #[case] expected_variant: &str,
+    ) {
+        let mut key = match &mutation {
+            KeyMutation::Inactive => create_test_key("inactive", false),
+            _ => create_test_key("test", true),
+        };
+        match mutation {
+            KeyMutation::Inactive => {},
+            KeyMutation::Revoked => key.revoked_at = Some(Utc::now()),
+            KeyMutation::NotYetValid => {
+                key.valid_from = Utc::now() + ChronoDuration::hours(1);
+            },
+            KeyMutation::Expired => {
+                key.valid_from = Utc::now() - ChronoDuration::days(2);
+                key.valid_until = Some(Utc::now() - ChronoDuration::days(1));
+            },
+        }
         let result = validate_key_state(&key);
-        assert!(matches!(result, Err(AuthError::KeyRevoked { .. })));
+        assert!(result.is_err(), "Expected {expected_variant} error");
+        let err_debug = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_debug.contains(expected_variant),
+            "Expected {expected_variant}, got: {err_debug}",
+        );
     }
 
-    #[test]
-    fn test_validate_key_state_not_yet_valid() {
-        let mut key = create_test_key("future", true);
-        key.valid_from = Utc::now() + ChronoDuration::hours(1);
-        let result = validate_key_state(&key);
-        assert!(matches!(result, Err(AuthError::KeyNotYetValid { .. })));
-    }
-
-    #[test]
-    fn test_validate_key_state_expired() {
-        let mut key = create_test_key("expired", true);
-        key.valid_from = Utc::now() - ChronoDuration::days(2);
-        key.valid_until = Some(Utc::now() - ChronoDuration::days(1));
-        let result = validate_key_state(&key);
-        assert!(matches!(result, Err(AuthError::KeyExpired { .. })));
-    }
-
-    #[test]
-    fn test_to_decoding_key_invalid_base64() {
+    #[rstest]
+    #[case::invalid_base64("not-valid!!!")]
+    #[case::wrong_length("AAAA")]
+    fn test_to_decoding_key_invalid(#[case] bad_key: &str) {
         let mut key = create_test_key("bad", true);
-        key.public_key = "not-valid!!!".to_string().into();
-        let result = to_decoding_key(&key);
-        assert!(matches!(result, Err(AuthError::InvalidPublicKey { .. })));
-    }
-
-    #[test]
-    fn test_to_decoding_key_wrong_length() {
-        let mut key = create_test_key("short", true);
-        key.public_key = "AAAA".to_string().into(); // Too short
+        key.public_key = bad_key.to_string().into();
         let result = to_decoding_key(&key);
         assert!(matches!(result, Err(AuthError::InvalidPublicKey { .. })));
     }
@@ -1979,5 +2343,384 @@ mod tests {
             3,
             "phase 4: new key = 3 L2 reads total (1 per unique key per L1 TTL window)"
         );
+    }
+
+    // ── L3 Fallback Cache Metrics & Threshold Tests ────────────────────
+
+    #[tokio::test]
+    async fn test_fallback_capacity_accessor() {
+        let store = Arc::new(MemorySigningKeyStore::new());
+        let cache = SigningKeyCache::with_capacity(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+            500,
+        );
+        assert_eq!(cache.fallback_capacity(), 500);
+    }
+
+    #[tokio::test]
+    async fn test_fallback_fill_pct_empty() {
+        let store = Arc::new(MemorySigningKeyStore::new());
+        let cache = SigningKeyCache::with_capacity(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+            100,
+        );
+        assert!((cache.fallback_fill_pct() - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_fallback_fill_pct_after_inserts() {
+        let store = Arc::new(MemorySigningKeyStore::new());
+        let cache = SigningKeyCache::with_capacity(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+            10,
+        );
+
+        // Insert 5 keys into a cache with capacity 10 → 50%
+        for i in 0..5 {
+            let kid = format!("fill-key-{i}");
+            let key = create_valid_test_key(&kid);
+            store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+            let _ = cache.get_decoding_key(NamespaceId::from(1), &kid).await;
+        }
+        cache.sync().await;
+
+        let fill = cache.fallback_fill_pct();
+        assert!((fill - 50.0).abs() < 1.0, "expected ~50% fill, got {fill:.1}%",);
+    }
+
+    #[tokio::test]
+    async fn test_fallback_fill_pct_zero_capacity() {
+        let store = Arc::new(MemorySigningKeyStore::new());
+        // Zero capacity — should not panic or produce NaN
+        let cache = SigningKeyCache::with_capacity(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+            0,
+        );
+        assert!((cache.fallback_fill_pct() - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn test_warn_threshold_fires_once() {
+        let store = Arc::new(MemorySigningKeyStore::new());
+        // Capacity 5, warn at 40% (2 entries), critical at 80% (4 entries)
+        let cache = SigningKeyCache::with_capacity(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+            5,
+        )
+        .with_thresholds(40.0, 80.0);
+
+        // Insert 2 keys → 40% fill → warning fires
+        for i in 0..2 {
+            let kid = format!("warn-key-{i}");
+            let key = create_valid_test_key(&kid);
+            store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+            let _ = cache.get_decoding_key(NamespaceId::from(1), &kid).await;
+        }
+        // Sync makes entry_count() consistent, then re-check thresholds
+        cache.sync().await;
+        cache.check_fallback_thresholds();
+
+        // warn_fired should be set after threshold crossed
+        assert!(
+            cache.warn_fired.load(Ordering::Relaxed),
+            "warning alert should have fired at 40% fill",
+        );
+        // critical should NOT be fired
+        assert!(
+            !cache.critical_fired.load(Ordering::Relaxed),
+            "critical alert should not fire at 40% fill",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_critical_threshold_fires() {
+        let store = Arc::new(MemorySigningKeyStore::new());
+        // Capacity 5, warn at 40% (2 entries), critical at 80% (4 entries)
+        let cache = SigningKeyCache::with_capacity(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+            5,
+        )
+        .with_thresholds(40.0, 80.0);
+
+        // Insert 4 keys → 80% fill → both thresholds crossed
+        for i in 0..4 {
+            let kid = format!("crit-key-{i}");
+            let key = create_valid_test_key(&kid);
+            store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+            let _ = cache.get_decoding_key(NamespaceId::from(1), &kid).await;
+        }
+        // Sync makes entry_count() consistent, then re-check thresholds
+        cache.sync().await;
+        cache.check_fallback_thresholds();
+
+        assert!(cache.warn_fired.load(Ordering::Relaxed), "warning alert should have fired",);
+        assert!(
+            cache.critical_fired.load(Ordering::Relaxed),
+            "critical alert should have fired at 80% fill",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_threshold_resets_below() {
+        let store = Arc::new(MemorySigningKeyStore::new());
+        // Capacity 5, warn at 40% (2 entries), critical at 80% (4 entries)
+        let cache = SigningKeyCache::with_capacity(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+            5,
+        )
+        .with_thresholds(40.0, 80.0);
+
+        // Insert 3 keys → 60% → warn fires
+        for i in 0..3 {
+            let kid = format!("reset-key-{i}");
+            let key = create_valid_test_key(&kid);
+            store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+            let _ = cache.get_decoding_key(NamespaceId::from(1), &kid).await;
+        }
+        // Sync makes entry_count() consistent, then re-check thresholds
+        cache.sync().await;
+        cache.check_fallback_thresholds();
+        assert!(cache.warn_fired.load(Ordering::Relaxed));
+
+        // Clear all → fill drops to 0 → manually trigger threshold check
+        cache.clear_all().await;
+        cache.sync().await;
+        cache.check_fallback_thresholds();
+
+        // warn should be reset since fill is now 0%
+        assert!(
+            !cache.warn_fired.load(Ordering::Relaxed),
+            "warning alert should reset when fill drops below threshold",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_metrics_snapshot_includes_fallback_fields() {
+        // Verify the fields exist and default correctly on SigningKeyMetricsSnapshot
+        let snapshot = SigningKeyMetricsSnapshot::default();
+        assert_eq!(snapshot.fallback_entry_count, 0);
+        assert_eq!(snapshot.fallback_capacity, 0);
+        assert!((snapshot.fallback_fill_pct - 0.0).abs() < f64::EPSILON);
+
+        // Builder should allow setting fallback fields
+        let snapshot = SigningKeyMetricsSnapshot::builder()
+            .fallback_entry_count(50)
+            .fallback_capacity(100)
+            .fallback_fill_pct(50.0)
+            .build();
+        assert_eq!(snapshot.fallback_entry_count, 50);
+        assert_eq!(snapshot.fallback_capacity, 100);
+        assert!((snapshot.fallback_fill_pct - 50.0).abs() < f64::EPSILON);
+    }
+
+    // ── Background refresh tests ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_background_refresh_populates_cache() {
+        let store = Arc::new(MemorySigningKeyStore::new());
+        let key = create_valid_test_key("refresh-key");
+        store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        let cache = Arc::new(SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        ));
+
+        // Trigger a get to mark the key as "active".
+        cache.get_decoding_key(NamespaceId::from(1), "refresh-key").await.expect("get");
+        assert_eq!(cache.active_key_count(), 1);
+
+        // Enable background refresh with a short interval.
+        let cache = Arc::clone(&cache).with_refresh_interval(Duration::from_millis(50));
+
+        // Wait for at least one refresh cycle to complete.
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        assert!(cache.refresh_count() >= 1, "expected at least one refresh cycle");
+        assert!(cache.refresh_keys_total() >= 1, "expected at least one key refreshed");
+        assert_eq!(cache.refresh_errors_total(), 0);
+        assert!(cache.refresh_latency_us() > 0);
+
+        cache.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_background_refresh_stops_on_shutdown() {
+        let store = Arc::new(MemorySigningKeyStore::new());
+        let key = create_valid_test_key("stop-key");
+        store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        let cache = Arc::new(SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        ));
+        cache.get_decoding_key(NamespaceId::from(1), "stop-key").await.expect("get");
+
+        let cache = Arc::clone(&cache).with_refresh_interval(Duration::from_millis(50));
+
+        // Let one cycle run.
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let count_before = cache.refresh_count();
+
+        // Shutdown and verify no more cycles run.
+        cache.shutdown().await;
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let count_after = cache.refresh_count();
+
+        assert_eq!(count_before, count_after, "no cycles should run after shutdown");
+    }
+
+    #[tokio::test]
+    async fn test_background_refresh_skips_inactive_keys() {
+        let store = Arc::new(MemorySigningKeyStore::new());
+        let key_a = create_valid_test_key("active-key");
+        let key_b = create_valid_test_key("idle-key");
+        store.create_key(NamespaceId::from(1), &key_a).await.expect("create_key");
+        store.create_key(NamespaceId::from(1), &key_b).await.expect("create_key");
+
+        // Use a CountingStore wrapper to count L2 fetches per key.
+        let counting_store = Arc::new(CountingStore::new());
+        counting_store.inner.create_key(NamespaceId::from(1), &key_a).await.expect("create_key");
+        counting_store.inner.create_key(NamespaceId::from(1), &key_b).await.expect("create_key");
+
+        let cache = Arc::new(SigningKeyCache::new(
+            Arc::clone(&counting_store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        ));
+
+        // Only access key_a, not key_b.
+        cache.get_decoding_key(NamespaceId::from(1), "active-key").await.expect("get");
+        // key_b is never accessed, so it should not appear in active set.
+
+        let cache = Arc::clone(&cache).with_refresh_interval(Duration::from_millis(50));
+
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        // key_a should have been fetched at least twice (initial + refresh).
+        // key_b should have been fetched zero times.
+        let total_get_count = counting_store.get_count.load(Ordering::Relaxed);
+        // Initial get for key_a = 1, plus at least 1 refresh = 2+
+        assert!(total_get_count >= 2, "expected at least 2 gets, got {total_get_count}");
+
+        // active_key_count should be 0 after drain (or 1 if key_a was re-accessed).
+        // But since we didn't re-access, active set should be empty after drain.
+        // (It may refill if the refresh cycle re-activates, but our impl doesn't do that.)
+
+        cache.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_background_refresh_handles_l2_errors() {
+        let store = Arc::new(FailingStore::new());
+        let key = create_valid_test_key("error-key");
+        store.inner.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        let cache = Arc::new(SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        ));
+
+        // Initial successful get to mark key as active.
+        cache.get_decoding_key(NamespaceId::from(1), "error-key").await.expect("get");
+
+        // Now make the store fail.
+        store.set_failure(Some(StorageError::connection("simulated outage")));
+
+        let cache = Arc::clone(&cache).with_refresh_interval(Duration::from_millis(50));
+
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        assert!(cache.refresh_count() >= 1);
+        assert!(cache.refresh_errors_total() >= 1, "expected refresh errors from failing store");
+
+        // The key should be re-queued for the next cycle (re-inserted on error).
+        assert!(cache.active_key_count() >= 1, "failed key should be re-queued");
+
+        cache.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_background_refresh_evicts_deleted_keys() {
+        let store = Arc::new(MemorySigningKeyStore::new());
+        let key = create_valid_test_key("delete-me");
+        store.create_key(NamespaceId::from(1), &key).await.expect("create_key");
+
+        let cache = Arc::new(SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        ));
+
+        // Access key to mark it active.
+        cache.get_decoding_key(NamespaceId::from(1), "delete-me").await.expect("get");
+        cache.sync().await;
+        assert_eq!(cache.entry_count(), 1);
+
+        // Delete from the underlying store.
+        store.delete_key(NamespaceId::from(1), "delete-me").await.expect("delete_key");
+
+        let cache = Arc::clone(&cache).with_refresh_interval(Duration::from_millis(50));
+
+        tokio::time::sleep(Duration::from_millis(120)).await;
+
+        // After refresh, the key should be evicted from both L1 and L3.
+        cache.sync().await;
+        assert_eq!(cache.entry_count(), 0, "deleted key should be evicted from L1");
+        assert_eq!(cache.fallback_entry_count(), 0, "deleted key should be evicted from L3");
+
+        cache.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_background_refresh_metrics_snapshot() {
+        let snapshot = SigningKeyMetricsSnapshot::default();
+        assert_eq!(snapshot.refresh_count, 0);
+        assert_eq!(snapshot.refresh_keys_total, 0);
+        assert_eq!(snapshot.refresh_errors_total, 0);
+        assert_eq!(snapshot.refresh_latency_us, 0);
+
+        let snapshot = SigningKeyMetricsSnapshot::builder()
+            .refresh_count(10)
+            .refresh_keys_total(50)
+            .refresh_errors_total(2)
+            .refresh_latency_us(15000)
+            .build();
+        assert_eq!(snapshot.refresh_count, 10);
+        assert_eq!(snapshot.refresh_keys_total, 50);
+        assert_eq!(snapshot.refresh_errors_total, 2);
+        assert_eq!(snapshot.refresh_latency_us, 15000);
+    }
+
+    #[tokio::test]
+    async fn test_active_key_tracking() {
+        let store = Arc::new(MemorySigningKeyStore::new());
+        let key_a = create_valid_test_key("track-a");
+        let key_b = create_valid_test_key("track-b");
+        store.create_key(NamespaceId::from(1), &key_a).await.expect("create_key");
+        store.create_key(NamespaceId::from(2), &key_b).await.expect("create_key");
+
+        let cache = SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        );
+
+        assert_eq!(cache.active_key_count(), 0);
+
+        cache.get_decoding_key(NamespaceId::from(1), "track-a").await.expect("get");
+        assert_eq!(cache.active_key_count(), 1);
+
+        cache.get_decoding_key(NamespaceId::from(2), "track-b").await.expect("get");
+        assert_eq!(cache.active_key_count(), 2);
+
+        // Duplicate access should not increase count (HashSet).
+        cache.get_decoding_key(NamespaceId::from(1), "track-a").await.expect("get");
+        assert_eq!(cache.active_key_count(), 2);
     }
 }

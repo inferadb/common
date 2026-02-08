@@ -144,6 +144,31 @@ pub struct SigningKeyMetricsSnapshot {
     /// Other errors.
     #[builder(default)]
     pub error_other: u64,
+
+    // L3 fallback cache metrics
+    /// Current number of entries in the L3 fallback cache.
+    #[builder(default)]
+    pub fallback_entry_count: u64,
+    /// Maximum capacity of the L3 fallback cache.
+    #[builder(default)]
+    pub fallback_capacity: u64,
+    /// Fill percentage of the L3 fallback cache (0.0–100.0).
+    #[builder(default)]
+    pub fallback_fill_pct: f64,
+
+    // Background refresh metrics
+    /// Number of completed background refresh cycles.
+    #[builder(default)]
+    pub refresh_count: u64,
+    /// Total number of keys refreshed across all cycles.
+    #[builder(default)]
+    pub refresh_keys_total: u64,
+    /// Total number of refresh errors across all cycles.
+    #[builder(default)]
+    pub refresh_errors_total: u64,
+    /// Cumulative refresh latency in microseconds across all cycles.
+    #[builder(default)]
+    pub refresh_latency_us: u64,
 }
 
 impl SigningKeyMetricsSnapshot {
@@ -434,6 +459,7 @@ impl SigningKeyMetrics {
             error_serialization: self.inner.error_serialization.load(Ordering::Relaxed),
             error_invalid_state: self.inner.error_invalid_state.load(Ordering::Relaxed),
             error_other: self.inner.error_other.load(Ordering::Relaxed),
+            ..Default::default()
         }
     }
 

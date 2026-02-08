@@ -99,6 +99,8 @@ pub fn validate_key_size(key: &[u8], limits: &SizeLimits) -> Result<(), StorageE
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     #[test]
@@ -127,20 +129,29 @@ mod tests {
         let _ = SizeLimits::new(1, 0);
     }
 
-    #[test]
-    fn validate_within_limits() {
-        let limits = SizeLimits::new(10, 20);
-        let key = vec![0u8; 10];
-        let value = vec![0u8; 20];
-        assert!(validate_sizes(&key, &value, &limits).is_ok());
+    #[rstest]
+    #[case::within_limits(10, 20, 10, 20, true)]
+    #[case::at_exact_limit(5, 10, 5, 10, true)]
+    #[case::key_exceeds(10, 20, 11, 5, false)]
+    #[case::value_exceeds(10, 20, 5, 21, false)]
+    #[case::key_one_byte_over(5, 10, 6, 10, false)]
+    #[case::value_one_byte_over(5, 10, 5, 11, false)]
+    fn validate_sizes_parametric(
+        #[case] max_key: usize,
+        #[case] max_val: usize,
+        #[case] key_size: usize,
+        #[case] val_size: usize,
+        #[case] should_pass: bool,
+    ) {
+        let limits = SizeLimits::new(max_key, max_val);
+        let result = validate_sizes(&vec![0u8; key_size], &vec![0u8; val_size], &limits);
+        assert_eq!(result.is_ok(), should_pass);
     }
 
     #[test]
-    fn validate_key_exceeds_limit() {
+    fn validate_key_exceeds_limit_error_details() {
         let limits = SizeLimits::new(10, 20);
-        let key = vec![0u8; 11];
-        let value = vec![0u8; 5];
-        let err = validate_sizes(&key, &value, &limits).unwrap_err();
+        let err = validate_sizes(&[0u8; 11], &[0u8; 5], &limits).unwrap_err();
         assert!(matches!(
             err,
             StorageError::SizeLimitExceeded { kind, actual: 11, limit: 10, .. }
@@ -149,11 +160,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_value_exceeds_limit() {
+    fn validate_value_exceeds_limit_error_details() {
         let limits = SizeLimits::new(10, 20);
-        let key = vec![0u8; 5];
-        let value = vec![0u8; 21];
-        let err = validate_sizes(&key, &value, &limits).unwrap_err();
+        let err = validate_sizes(&[0u8; 5], &[0u8; 21], &limits).unwrap_err();
         assert!(matches!(
             err,
             StorageError::SizeLimitExceeded { kind, actual: 21, limit: 20, .. }
@@ -161,23 +170,11 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn validate_key_size_only() {
+    #[rstest]
+    #[case::at_limit(10, true)]
+    #[case::over_limit(11, false)]
+    fn validate_key_size_parametric(#[case] key_size: usize, #[case] should_pass: bool) {
         let limits = SizeLimits::new(10, 20);
-        assert!(validate_key_size(&[0u8; 10], &limits).is_ok());
-        assert!(validate_key_size(&[0u8; 11], &limits).is_err());
-    }
-
-    #[test]
-    fn validate_at_exact_limit() {
-        let limits = SizeLimits::new(5, 10);
-        assert!(validate_sizes(&[0u8; 5], &[0u8; 10], &limits).is_ok());
-    }
-
-    #[test]
-    fn validate_one_byte_over_limit() {
-        let limits = SizeLimits::new(5, 10);
-        assert!(validate_sizes(&[0u8; 6], &[0u8; 10], &limits).is_err());
-        assert!(validate_sizes(&[0u8; 5], &[0u8; 11], &limits).is_err());
+        assert_eq!(validate_key_size(&vec![0u8; key_size], &limits).is_ok(), should_pass);
     }
 }

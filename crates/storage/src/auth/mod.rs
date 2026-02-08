@@ -40,7 +40,7 @@
 //! let ns = NamespaceId::from(100);
 //!
 //! let key = PublicSigningKey::builder()
-//!     .kid("key-abc123".to_owned())
+//!     .kid("key-abc123")
 //!     .public_key("MCowBQYDK2VwAyEA...".to_owned())
 //!     .client_id(1001)
 //!     .cert_id(42)

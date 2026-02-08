@@ -12,6 +12,7 @@ categories = ["authentication", "asynchronous"]
 
 [features]
 testutil = ["inferadb-common-storage/testutil", "dep:rand_core"]
+failpoints = ["fail/failpoints", "inferadb-common-storage/failpoints"]
 
 [lints]
 workspace = true
@@ -25,11 +26,15 @@ async-trait.workspace = true
 base64.workspace = true
 chrono.workspace = true
 ed25519-dalek.workspace = true
+fail.workspace = true
 jsonwebtoken.workspace = true
 moka.workspace = true
+parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
 rand_core = { version = "0.6", features = ["getrandom"], optional = true }
@@ -37,4 +42,9 @@ rand_core = { version = "0.6", features = ["getrandom"], optional = true }
 [dev-dependencies]
 proptest.workspace = true
 rand_core = { version = "0.6", features = ["getrandom"] }
+rstest.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
+
+[[test]]
+name = "failpoint_tests"
+required-features = ["failpoints", "testutil"]

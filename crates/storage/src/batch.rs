@@ -35,6 +35,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use fail::fail_point;
 use tracing::{debug, trace, warn};
 
 use crate::{ConfigError, StorageBackend, StorageError, StorageResult};
@@ -288,8 +289,10 @@ impl BatchResult {
             Some(arc_err) => match Arc::try_unwrap(arc_err) {
                 Ok(e) => Err(e),
                 // Shouldn't happen since we dropped all other refs above,
-                // but handle defensively.
-                Err(arc_err) => Err(StorageError::internal(arc_err.to_string())),
+                // but handle defensively. Use detail() to preserve the
+                // internal diagnostic message rather than Display (which
+                // is sanitized for external consumers).
+                Err(arc_err) => Err(StorageError::internal(arc_err.detail())),
             },
         }
     }
@@ -472,6 +475,9 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
             }
         }
 
+        fail_point!("batch-before-commit", |_| {
+            Err(StorageError::internal("injected failure before batch commit"))
+        });
         txn.commit().await
     }
 
@@ -482,6 +488,21 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
     #[must_use = "flush may fail and partial results must be handled"]
     pub async fn flush_all(&mut self) -> StorageResult<BatchFlushStats> {
         self.flush().await.into_result()
+    }
+
+    /// Flushes all buffered operations and prepares for shutdown.
+    ///
+    /// This is a convenience method for graceful shutdown sequences. It calls
+    /// [`flush_all`](Self::flush_all) to drain all buffered writes and returns
+    /// the flush statistics. After a successful shutdown, the writer is empty
+    /// and can be safely dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error encountered during flush, just like
+    /// [`flush_all`](Self::flush_all).
+    pub async fn shutdown(&mut self) -> StorageResult<BatchFlushStats> {
+        self.flush_all().await
     }
 
     /// Flush all pending operations to the backend with per-operation error reporting.
@@ -1072,8 +1093,11 @@ mod tests {
             }))
         }
 
-        async fn health_check(&self) -> StorageResult<crate::health::HealthStatus> {
-            self.inner.health_check().await
+        async fn health_check(
+            &self,
+            probe: crate::health::HealthProbe,
+        ) -> StorageResult<crate::health::HealthStatus> {
+            self.inner.health_check(probe).await
         }
     }
 
@@ -1253,6 +1277,37 @@ mod tests {
         // All errors should point to the same allocation
         assert!(Arc::ptr_eq(&errors[0], &errors[1]));
         assert!(Arc::ptr_eq(&errors[1], &errors[2]));
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_flushes_buffered_operations() {
+        let backend = MemoryBackend::new();
+        let config = BatchConfig::default();
+        let mut writer = BatchWriter::new(backend.clone(), config);
+
+        writer.set(b"k1".to_vec(), b"v1".to_vec());
+        writer.set(b"k2".to_vec(), b"v2".to_vec());
+
+        let stats = writer.shutdown().await.expect("shutdown should succeed");
+        assert_eq!(stats.succeeded_count, 2);
+        assert_eq!(stats.failed_count, 0);
+
+        // Verify data was flushed to backend
+        let v1 = backend.get(b"k1").await.expect("get k1");
+        assert_eq!(v1, Some(bytes::Bytes::from("v1")));
+        let v2 = backend.get(b"k2").await.expect("get k2");
+        assert_eq!(v2, Some(bytes::Bytes::from("v2")));
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_empty_writer() {
+        let backend = MemoryBackend::new();
+        let config = BatchConfig::default();
+        let mut writer = BatchWriter::new(backend, config);
+
+        let stats = writer.shutdown().await.expect("shutdown should succeed");
+        assert_eq!(stats.succeeded_count, 0);
+        assert_eq!(stats.failed_count, 0);
     }
 
     mod proptests {

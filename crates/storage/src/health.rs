@@ -5,6 +5,17 @@
 //! These types allow backends to report granular health information beyond a
 //! simple healthy/unhealthy binary signal.
 //!
+//! # Probe Types
+//!
+//! Kubernetes (and similar orchestrators) distinguish three health signals:
+//!
+//! - **Liveness** — process is alive and not deadlocked. Failure triggers a container restart.
+//! - **Readiness** — backend can serve traffic. Failure removes the pod from the load balancer.
+//! - **Startup** — initial warm-up is complete. Failure prevents traffic until ready.
+//!
+//! See [`HealthProbe`] for the enum passed to
+//! [`StorageBackend::health_check`](crate::StorageBackend::health_check).
+//!
 //! # Health States
 //!
 //! - **Healthy**: The backend is fully operational.
@@ -14,13 +25,50 @@
 //!
 //! # Mapping to HTTP / Kubernetes
 //!
-//! | `HealthStatus` | HTTP Status | Kubernetes Probe   |
-//! |----------------|-------------|--------------------|
-//! | `Healthy`      | 200 OK      | readiness: pass    |
-//! | `Degraded`     | 200 OK      | readiness: pass    |
-//! | `Unhealthy`    | 503         | readiness: fail    |
+//! | `HealthProbe`  | `HealthStatus` | HTTP Status | Kubernetes Probe   |
+//! |----------------|----------------|-------------|--------------------|
+//! | `Liveness`     | `Healthy`      | 200 OK      | liveness: pass     |
+//! | `Readiness`    | `Healthy`      | 200 OK      | readiness: pass    |
+//! | `Readiness`    | `Degraded`     | 200 OK      | readiness: pass    |
+//! | `Readiness`    | `Unhealthy`    | 503         | readiness: fail    |
+//! | `Startup`      | `Healthy`      | 200 OK      | startup: pass      |
 
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, fmt, time::Duration};
+
+/// The type of health probe to perform.
+///
+/// Different probe types have different failure semantics:
+///
+/// - **`Liveness`** — checks that the process is alive and the async runtime is responsive. A
+///   failure triggers a container restart. This should almost always succeed; only deadlocks or
+///   fatal resource exhaustion should cause failure.
+///
+/// - **`Readiness`** — checks that the backend can serve traffic. This is the original
+///   `health_check` behavior: verifying connectivity to the underlying store, cache health, etc. A
+///   failure removes the pod from the load balancer but does not restart it.
+///
+/// - **`Startup`** — checks that initial warm-up is complete (first connection established, initial
+///   caches populated). A failure tells the orchestrator to keep waiting before sending traffic.
+///   Once startup succeeds, the readiness probe takes over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HealthProbe {
+    /// Process is alive and not deadlocked.
+    Liveness,
+    /// Backend can serve traffic (connection healthy, caches warm).
+    Readiness,
+    /// Initial warm-up is complete (first connection established).
+    Startup,
+}
+
+impl fmt::Display for HealthProbe {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Liveness => write!(f, "liveness"),
+            Self::Readiness => write!(f, "readiness"),
+            Self::Startup => write!(f, "startup"),
+        }
+    }
+}
 
 /// Health status returned by [`StorageBackend::health_check`](crate::StorageBackend::health_check).
 ///
@@ -227,5 +275,26 @@ mod tests {
         let meta = HealthMetadata::new(Duration::from_secs(5), "ledger");
         let status = HealthStatus::unhealthy(meta, "timeout");
         assert_eq!(status.to_string(), "unhealthy: timeout (5000ms)");
+    }
+
+    #[test]
+    fn test_health_probe_display() {
+        assert_eq!(HealthProbe::Liveness.to_string(), "liveness");
+        assert_eq!(HealthProbe::Readiness.to_string(), "readiness");
+        assert_eq!(HealthProbe::Startup.to_string(), "startup");
+    }
+
+    #[test]
+    fn test_health_probe_equality() {
+        assert_eq!(HealthProbe::Liveness, HealthProbe::Liveness);
+        assert_ne!(HealthProbe::Liveness, HealthProbe::Readiness);
+        assert_ne!(HealthProbe::Readiness, HealthProbe::Startup);
+    }
+
+    #[test]
+    fn test_health_probe_clone_copy() {
+        let probe = HealthProbe::Readiness;
+        let cloned = probe;
+        assert_eq!(probe, cloned);
     }
 }

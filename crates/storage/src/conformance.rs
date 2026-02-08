@@ -36,7 +36,7 @@ use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
 
-use crate::{backend::StorageBackend, error::StorageError};
+use crate::{assert_storage_error, backend::StorageBackend, error::StorageError};
 
 // ============================================================================
 // CRUD — Basic get/set/delete semantics (8 tests)
@@ -301,10 +301,7 @@ pub async fn tx_cas_conflict_rejects_commit<B: StorageBackend>(backend: &B) {
     backend.set(b"tx:cas".to_vec(), b"v_concurrent".to_vec()).await.expect("concurrent set");
 
     let result = tx.commit().await;
-    assert!(
-        matches!(result, Err(StorageError::Conflict { .. })),
-        "CAS conflict should reject commit: {result:?}"
-    );
+    assert_storage_error!(result, Conflict, "CAS conflict should reject commit");
 
     // Backend should retain the concurrent writer's value.
     let val = backend.get(b"tx:cas").await.expect("get");
@@ -326,10 +323,7 @@ pub async fn cas_insert_if_absent<B: StorageBackend>(backend: &B) {
 pub async fn cas_insert_if_absent_fails_when_key_exists<B: StorageBackend>(backend: &B) {
     backend.set(b"cas:exists".to_vec(), b"val".to_vec()).await.expect("set");
     let result = backend.compare_and_set(b"cas:exists", None, b"nope".to_vec()).await;
-    assert!(
-        matches!(result, Err(StorageError::Conflict { .. })),
-        "CAS insert on existing key should conflict: {result:?}"
-    );
+    assert_storage_error!(result, Conflict, "CAS insert on existing key should conflict");
 }
 
 /// `compare_and_set` with matching expected value succeeds.
@@ -346,10 +340,7 @@ pub async fn cas_update_with_matching_value<B: StorageBackend>(backend: &B) {
 pub async fn cas_update_with_mismatched_value<B: StorageBackend>(backend: &B) {
     backend.set(b"cas:mm".to_vec(), b"actual".to_vec()).await.expect("set");
     let result = backend.compare_and_set(b"cas:mm", Some(b"wrong"), b"nope".to_vec()).await;
-    assert!(
-        matches!(result, Err(StorageError::Conflict { .. })),
-        "CAS mismatch should return Conflict: {result:?}"
-    );
+    assert_storage_error!(result, Conflict, "CAS mismatch should return Conflict");
     // Value should be unchanged.
     assert_eq!(backend.get(b"cas:mm").await.expect("get"), Some(Bytes::from("actual")));
 }
@@ -435,13 +426,17 @@ pub async fn concurrent_cas_exactly_one_winner<B: StorageBackend + 'static>(back
 // Error semantics — error variant classification (4 tests)
 // ============================================================================
 
-/// `health_check` succeeds on a healthy backend.
+/// `health_check` succeeds on a healthy backend for all probe types.
 pub async fn health_check_returns_healthy<B: StorageBackend>(backend: &B) {
-    let status = backend.health_check().await.expect("health_check");
-    assert!(
-        status.is_healthy() || status.is_degraded(),
-        "fresh backend health_check should be healthy or degraded, got: {status:?}"
-    );
+    use crate::health::HealthProbe;
+
+    for probe in [HealthProbe::Liveness, HealthProbe::Readiness, HealthProbe::Startup] {
+        let status = backend.health_check(probe).await.expect("health_check");
+        assert!(
+            status.is_healthy() || status.is_degraded(),
+            "fresh backend health_check({probe}) should be healthy or degraded, got: {status:?}"
+        );
+    }
 }
 
 /// `get` on a deleted key returns `None`, not `NotFound` error.

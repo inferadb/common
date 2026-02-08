@@ -42,7 +42,7 @@
 //! let store = LedgerSigningKeyStore::new(client);
 //!
 //! let key = PublicSigningKey::builder()
-//!     .kid("key-2024-001".to_owned())
+//!     .kid("key-2024-001")
 //!     .public_key("MCowBQYDK2VwAyEA...".to_owned())
 //!     .client_id(1001)
 //!     .cert_id(42)
@@ -742,7 +742,7 @@ mod tests {
     fn test_serialization_round_trip() {
         let now = Utc::now();
         let key = PublicSigningKey::builder()
-            .kid("test-key".to_owned())
+            .kid("test-key")
             .public_key("MCowBQYDK2VwAyEAtest".to_owned())
             .client_id(12345)
             .cert_id(42)
@@ -765,14 +765,14 @@ mod tests {
     fn test_serialization_round_trip_with_revocation_reason() {
         let now = Utc::now();
         let key = PublicSigningKey::builder()
-            .kid("revoked-key".to_owned())
+            .kid("revoked-key")
             .public_key("MCowBQYDK2VwAyEAtest".to_owned())
             .client_id(12345)
             .cert_id(42)
             .created_at(now)
             .valid_from(now)
             .revoked_at(now)
-            .revocation_reason("compromised".to_owned())
+            .revocation_reason("compromised")
             .active(false)
             .build();
 

@@ -17,7 +17,7 @@
 //! ├─────────────────────────────────────────────────────────────┤
 //! │                 inferadb-storage                            │
 //! │              StorageBackend trait                           │
-//! │    (get, set, delete, get_range, transaction)               │
+//! │  (get, set, delete, get_range, compare_and_set, transaction) │
 //! ├──────────────┬───────────────────────────────────────────────┤
 //! │ MemoryBackend│            LedgerBackend                      │
 //! │   (testing)  │          (production)                         │
@@ -50,6 +50,15 @@
 //!     Ok(())
 //! }
 //! ```
+//!
+//! # Compare-and-Set (CAS)
+//!
+//! [`StorageBackend::compare_and_set`] provides atomic conditional updates for
+//! optimistic concurrency control. Pass `expected: None` for insert-if-absent
+//! or `expected: Some(bytes)` for update-if-unchanged. See the
+//! [`compare_and_set`](StorageBackend::compare_and_set) method documentation
+//! for full semantics, TTL interaction, transaction behavior, and retry
+//! patterns.
 //!
 //! # Available Backends
 //!
@@ -104,7 +113,7 @@ pub mod types;
 pub use backend::StorageBackend;
 pub use batch::{BatchConfig, BatchFlushStats, BatchOperation, BatchResult, BatchWriter};
 pub use error::{BoxError, ConfigError, StorageError, StorageResult, TimeoutContext};
-pub use health::{HealthMetadata, HealthStatus};
+pub use health::{HealthMetadata, HealthProbe, HealthStatus};
 pub use memory::MemoryBackend;
 pub use metrics::{
     DEFAULT_MAX_TRACKED_NAMESPACES, LatencyPercentiles, Metrics, MetricsCollector, MetricsSnapshot,

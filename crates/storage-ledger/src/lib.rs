@@ -79,6 +79,46 @@
 //! to ensure correctness for authorization decisions. This can be configured
 //! to use eventual consistency for read-heavy workloads where staleness is
 //! acceptable.
+//!
+//! # Distributed Tracing
+//!
+//! The backend supports [W3C Trace Context] propagation through to the
+//! Ledger service. When enabled, every outgoing gRPC request includes
+//! `traceparent` and `tracestate` headers, connecting storage operations to
+//! the request's distributed trace.
+//!
+//! Enable trace propagation on the [`ClientConfig`]:
+//!
+//! ```no_run
+//! use inferadb_common_storage_ledger::{
+//!     ClientConfig, LedgerBackend, LedgerBackendConfig, ServerSource, TraceConfig,
+//! };
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let client = ClientConfig::builder()
+//!     .servers(ServerSource::from_static(["http://localhost:50051"]))
+//!     .client_id("my-service")
+//!     .trace(TraceConfig::enabled())
+//!     .build()?;
+//!
+//! let config = LedgerBackendConfig::builder()
+//!     .client(client)
+//!     .namespace_id(1)
+//!     .build()?;
+//!
+//! let backend = LedgerBackend::new(config).await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! To see end-to-end traces (API → storage → ledger), pair this with a
+//! `tracing-opentelemetry` subscriber that exports spans to your collector
+//! (Jaeger, Grafana Tempo, Datadog, etc.). The SDK extracts the active
+//! OpenTelemetry context from the current `tracing::Span` and propagates it
+//! as W3C headers on every request.
+//!
+//! [W3C Trace Context]: https://www.w3.org/TR/trace-context/
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
@@ -113,5 +153,5 @@ pub use config::{
 pub use error::{LedgerStorageError, Result};
 pub use inferadb_common_storage::ConfigError;
 // Re-export SDK types needed to build LedgerBackendConfig
-pub use inferadb_ledger_sdk::{ClientConfig, ReadConsistency, ServerSource};
+pub use inferadb_ledger_sdk::{ClientConfig, ReadConsistency, ServerSource, TraceConfig};
 pub use transaction::LedgerTransaction;

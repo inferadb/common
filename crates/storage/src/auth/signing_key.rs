@@ -42,7 +42,7 @@ use crate::types::{CertId, ClientId};
 ///
 /// // Create a key with minimal required fields (defaults: active=true, valid times=now)
 /// let key = PublicSigningKey::builder()
-///     .kid("key-2024-001".to_owned())
+///     .kid("key-2024-001")
 ///     .public_key("MCowBQYDK2VwAyEAabcd1234...".to_owned())
 ///     .client_id(12345)
 ///     .cert_id(1)
@@ -53,7 +53,7 @@ use crate::types::{CertId, ClientId};
 ///
 /// // Create a key with expiry
 /// let key_with_expiry = PublicSigningKey::builder()
-///     .kid("key-2024-002".to_owned())
+///     .kid("key-2024-002")
 ///     .public_key("MCowBQYDK2VwAyEAabcd1234...".to_owned())
 ///     .client_id(12345)
 ///     .cert_id(2)
@@ -69,6 +69,7 @@ pub struct PublicSigningKey {
     ///
     /// This uniquely identifies the key and is used for lookup during
     /// JWT validation. The `kid` in the JWT header must match this value.
+    #[builder(into)]
     pub kid: String,
 
     /// Ed25519 public key (base64url-encoded, no padding).
@@ -147,6 +148,7 @@ pub struct PublicSigningKey {
     /// Uses `#[serde(default)]` for backward compatibility: existing
     /// stored keys without this field deserialize with `None`.
     #[serde(default)]
+    #[builder(into)]
     pub revocation_reason: Option<String>,
 }
 
@@ -179,7 +181,7 @@ mod tests {
     #[test]
     fn test_public_signing_key_builder_minimal() {
         let key = PublicSigningKey::builder()
-            .kid("test-key".to_owned())
+            .kid("test-key")
             .public_key("MCowBQYDK2VwAyEAtest".to_owned())
             .client_id(1001)
             .cert_id(42)
@@ -198,7 +200,7 @@ mod tests {
     fn test_public_signing_key_builder_with_expiry() {
         let expiry = Utc::now() + Duration::days(365);
         let key = PublicSigningKey::builder()
-            .kid("test-key".to_owned())
+            .kid("test-key")
             .public_key("MCowBQYDK2VwAyEAtest".to_owned())
             .client_id(1001)
             .cert_id(42)
@@ -211,7 +213,7 @@ mod tests {
     #[test]
     fn test_public_signing_key_builder_inactive() {
         let key = PublicSigningKey::builder()
-            .kid("test-key".to_owned())
+            .kid("test-key")
             .public_key("MCowBQYDK2VwAyEAtest".to_owned())
             .client_id(1001)
             .cert_id(42)
@@ -225,12 +227,12 @@ mod tests {
     fn test_public_signing_key_builder_with_revocation() {
         let revoked = Utc::now();
         let key = PublicSigningKey::builder()
-            .kid("test-key".to_owned())
+            .kid("test-key")
             .public_key("MCowBQYDK2VwAyEAtest".to_owned())
             .client_id(1001)
             .cert_id(42)
             .revoked_at(revoked)
-            .revocation_reason("compromised".to_owned())
+            .revocation_reason("compromised")
             .build();
 
         assert_eq!(key.revoked_at, Some(revoked));
@@ -242,7 +244,7 @@ mod tests {
         let now = Utc::now();
         let expiry = now + Duration::days(365);
         let key = PublicSigningKey::builder()
-            .kid("full-key".to_owned())
+            .kid("full-key")
             .public_key("MCowBQYDK2VwAyEAfull".to_owned())
             .client_id(5555)
             .cert_id(999)
@@ -251,7 +253,7 @@ mod tests {
             .valid_until(expiry)
             .active(false)
             .revoked_at(now)
-            .revocation_reason("key rotation".to_owned())
+            .revocation_reason("key rotation")
             .build();
 
         assert_eq!(key.kid, "full-key");
@@ -268,7 +270,7 @@ mod tests {
 
     fn create_test_key() -> PublicSigningKey {
         PublicSigningKey::builder()
-            .kid("test-key-001".to_owned())
+            .kid("test-key-001")
             // This is a valid base64url-encoded 32-byte value (no padding)
             .public_key("MCowBQYDK2VwAyEAabcdefghijklmnopqrstuvwxyz12".to_owned())
             .client_id(1001)
@@ -293,7 +295,7 @@ mod tests {
     #[test]
     fn test_serialization_with_optional_fields_none() {
         let key = PublicSigningKey::builder()
-            .kid("key-no-expiry".to_owned())
+            .kid("key-no-expiry")
             .public_key("MCowBQYDK2VwAyEAabcdefghijklmnopqrstuvwxyz12".to_owned())
             .client_id(2002)
             .cert_id(100)
@@ -312,7 +314,7 @@ mod tests {
     fn test_serialization_with_optional_fields_some() {
         let now = Utc::now();
         let key = PublicSigningKey::builder()
-            .kid("key-with-expiry".to_owned())
+            .kid("key-with-expiry")
             .public_key("MCowBQYDK2VwAyEAabcdefghijklmnopqrstuvwxyz12".to_owned())
             .client_id(3003)
             .cert_id(200)
@@ -321,7 +323,7 @@ mod tests {
             .valid_until(now + Duration::days(365))
             .active(false)
             .revoked_at(now + Duration::hours(1))
-            .revocation_reason("compromised".to_owned())
+            .revocation_reason("compromised")
             .build();
 
         let json = serde_json::to_string(&key).expect("serialization should succeed");
@@ -338,12 +340,12 @@ mod tests {
     fn test_json_field_names() {
         let now = Utc::now();
         let key = PublicSigningKey::builder()
-            .kid("test-key-001".to_owned())
+            .kid("test-key-001")
             .public_key("MCowBQYDK2VwAyEAabcdefghijklmnopqrstuvwxyz12".to_owned())
             .client_id(1001)
             .cert_id(42)
             .revoked_at(now)
-            .revocation_reason("test".to_owned())
+            .revocation_reason("test")
             .build();
         let json = serde_json::to_string(&key).expect("serialization should succeed");
 
@@ -418,7 +420,7 @@ mod tests {
     fn test_debug_redacts_all_key_material() {
         // Use a distinctive key value to ensure it doesn't appear anywhere in output
         let key = PublicSigningKey::builder()
-            .kid("redaction-test-kid".to_owned())
+            .kid("redaction-test-kid")
             .public_key("SUPERSECRETKEYMATERIAL_SHOULD_NEVER_APPEAR".to_owned())
             .client_id(999)
             .cert_id(1)
@@ -480,12 +482,12 @@ mod tests {
     fn test_revocation_reason_serialization_roundtrip() {
         let now = Utc::now();
         let key = PublicSigningKey::builder()
-            .kid("revoked-key".to_owned())
+            .kid("revoked-key")
             .public_key("MCowBQYDK2VwAyEAtest".to_owned())
             .client_id(1001)
             .cert_id(42)
             .revoked_at(now)
-            .revocation_reason("compromised - emergency rotation".to_owned())
+            .revocation_reason("compromised - emergency rotation")
             .build();
 
         let json = serde_json::to_string(&key).expect("serialization should succeed");

@@ -143,27 +143,43 @@ pub trait Transaction: Send {
 
     /// Buffers a compare-and-set operation within the transaction.
     ///
-    /// This is a conditional set that will only succeed if the current value
-    /// of the key matches the expected value at commit time. If the condition
-    /// fails, the entire transaction commit will fail with
-    /// [`StorageError::Conflict`](crate::StorageError).
+    /// Unlike [`StorageBackend::compare_and_set`], which executes immediately,
+    /// this method only records the operation. The precondition is evaluated at
+    /// [`commit`](Transaction::commit) time:
+    ///
+    /// 1. The backend acquires its write lock.
+    /// 2. All buffered CAS conditions are verified against the current state.
+    /// 3. If **any** CAS condition fails, the entire transaction is rejected with
+    ///    [`StorageError::Conflict`](crate::StorageError) and no operations (neither CAS writes nor
+    ///    unconditional writes) are applied.
+    /// 4. Only when all conditions hold are the writes applied atomically.
+    ///
+    /// This deferred evaluation means a CAS condition can conflict with
+    /// concurrent writes that occur between calling this method and calling
+    /// `commit`. Design your CAS operations to tolerate retrying the full
+    /// transaction on conflict.
+    ///
+    /// # Interaction with TTL
+    ///
+    /// Expired keys are treated as absent at commit time. A CAS with
+    /// `expected: None` succeeds on a key whose TTL has elapsed; a CAS with
+    /// `expected: Some(value)` fails on an expired key.
     ///
     /// # Arguments
     ///
-    /// * `key` - The key to update
-    /// * `expected` - The expected current value. Use `None` to require the key doesn't exist.
-    /// * `new_value` - The new value to set if the comparison succeeds
+    /// * `key` - The key to update.
+    /// * `expected` - The expected current value. Use `None` to require the key does not exist
+    ///   (insert-if-absent).
+    /// * `new_value` - The new value to set if the comparison succeeds.
     ///
-    /// # Returns
+    /// # Errors
     ///
-    /// - `Ok(())` if the operation was buffered successfully
-    /// - `Err(...)` if the operation could not be buffered (e.g., size limit exceeded)
+    /// - [`StorageError::SizeLimitExceeded`](crate::StorageError) — `key` or `new_value` exceeds
+    ///   configured size limits. This is checked immediately (not deferred to commit), so the
+    ///   transaction can fail fast before buffering an invalid operation.
     ///
-    /// # Note
-    ///
-    /// The condition is checked at commit time, not when this method is called.
-    /// If the condition fails at commit time, the entire transaction fails
-    /// and no operations are applied.
+    /// Note: [`StorageError::Conflict`](crate::StorageError) from the CAS
+    /// precondition is raised at commit time, not here.
     #[must_use = "compare-and-set may fail with a size limit error and must be handled"]
     fn compare_and_set(
         &mut self,

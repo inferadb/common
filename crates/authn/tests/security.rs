@@ -27,27 +27,31 @@ use inferadb_common_storage::{
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use rand_core::OsRng;
 use serde_json::json;
+use zeroize::Zeroizing;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /// Generate a test Ed25519 key pair and return (pkcs8_der, public_key_base64).
-fn generate_test_keypair() -> (Vec<u8>, String) {
+///
+/// The private key material is wrapped in [`Zeroizing`] to ensure it is scrubbed
+/// from memory on drop.
+fn generate_test_keypair() -> (Zeroizing<Vec<u8>>, String) {
     let signing_key = SigningKey::generate(&mut OsRng);
     let public_key_bytes = signing_key.verifying_key().to_bytes();
     let public_key_b64 = URL_SAFE_NO_PAD.encode(public_key_bytes);
 
-    let private_bytes = signing_key.to_bytes();
-    let mut pkcs8_der = vec![
+    let private_bytes: Zeroizing<[u8; 32]> = Zeroizing::new(signing_key.to_bytes());
+    let mut pkcs8_der = Zeroizing::new(vec![
         0x30, 0x2e, // SEQUENCE, 46 bytes
         0x02, 0x01, 0x00, // INTEGER version 0
         0x30, 0x05, // SEQUENCE, 5 bytes (algorithm identifier)
         0x06, 0x03, 0x2b, 0x65, 0x70, // OID 1.3.101.112 (Ed25519)
         0x04, 0x22, // OCTET STRING, 34 bytes
         0x04, 0x20, // OCTET STRING, 32 bytes (the actual key)
-    ];
-    pkcs8_der.extend_from_slice(&private_bytes);
+    ]);
+    pkcs8_der.extend_from_slice(&*private_bytes);
 
     (pkcs8_der, public_key_b64)
 }
@@ -218,7 +222,8 @@ async fn test_algorithm_confusion_hs256_end_to_end() {
     let mut header = Header::new(Algorithm::HS256);
     header.kid = Some(kid.to_string());
 
-    let public_key_bytes = URL_SAFE_NO_PAD.decode(&public_key_b64).expect("decode public key");
+    let public_key_bytes: Zeroizing<Vec<u8>> =
+        Zeroizing::new(URL_SAFE_NO_PAD.decode(&public_key_b64).expect("decode public key"));
     let hmac_key = EncodingKey::from_secret(&public_key_bytes);
     let token =
         jsonwebtoken::encode(&header, &claims, &hmac_key).expect("Failed to encode HS256 JWT");

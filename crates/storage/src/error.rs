@@ -110,6 +110,10 @@ pub struct TimeoutContext {
     pub during_backoff: bool,
     /// The last error returned by the backend before the timeout.
     /// `None` if the timeout fired during the very first attempt.
+    ///
+    /// This error is reconstructed from [`StorageError::detail()`] because
+    /// future cancellation on timeout drops the original error. The source
+    /// chain (`Error::source()`) is not preserved.
     pub last_error: Option<Box<StorageError>>,
 }
 
@@ -278,6 +282,21 @@ pub enum StorageError {
         /// Span ID captured at error creation for trace correlation.
         span_id: Option<tracing::span::Id>,
     },
+
+    /// The backend is shutting down and not accepting new operations.
+    ///
+    /// This error is returned when a cancellation signal has been received
+    /// and the backend has entered its shutdown sequence. In-flight
+    /// operations that were already in progress may still complete, but
+    /// new operations are rejected immediately.
+    ///
+    /// This is **not** transient — the backend will not recover from
+    /// shutdown. Callers should propagate this error up the call stack
+    /// and begin their own shutdown procedures.
+    ShuttingDown {
+        /// Span ID captured at error creation for trace correlation.
+        span_id: Option<tracing::span::Id>,
+    },
 }
 
 /// Appends ` [span=<id>]` to a formatter when a span ID is present.
@@ -330,6 +349,10 @@ impl fmt::Display for StorageError {
             },
             Self::RateLimitExceeded { retry_after, span_id } => {
                 write!(f, "Rate limit exceeded, retry after {}ms", retry_after.as_millis())?;
+                fmt_span_suffix(f, span_id)
+            },
+            Self::ShuttingDown { span_id } => {
+                write!(f, "Backend is shutting down")?;
                 fmt_span_suffix(f, span_id)
             },
         }
@@ -479,6 +502,14 @@ impl StorageError {
         Self::RateLimitExceeded { retry_after, span_id: current_span_id() }
     }
 
+    /// Creates a new `ShuttingDown` error.
+    ///
+    /// Captures the current tracing span ID for log correlation.
+    #[must_use]
+    pub fn shutting_down() -> Self {
+        Self::ShuttingDown { span_id: current_span_id() }
+    }
+
     /// Returns the tracing span ID captured when this error was created,
     /// if a tracing subscriber was active at that time.
     ///
@@ -496,7 +527,8 @@ impl StorageError {
             | Self::CasRetriesExhausted { span_id, .. }
             | Self::CircuitOpen { span_id, .. }
             | Self::SizeLimitExceeded { span_id, .. }
-            | Self::RateLimitExceeded { span_id, .. } => span_id.as_ref(),
+            | Self::RateLimitExceeded { span_id, .. }
+            | Self::ShuttingDown { span_id, .. } => span_id.as_ref(),
         }
     }
 
@@ -556,6 +588,7 @@ impl StorageError {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use rstest::rstest;
     use tracing_subscriber::{Registry, layer::SubscriberExt};
 
     use super::*;
@@ -648,31 +681,26 @@ mod tests {
                     .span_id()
                     .is_some()
             );
+            assert!(StorageError::shutting_down().span_id().is_some());
         });
     }
 
-    #[test]
-    fn display_is_generic_for_connection() {
-        let err = StorageError::connection("tcp://ledger.internal:9200 connection refused");
-        assert_eq!(err.to_string(), "Connection error");
-    }
-
-    #[test]
-    fn display_is_generic_for_internal() {
-        let err = StorageError::internal("Auth error: permission denied for user admin");
-        assert_eq!(err.to_string(), "Internal error");
-    }
-
-    #[test]
-    fn display_is_generic_for_serialization() {
-        let err = StorageError::serialization("invalid key format at path /vault/secret");
-        assert_eq!(err.to_string(), "Serialization error");
-    }
-
-    #[test]
-    fn display_is_generic_for_not_found() {
-        let err = StorageError::not_found("ns-123/vault-456/secret-key");
-        assert_eq!(err.to_string(), "Key not found");
+    #[rstest]
+    #[case::connection(
+        StorageError::connection("tcp://ledger.internal:9200 connection refused"),
+        "Connection error"
+    )]
+    #[case::internal(
+        StorageError::internal("Auth error: permission denied for user admin"),
+        "Internal error"
+    )]
+    #[case::serialization(
+        StorageError::serialization("invalid key format at path /vault/secret"),
+        "Serialization error"
+    )]
+    #[case::not_found(StorageError::not_found("ns-123/vault-456/secret-key"), "Key not found")]
+    fn display_is_generic(#[case] err: StorageError, #[case] expected: &str) {
+        assert_eq!(err.to_string(), expected);
     }
 
     #[test]
@@ -687,35 +715,30 @@ mod tests {
         assert_eq!(err.detail(), "Internal error: Auth error: admin denied");
     }
 
-    #[test]
-    fn display_never_contains_internal_details() {
-        let cases = vec![
-            (
-                StorageError::connection("tcp://ledger.internal:9200 connection refused"),
-                vec!["ledger.internal", "9200", "tcp://", "connection refused"],
-            ),
-            (
-                StorageError::internal("Auth error: denied for user admin@org"),
-                vec!["admin@org", "denied", "Auth error"],
-            ),
-            (
-                StorageError::serialization("invalid format at /vault/secret"),
-                vec!["/vault/secret", "invalid format"],
-            ),
-            (
-                StorageError::not_found("ns-123/vault-456/secret-key"),
-                vec!["ns-123", "vault-456", "secret-key"],
-            ),
-        ];
-
-        for (err, forbidden_substrings) in cases {
-            let display = err.to_string();
-            for forbidden in forbidden_substrings {
-                assert!(
-                    !display.contains(forbidden),
-                    "Display must not contain '{forbidden}', got: {display}",
-                );
-            }
+    #[rstest]
+    #[case::connection(
+        StorageError::connection("tcp://ledger.internal:9200 connection refused"),
+        &["ledger.internal", "9200", "tcp://", "connection refused"]
+    )]
+    #[case::internal(
+        StorageError::internal("Auth error: denied for user admin@org"),
+        &["admin@org", "denied", "Auth error"]
+    )]
+    #[case::serialization(
+        StorageError::serialization("invalid format at /vault/secret"),
+        &["/vault/secret", "invalid format"]
+    )]
+    #[case::not_found(
+        StorageError::not_found("ns-123/vault-456/secret-key"),
+        &["ns-123", "vault-456", "secret-key"]
+    )]
+    fn display_never_contains_internal_details(
+        #[case] err: StorageError,
+        #[case] forbidden: &[&str],
+    ) {
+        let display = err.to_string();
+        for word in forbidden {
+            assert!(!display.contains(word), "Display must not contain '{word}', got: {display}");
         }
     }
 
@@ -794,10 +817,103 @@ mod tests {
         });
     }
 
+    #[rstest]
+    #[case::connection(StorageError::connection("net down"), true)]
+    #[case::timeout(StorageError::timeout(), true)]
+    #[case::timeout_with_context(
+        StorageError::timeout_with_context(TimeoutContext {
+            attempts_completed: 1,
+            during_backoff: true,
+            last_error: None,
+        }),
+        true
+    )]
+    #[case::rate_limit(
+        StorageError::rate_limit_exceeded(std::time::Duration::from_millis(100)),
+        true
+    )]
+    #[case::not_found(StorageError::not_found("key"), false)]
+    #[case::conflict(StorageError::conflict(), false)]
+    #[case::shutting_down(StorageError::shutting_down(), false)]
+    #[case::serialization(StorageError::serialization("bad"), false)]
+    #[case::internal(StorageError::internal("oops"), false)]
+    #[case::circuit_open(StorageError::circuit_open(), false)]
+    fn is_transient_classification(#[case] err: StorageError, #[case] expected: bool) {
+        assert_eq!(
+            err.is_transient(),
+            expected,
+            "{:?} should{} be transient",
+            std::mem::discriminant(&err),
+            if expected { "" } else { " NOT" },
+        );
+    }
+
     #[test]
-    fn timeout_with_context_is_transient() {
-        let ctx = TimeoutContext { attempts_completed: 1, during_backoff: true, last_error: None };
-        let err = StorageError::timeout_with_context(ctx);
-        assert!(err.is_transient(), "Timeout should be transient");
+    fn shutting_down_display() {
+        let err = StorageError::shutting_down();
+        assert_eq!(err.to_string(), "Backend is shutting down");
+    }
+
+    #[test]
+    fn shutting_down_detail_matches_display() {
+        let err = StorageError::shutting_down();
+        assert_eq!(err.detail(), err.to_string());
+    }
+
+    #[test]
+    fn internal_with_source_preserves_chain() {
+        use std::error::Error;
+        let inner = StorageError::timeout();
+        let outer = StorageError::internal_with_source("wrapping timeout", inner);
+
+        let source = outer.source().expect("source must be present");
+        assert_eq!(source.to_string(), "Operation timeout");
+    }
+
+    #[test]
+    fn connection_with_source_preserves_chain() {
+        use std::error::Error;
+        let inner = StorageError::connection("inner connection");
+        let outer = StorageError::connection_with_source("outer connection", inner);
+
+        let source = outer.source().expect("source must be present");
+        assert_eq!(source.to_string(), "Connection error");
+    }
+
+    #[test]
+    fn deeply_nested_source_chain_traversal() {
+        use std::error::Error;
+        // Build a 3-level chain: Internal → Connection → Timeout
+        let level_3 = StorageError::timeout();
+        let level_2 = StorageError::connection_with_source("connection layer", level_3);
+        let level_1 = StorageError::internal_with_source("internal layer", level_2);
+
+        // Traverse level 1 → level 2
+        let source_1 = level_1.source().expect("level 1 source");
+        assert_eq!(source_1.to_string(), "Connection error");
+
+        // Traverse level 2 → level 3
+        let source_2 = source_1.source().expect("level 2 source");
+        assert_eq!(source_2.to_string(), "Operation timeout");
+
+        // Level 3 is a leaf (no source)
+        assert!(source_2.source().is_none(), "level 3 should be a leaf");
+    }
+
+    #[test]
+    fn serialization_with_source_preserves_chain() {
+        use std::error::Error;
+        let inner = StorageError::internal("decode failed");
+        let outer = StorageError::serialization_with_source("json parse error", inner);
+
+        let source = outer.source().expect("source must be present");
+        assert_eq!(source.to_string(), "Internal error");
+    }
+
+    #[test]
+    fn internal_without_source_has_no_chain() {
+        use std::error::Error;
+        let err = StorageError::internal("standalone error");
+        assert!(err.source().is_none(), "internal without source should have no chain");
     }
 }

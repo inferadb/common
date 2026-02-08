@@ -328,7 +328,7 @@ pub trait PublicSigningKeyStore: Send + Sync {
 ///     let ns = NamespaceId::from(1);
 ///     
 ///     let key = PublicSigningKey::builder()
-///         .kid("test-key-1".to_owned())
+///         .kid("test-key-1")
 ///         .public_key("MCowBQYDK2VwAyEA...".to_owned())
 ///         .client_id(1)
 ///         .cert_id(1)
@@ -576,11 +576,12 @@ mod tests {
     use chrono::Duration;
 
     use super::*;
+    use crate::assert_storage_error;
 
     /// Creates a test key with the given kid.
     fn make_test_key(kid: &str) -> PublicSigningKey {
         PublicSigningKey::builder()
-            .kid(kid.to_owned())
+            .kid(kid)
             .public_key("MCowBQYDK2VwAyEAtest".to_owned())
             .client_id(1)
             .cert_id(1)
@@ -594,7 +595,7 @@ mod tests {
         valid_until: Option<chrono::DateTime<Utc>>,
     ) -> PublicSigningKey {
         PublicSigningKey::builder()
-            .kid(kid.to_owned())
+            .kid(kid)
             .public_key("MCowBQYDK2VwAyEAtest".to_owned())
             .client_id(1)
             .cert_id(1)
@@ -641,9 +642,7 @@ mod tests {
 
         let result = store.create_key(namespace_id, &key).await;
 
-        assert!(result.is_err());
-        let err = result.expect_err("duplicate should fail");
-        assert!(matches!(err, StorageError::Internal { .. }));
+        assert_storage_error!(result, Internal);
     }
 
     #[tokio::test]
@@ -725,8 +724,7 @@ mod tests {
 
         let result = store.deactivate_key(NamespaceId::from(100), "nonexistent").await;
 
-        assert!(result.is_err());
-        assert!(matches!(result.expect_err("should be NotFound"), StorageError::NotFound { .. }));
+        assert_storage_error!(result, NotFound);
     }
 
     #[tokio::test]
@@ -776,8 +774,7 @@ mod tests {
 
         let result = store.revoke_key(NamespaceId::from(100), "nonexistent", None).await;
 
-        assert!(result.is_err());
-        assert!(matches!(result.expect_err("should be NotFound"), StorageError::NotFound { .. }));
+        assert_storage_error!(result, NotFound);
     }
 
     #[tokio::test]
@@ -811,8 +808,7 @@ mod tests {
 
         let result = store.activate_key(namespace_id, "permanently-revoked").await;
 
-        assert!(result.is_err());
-        assert!(matches!(result.expect_err("should be Internal"), StorageError::Internal { .. }));
+        assert_storage_error!(result, Internal);
     }
 
     #[tokio::test]
@@ -835,8 +831,7 @@ mod tests {
 
         let result = store.delete_key(NamespaceId::from(100), "nonexistent").await;
 
-        assert!(result.is_err());
-        assert!(matches!(result.expect_err("should be NotFound"), StorageError::NotFound { .. }));
+        assert_storage_error!(result, NotFound);
     }
 
     #[tokio::test]
@@ -845,8 +840,7 @@ mod tests {
 
         let result = store.activate_key(NamespaceId::from(100), "nonexistent").await;
 
-        assert!(result.is_err());
-        assert!(matches!(result.expect_err("should be NotFound"), StorageError::NotFound { .. }));
+        assert_storage_error!(result, NotFound);
     }
 
     #[tokio::test]
@@ -1033,15 +1027,11 @@ mod tests {
         let keys_to_revoke: Vec<(&str, Option<&str>)> =
             vec![("exists", None), ("does-not-exist", None)];
 
-        let results = store.revoke_keys(namespace_id, &keys_to_revoke).await;
+        let mut results = store.revoke_keys(namespace_id, &keys_to_revoke).await;
 
         assert_eq!(results.len(), 2);
         assert!(results[0].is_ok());
-        assert!(results[1].is_err());
-        assert!(matches!(
-            results[1].as_ref().expect_err("should be NotFound"),
-            StorageError::NotFound { .. }
-        ));
+        assert_storage_error!(results.remove(1), NotFound);
     }
 
     #[tokio::test]
@@ -1077,8 +1067,7 @@ mod tests {
         let new_key = make_test_key("new-key");
         let result = store.rotate_key(namespace_id, "nonexistent", &new_key).await;
 
-        assert!(result.is_err());
-        assert!(matches!(result.expect_err("should be NotFound"), StorageError::NotFound { .. }));
+        assert_storage_error!(result, NotFound);
 
         // New key should not have been created
         let check = store.get_key(namespace_id, "new-key").await.expect("get");

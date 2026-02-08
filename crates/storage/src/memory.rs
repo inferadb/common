@@ -50,13 +50,14 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use fail::fail_point;
 use parking_lot::RwLock;
 use tokio::{select, sync::watch, time::sleep};
 
 use crate::{
     backend::StorageBackend,
     error::{StorageError, StorageResult},
-    health::{HealthMetadata, HealthStatus},
+    health::{HealthMetadata, HealthProbe, HealthStatus},
     size_limits::{SizeLimits, validate_sizes},
     transaction::Transaction,
     types::KeyValue,
@@ -380,15 +381,35 @@ impl StorageBackend for MemoryBackend {
     }
 
     #[tracing::instrument(skip(self))]
-    async fn health_check(&self) -> StorageResult<HealthStatus> {
+    async fn health_check(&self, probe: HealthProbe) -> StorageResult<HealthStatus> {
+        fail_point!("health-check", |_| {
+            Err(StorageError::internal("injected health check failure"))
+        });
         let start = std::time::Instant::now();
-        // Try to acquire read lock to verify we're not deadlocked
-        let entry_count = self.data.read().len();
-        let check_duration = start.elapsed();
 
-        let metadata = HealthMetadata::new(check_duration, "memory")
-            .with_detail("entry_count", entry_count.to_string());
-        Ok(HealthStatus::healthy(metadata))
+        match probe {
+            HealthProbe::Liveness => {
+                // Liveness: verify the async runtime is responsive
+                let metadata = HealthMetadata::new(start.elapsed(), "memory")
+                    .with_detail("probe", "liveness".to_owned());
+                Ok(HealthStatus::healthy(metadata))
+            },
+            HealthProbe::Readiness => {
+                // Readiness: acquire read lock to verify we're not deadlocked
+                let entry_count = self.data.read().len();
+                let check_duration = start.elapsed();
+                let metadata = HealthMetadata::new(check_duration, "memory")
+                    .with_detail("probe", "readiness".to_owned())
+                    .with_detail("entry_count", entry_count.to_string());
+                Ok(HealthStatus::healthy(metadata))
+            },
+            HealthProbe::Startup => {
+                // Startup: in-memory backend has no warm-up phase
+                let metadata = HealthMetadata::new(start.elapsed(), "memory")
+                    .with_detail("probe", "startup".to_owned());
+                Ok(HealthStatus::healthy(metadata))
+            },
+        }
     }
 }
 
@@ -525,6 +546,7 @@ impl Transaction for MemoryTransaction {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::assert_storage_error;
 
     #[tokio::test]
     async fn test_basic_operations() {
@@ -631,7 +653,7 @@ mod tests {
     #[tokio::test]
     async fn test_health_check() {
         let backend = MemoryBackend::new();
-        let status = backend.health_check().await.unwrap();
+        let status = backend.health_check(HealthProbe::Readiness).await.unwrap();
         assert!(status.is_healthy());
         assert_eq!(status.metadata().backend, "memory");
         assert_eq!(status.metadata().details.get("entry_count"), Some(&"0".to_owned()));
@@ -643,9 +665,31 @@ mod tests {
         backend.set(b"a".to_vec(), b"1".to_vec()).await.unwrap();
         backend.set(b"b".to_vec(), b"2".to_vec()).await.unwrap();
 
-        let status = backend.health_check().await.unwrap();
+        let status = backend.health_check(HealthProbe::Readiness).await.unwrap();
         assert!(status.is_healthy());
         assert_eq!(status.metadata().details.get("entry_count"), Some(&"2".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn test_health_check_liveness() {
+        let backend = MemoryBackend::new();
+        let status = backend.health_check(HealthProbe::Liveness).await.unwrap();
+        assert!(status.is_healthy());
+        assert_eq!(status.metadata().backend, "memory");
+        assert_eq!(status.metadata().details.get("probe"), Some(&"liveness".to_owned()));
+        // Liveness does not report entry_count
+        assert!(!status.metadata().details.contains_key("entry_count"));
+    }
+
+    #[tokio::test]
+    async fn test_health_check_startup() {
+        let backend = MemoryBackend::new();
+        let status = backend.health_check(HealthProbe::Startup).await.unwrap();
+        assert!(status.is_healthy());
+        assert_eq!(status.metadata().backend, "memory");
+        assert_eq!(status.metadata().details.get("probe"), Some(&"startup".to_owned()));
+        // Startup does not report entry_count
+        assert!(!status.metadata().details.contains_key("entry_count"));
     }
 
     #[tokio::test]
@@ -718,7 +762,7 @@ mod tests {
         let result =
             backend.compare_and_set(b"key", Some(b"wrong".as_slice()), b"value2".to_vec()).await;
 
-        assert!(matches!(result, Err(StorageError::Conflict { .. })));
+        assert_storage_error!(result, Conflict);
 
         // Original value unchanged
         let value = backend.get(b"key").await.unwrap();
@@ -744,7 +788,7 @@ mod tests {
         let result =
             backend.compare_and_set(b"missing", Some(b"value".as_slice()), b"new".to_vec()).await;
 
-        assert!(matches!(result, Err(StorageError::Conflict { .. })));
+        assert_storage_error!(result, Conflict);
 
         // Key still doesn't exist
         let value = backend.get(b"missing").await.unwrap();
@@ -773,6 +817,132 @@ mod tests {
         // Verify TTL was cleared (key persists in ttl_data check)
         let ttl_data = backend.ttl_data.read();
         assert!(!ttl_data.contains_key(&b"key".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_compare_and_set_json_insert_if_absent() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+        struct Config {
+            version: u32,
+            name: String,
+        }
+
+        let backend = MemoryBackend::new();
+        let v1 = Config { version: 1, name: "app".into() };
+
+        // Insert-if-absent
+        backend.compare_and_set_json::<Config>(b"cfg", None, &v1).await.unwrap();
+
+        // Verify stored bytes are valid JSON
+        let stored = backend.get(b"cfg").await.unwrap().expect("should exist");
+        let deserialized: Config = serde_json::from_slice(&stored).unwrap();
+        assert_eq!(deserialized, v1);
+    }
+
+    #[tokio::test]
+    async fn test_compare_and_set_json_update() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+        struct Config {
+            version: u32,
+            name: String,
+        }
+
+        let backend = MemoryBackend::new();
+        let v1 = Config { version: 1, name: "app".into() };
+        let v2 = Config { version: 2, name: "app".into() };
+
+        // Insert v1
+        backend.compare_and_set_json::<Config>(b"cfg", None, &v1).await.unwrap();
+
+        // Update v1 → v2
+        backend.compare_and_set_json(b"cfg", Some(&v1), &v2).await.unwrap();
+
+        // Verify v2 stored
+        let stored = backend.get(b"cfg").await.unwrap().expect("should exist");
+        let deserialized: Config = serde_json::from_slice(&stored).unwrap();
+        assert_eq!(deserialized, v2);
+    }
+
+    #[tokio::test]
+    async fn test_compare_and_set_json_conflict() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Serialize, Deserialize, Clone, Debug)]
+        struct Config {
+            version: u32,
+        }
+
+        let backend = MemoryBackend::new();
+        let v1 = Config { version: 1 };
+        let v2 = Config { version: 2 };
+        let v3 = Config { version: 3 };
+
+        // Insert v1
+        backend.compare_and_set_json::<Config>(b"cfg", None, &v1).await.unwrap();
+
+        // Try to update with wrong expected (v2 instead of v1)
+        let result = backend.compare_and_set_json(b"cfg", Some(&v2), &v3).await;
+        assert_storage_error!(result, Conflict);
+    }
+
+    #[tokio::test]
+    async fn test_compare_and_set_json_deterministic_serialization() {
+        use std::collections::BTreeMap;
+
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+        struct Data {
+            items: BTreeMap<String, u32>,
+        }
+
+        let backend = MemoryBackend::new();
+
+        // Build the same BTreeMap in two different insertion orders
+        let mut map_a = BTreeMap::new();
+        map_a.insert("alpha".into(), 1);
+        map_a.insert("beta".into(), 2);
+        map_a.insert("gamma".into(), 3);
+        let data_a = Data { items: map_a };
+
+        let mut map_b = BTreeMap::new();
+        map_b.insert("gamma".into(), 3);
+        map_b.insert("alpha".into(), 1);
+        map_b.insert("beta".into(), 2);
+        let data_b = Data { items: map_b };
+
+        // Insert using data_a
+        backend.compare_and_set_json::<Data>(b"data", None, &data_a).await.unwrap();
+
+        // CAS using data_b as expected — should succeed because BTreeMap
+        // serializes in sorted key order regardless of insertion order
+        let updated = Data { items: BTreeMap::new() };
+        backend.compare_and_set_json(b"data", Some(&data_b), &updated).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_compare_and_set_json_insert_conflict_on_existing() {
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Serialize, Deserialize, Clone, Debug)]
+        struct Value {
+            x: i32,
+        }
+
+        let backend = MemoryBackend::new();
+        let v1 = Value { x: 1 };
+        let v2 = Value { x: 2 };
+
+        // Insert-if-absent succeeds
+        backend.compare_and_set_json::<Value>(b"key", None, &v1).await.unwrap();
+
+        // Insert-if-absent again fails (key exists)
+        let result = backend.compare_and_set_json::<Value>(b"key", None, &v2).await;
+        assert_storage_error!(result, Conflict);
     }
 
     #[tokio::test]

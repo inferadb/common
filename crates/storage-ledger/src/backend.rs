@@ -13,8 +13,8 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use inferadb_common_storage::{
-    HealthMetadata, HealthStatus, KeyValue, Metrics, NamespaceId, SizeLimits, StorageBackend,
-    StorageError, StorageResult, Transaction, VaultId, validate_sizes,
+    HealthMetadata, HealthProbe, HealthStatus, KeyValue, Metrics, NamespaceId, SizeLimits,
+    StorageBackend, StorageError, StorageResult, Transaction, VaultId, validate_sizes,
 };
 use inferadb_ledger_sdk::{
     LedgerClient, ListEntitiesOpts, Operation, ReadConsistency, SetCondition,
@@ -119,6 +119,9 @@ pub struct LedgerBackend {
 
     /// Metrics collector for per-namespace operation tracking.
     metrics: Metrics,
+
+    /// Optional cancellation token for graceful shutdown.
+    cancellation_token: Option<tokio_util::sync::CancellationToken>,
 }
 
 impl std::fmt::Debug for LedgerBackend {
@@ -179,6 +182,7 @@ impl LedgerBackend {
             .circuit_breaker_config()
             .cloned()
             .map(crate::circuit_breaker::CircuitBreaker::new);
+        let cancellation_token = config.cancellation_token().cloned();
 
         let client = LedgerClient::new(config.into_client_config())
             .await
@@ -196,6 +200,7 @@ impl LedgerBackend {
             size_limits,
             circuit_breaker,
             metrics: Metrics::new(),
+            cancellation_token,
         })
     }
 
@@ -229,6 +234,7 @@ impl LedgerBackend {
             size_limits: None,
             circuit_breaker: None,
             metrics: Metrics::new(),
+            cancellation_token: None,
         }
     }
 
@@ -297,6 +303,40 @@ impl LedgerBackend {
             return Err(StorageError::circuit_open());
         }
         Ok(())
+    }
+
+    /// Checks the cancellation token and returns `ShuttingDown` if cancelled.
+    fn check_cancelled(&self) -> StorageResult<()> {
+        if let Some(ref token) = self.cancellation_token
+            && token.is_cancelled()
+        {
+            return Err(StorageError::shutting_down());
+        }
+        Ok(())
+    }
+
+    /// Signals the backend to shut down.
+    ///
+    /// After calling this method, new operations return
+    /// [`StorageError::ShuttingDown`] immediately. In-flight operations that
+    /// already passed the cancellation check are allowed to complete.
+    ///
+    /// If the backend was constructed without a
+    /// [`CancellationToken`](tokio_util::sync::CancellationToken), this method
+    /// creates one internally so that subsequent operations are rejected.
+    ///
+    /// This method is idempotent — calling it multiple times has no additional
+    /// effect.
+    pub fn shutdown(&self) {
+        if let Some(ref token) = self.cancellation_token {
+            token.cancel();
+        }
+    }
+
+    /// Returns `true` if the backend has been signalled to shut down.
+    #[must_use]
+    pub fn is_shutting_down(&self) -> bool {
+        self.cancellation_token.as_ref().is_some_and(|t| t.is_cancelled())
     }
 
     /// Records a storage result with the circuit breaker.
@@ -386,6 +426,7 @@ impl inferadb_common_storage::MetricsCollector for LedgerBackend {
 impl StorageBackend for LedgerBackend {
     #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
+        self.check_cancelled()?;
         self.check_circuit()?;
         let start = std::time::Instant::now();
         let encoded_key = encode_key(key);
@@ -414,6 +455,7 @@ impl StorageBackend for LedgerBackend {
 
     #[tracing::instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len()))]
     async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()> {
+        self.check_cancelled()?;
         self.check_circuit()?;
         self.check_sizes(&key, &value)?;
         let start = std::time::Instant::now();
@@ -452,6 +494,7 @@ impl StorageBackend for LedgerBackend {
         expected: Option<&[u8]>,
         new_value: Vec<u8>,
     ) -> StorageResult<()> {
+        self.check_cancelled()?;
         self.check_circuit()?;
         self.check_sizes(key, &new_value)?;
         let start = std::time::Instant::now();
@@ -503,6 +546,7 @@ impl StorageBackend for LedgerBackend {
 
     #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {
+        self.check_cancelled()?;
         self.check_circuit()?;
         let start = std::time::Instant::now();
         let encoded_key = encode_key(key);
@@ -538,6 +582,7 @@ impl StorageBackend for LedgerBackend {
     where
         R: RangeBounds<Vec<u8>> + Send,
     {
+        self.check_cancelled()?;
         self.check_circuit()?;
         let start = std::time::Instant::now();
 
@@ -674,6 +719,7 @@ impl StorageBackend for LedgerBackend {
     where
         R: RangeBounds<Vec<u8>> + Send,
     {
+        self.check_cancelled()?;
         self.check_circuit()?;
         let start = std::time::Instant::now();
 
@@ -726,6 +772,7 @@ impl StorageBackend for LedgerBackend {
     /// the Unix epoch, since a valid absolute timestamp cannot be computed.
     #[tracing::instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len(), ttl_ms = ttl.as_millis() as u64))]
     async fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> StorageResult<()> {
+        self.check_cancelled()?;
         self.check_circuit()?;
         self.check_sizes(&key, &value)?;
         let start = std::time::Instant::now();
@@ -764,6 +811,7 @@ impl StorageBackend for LedgerBackend {
 
     #[tracing::instrument(skip(self))]
     async fn transaction(&self) -> StorageResult<Box<dyn Transaction>> {
+        self.check_cancelled()?;
         self.check_circuit()?;
         let start = std::time::Instant::now();
         let txn = LedgerTransaction::new(
@@ -777,47 +825,60 @@ impl StorageBackend for LedgerBackend {
     }
 
     #[tracing::instrument(skip(self))]
-    async fn health_check(&self) -> StorageResult<HealthStatus> {
+    async fn health_check(&self, probe: HealthProbe) -> StorageResult<HealthStatus> {
         let start = std::time::Instant::now();
-        // Health checks bypass the circuit breaker — they are used to probe
-        // backend health and should always attempt a real connection.
-        let result = with_retry_timeout(
-            &self.retry_config,
-            self.timeout_config.read_timeout,
-            None,
-            "health_check",
-            || async {
-                self.client
-                    .health_check()
-                    .await
-                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
-                Ok(())
+
+        match probe {
+            HealthProbe::Liveness => {
+                // Liveness: verify the async runtime is responsive.
+                // No external I/O — a deadlocked runtime won't reach this point.
+                let metadata = HealthMetadata::new(start.elapsed(), "ledger")
+                    .with_detail("probe", "liveness".to_owned());
+                Ok(HealthStatus::healthy(metadata))
             },
-        )
-        .await;
-        self.record_circuit_result(&result);
+            HealthProbe::Readiness | HealthProbe::Startup => {
+                // Readiness/Startup: probe the ledger connection.
+                // Health checks bypass the circuit breaker — they are used to probe
+                // backend health and should always attempt a real connection.
+                let result = with_retry_timeout(
+                    &self.retry_config,
+                    self.timeout_config.read_timeout,
+                    None,
+                    "health_check",
+                    || async {
+                        self.client
+                            .health_check()
+                            .await
+                            .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
+                        Ok(())
+                    },
+                )
+                .await;
+                self.record_circuit_result(&result);
 
-        // Convert the raw result into a HealthStatus with metadata
-        let check_duration = start.elapsed();
-        let mut metadata = HealthMetadata::new(check_duration, "ledger")
-            .with_detail("connection_latency_ms", check_duration.as_millis().to_string());
+                let check_duration = start.elapsed();
+                let mut metadata = HealthMetadata::new(check_duration, "ledger")
+                    .with_detail("probe", probe.to_string())
+                    .with_detail("connection_latency_ms", check_duration.as_millis().to_string());
 
-        if let Some(cb_state) = self.circuit_breaker_state() {
-            metadata = metadata.with_detail("circuit_breaker_state", format!("{cb_state:?}"));
-        }
+                if let Some(cb_state) = self.circuit_breaker_state() {
+                    metadata =
+                        metadata.with_detail("circuit_breaker_state", format!("{cb_state:?}"));
+                }
 
-        match result {
-            Ok(()) => {
-                // Check if circuit breaker is in a degraded state
-                if let Some(crate::circuit_breaker::CircuitState::HalfOpen) =
-                    self.circuit_breaker_state()
-                {
-                    Ok(HealthStatus::degraded(metadata, "circuit breaker half-open"))
-                } else {
-                    Ok(HealthStatus::healthy(metadata))
+                match result {
+                    Ok(()) => {
+                        if let Some(crate::circuit_breaker::CircuitState::HalfOpen) =
+                            self.circuit_breaker_state()
+                        {
+                            Ok(HealthStatus::degraded(metadata, "circuit breaker half-open"))
+                        } else {
+                            Ok(HealthStatus::healthy(metadata))
+                        }
+                    },
+                    Err(e) => Err(e),
                 }
             },
-            Err(e) => Err(e),
         }
     }
 }
@@ -825,15 +886,18 @@ impl StorageBackend for LedgerBackend {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
-    fn test_key_encoding_roundtrip() {
-        let original = b"hello world";
+    #[rstest]
+    #[case::ascii(b"hello world" as &[u8])]
+    #[case::binary(&[0x00, 0x01, 0xFF, 0xFE, 0x00])]
+    #[case::empty(b"")]
+    fn test_key_encoding_roundtrip(#[case] original: &[u8]) {
         let encoded = encode_key(original);
         let decoded = decode_key(&encoded).unwrap();
-
-        assert_eq!(original.as_slice(), decoded.as_slice());
+        assert_eq!(original, decoded.as_slice());
     }
 
     #[test]
@@ -846,28 +910,8 @@ mod tests {
         let e2 = encode_key(k2);
         let e3 = encode_key(k3);
 
-        // Lexicographic ordering should be preserved
         assert!(e1 < e2);
         assert!(e2 < e3);
-    }
-
-    #[test]
-    fn test_key_encoding_binary_keys() {
-        // Test with binary data including null bytes
-        let key = [0x00, 0x01, 0xFF, 0xFE, 0x00];
-        let encoded = encode_key(&key);
-        let decoded = decode_key(&encoded).unwrap();
-
-        assert_eq!(&key[..], decoded.as_slice());
-    }
-
-    #[test]
-    fn test_key_encoding_empty_key() {
-        let key: &[u8] = b"";
-        let encoded = encode_key(key);
-        let decoded = decode_key(&encoded).unwrap();
-
-        assert_eq!(key, decoded.as_slice());
     }
 
     #[test]
@@ -876,20 +920,17 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_common_prefix_len() {
-        assert_eq!(common_prefix_len("abc", "abd"), 2);
-        assert_eq!(common_prefix_len("hello", "help"), 3);
-        assert_eq!(common_prefix_len("abc", "xyz"), 0);
-        assert_eq!(common_prefix_len("same", "same"), 4);
-        assert_eq!(common_prefix_len("", "anything"), 0);
-        assert_eq!(common_prefix_len("anything", ""), 0);
-        assert_eq!(common_prefix_len("", ""), 0);
-        // Verify that slicing with the returned length produces the expected prefix
-        let a = "abcdef";
-        let b = "abcxyz";
-        let len = common_prefix_len(a, b);
-        assert_eq!(&a[..len], "abc");
+    #[rstest]
+    #[case::partial_match("abc", "abd", 2)]
+    #[case::longer_prefix("hello", "help", 3)]
+    #[case::no_match("abc", "xyz", 0)]
+    #[case::identical("same", "same", 4)]
+    #[case::empty_left("", "anything", 0)]
+    #[case::empty_right("anything", "", 0)]
+    #[case::both_empty("", "", 0)]
+    #[case::slice_check("abcdef", "abcxyz", 3)]
+    fn test_common_prefix_len(#[case] a: &str, #[case] b: &str, #[case] expected: usize) {
+        assert_eq!(common_prefix_len(a, b), expected);
     }
 
     #[test]

@@ -328,6 +328,8 @@ impl CircuitBreaker {
 mod tests {
     use std::time::Duration;
 
+    use rstest::rstest;
+
     use super::*;
 
     fn test_config(
@@ -470,22 +472,22 @@ mod tests {
         assert_eq!(config.half_open_success_threshold(), DEFAULT_HALF_OPEN_SUCCESS_THRESHOLD);
     }
 
-    #[test]
-    fn config_zero_failure_threshold_rejected() {
-        let result = CircuitBreakerConfig::builder().failure_threshold(0).build();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn config_zero_recovery_timeout_rejected() {
-        let result = CircuitBreakerConfig::builder().recovery_timeout(Duration::ZERO).build();
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn config_zero_half_open_success_threshold_rejected() {
-        let result = CircuitBreakerConfig::builder().half_open_success_threshold(0).build();
-        assert!(result.is_err());
+    #[rstest]
+    #[case::zero_failure_threshold("failure_threshold")]
+    #[case::zero_recovery_timeout("recovery_timeout")]
+    #[case::zero_half_open_success_threshold("half_open_success_threshold")]
+    fn config_zero_field_rejected(#[case] field: &str) {
+        let result = match field {
+            "failure_threshold" => CircuitBreakerConfig::builder().failure_threshold(0).build(),
+            "recovery_timeout" => {
+                CircuitBreakerConfig::builder().recovery_timeout(Duration::ZERO).build()
+            },
+            "half_open_success_threshold" => {
+                CircuitBreakerConfig::builder().half_open_success_threshold(0).build()
+            },
+            _ => unreachable!(),
+        };
+        assert!(result.is_err(), "{field} = 0 should be rejected");
     }
 
     #[test]

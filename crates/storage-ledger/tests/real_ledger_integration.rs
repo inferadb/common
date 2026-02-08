@@ -34,7 +34,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use inferadb_common_storage::{NamespaceId, StorageBackend, VaultId};
+use inferadb_common_storage::{HealthProbe, NamespaceId, StorageBackend, VaultId};
 use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
 use inferadb_ledger_sdk::{ClientConfig, ServerSource};
 use tokio::time::sleep;
@@ -584,7 +584,8 @@ async fn test_real_ledger_health_check() {
 
     let backend = create_test_backend().await;
 
-    let status = backend.health_check().await.expect("health check should succeed");
+    let status =
+        backend.health_check(HealthProbe::Readiness).await.expect("health check should succeed");
     assert!(status.is_healthy(), "backend should be healthy");
 }
 

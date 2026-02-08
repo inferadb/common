@@ -8,7 +8,9 @@
 use std::ops::Bound;
 
 use bytes::Bytes;
-use inferadb_common_storage::{MemoryBackend, StorageBackend};
+use inferadb_common_storage::{
+    MemoryBackend, StorageBackend, assert_kv_pair, assert_range_results,
+};
 
 /// Helper: populate backend with keys "a", "b", "c", "d", "e".
 async fn populated_backend() -> MemoryBackend {
@@ -65,9 +67,7 @@ async fn test_single_key_inclusive_range() {
         .get_range(b"c".to_vec()..=b"c".to_vec())
         .await
         .expect("single key inclusive range should succeed");
-    assert_eq!(results.len(), 1, "should return exactly the one matching key");
-    assert_eq!(results[0].key, Bytes::from("c"));
-    assert_eq!(results[0].value, Bytes::from("vc"));
+    assert_range_results!(results, [("c", "vc")]);
 }
 
 /// `start..=start` for a key that does NOT exist should return empty.
@@ -93,9 +93,7 @@ async fn test_unbounded_start_exclusive_end() {
 
     let results =
         backend.get_range(..b"c".to_vec()).await.expect("unbounded start range should succeed");
-    assert_eq!(results.len(), 2, "should return keys a, b");
-    assert_eq!(results[0].key, Bytes::from("a"));
-    assert_eq!(results[1].key, Bytes::from("b"));
+    assert_range_results!(results, [("a", "va"), ("b", "vb")]);
 }
 
 /// `..=end` (unbounded start, inclusive end) should return all keys up to and including `end`.
@@ -107,10 +105,7 @@ async fn test_unbounded_start_inclusive_end() {
         .get_range(..=b"c".to_vec())
         .await
         .expect("unbounded start inclusive end should succeed");
-    assert_eq!(results.len(), 3, "should return keys a, b, c");
-    assert_eq!(results[0].key, Bytes::from("a"));
-    assert_eq!(results[1].key, Bytes::from("b"));
-    assert_eq!(results[2].key, Bytes::from("c"));
+    assert_range_results!(results, [("a", "va"), ("b", "vb"), ("c", "vc")]);
 }
 
 // ============================================================================
@@ -124,10 +119,7 @@ async fn test_unbounded_end_inclusive_start() {
 
     let results =
         backend.get_range(b"c".to_vec()..).await.expect("unbounded end range should succeed");
-    assert_eq!(results.len(), 3, "should return keys c, d, e");
-    assert_eq!(results[0].key, Bytes::from("c"));
-    assert_eq!(results[1].key, Bytes::from("d"));
-    assert_eq!(results[2].key, Bytes::from("e"));
+    assert_range_results!(results, [("c", "vc"), ("d", "vd"), ("e", "ve")]);
 }
 
 // ============================================================================
@@ -144,8 +136,8 @@ async fn test_fully_unbounded_range() {
         .await
         .expect("fully unbounded range should succeed");
     assert_eq!(results.len(), 5, "should return all 5 keys");
-    assert_eq!(results[0].key, Bytes::from("a"));
-    assert_eq!(results[4].key, Bytes::from("e"));
+    assert_kv_pair!(results[0], "a", "va");
+    assert_kv_pair!(results[4], "e", "ve");
 }
 
 /// Fully unbounded range on an empty backend should return empty vec.
@@ -173,10 +165,7 @@ async fn test_both_inclusive_bounds() {
         .get_range((Bound::Included(b"b".to_vec()), Bound::Included(b"d".to_vec())))
         .await
         .expect("both inclusive bounds should succeed");
-    assert_eq!(results.len(), 3, "should return b, c, d");
-    assert_eq!(results[0].key, Bytes::from("b"));
-    assert_eq!(results[1].key, Bytes::from("c"));
-    assert_eq!(results[2].key, Bytes::from("d"));
+    assert_range_results!(results, [("b", "vb"), ("c", "vc"), ("d", "vd")]);
 }
 
 /// `Excluded(start)..Excluded(end)` — both boundaries excluded.
@@ -188,10 +177,7 @@ async fn test_both_excluded_bounds() {
         .get_range((Bound::Excluded(b"a".to_vec()), Bound::Excluded(b"e".to_vec())))
         .await
         .expect("both excluded bounds should succeed");
-    assert_eq!(results.len(), 3, "should return b, c, d");
-    assert_eq!(results[0].key, Bytes::from("b"));
-    assert_eq!(results[1].key, Bytes::from("c"));
-    assert_eq!(results[2].key, Bytes::from("d"));
+    assert_range_results!(results, [("b", "vb"), ("c", "vc"), ("d", "vd")]);
 }
 
 /// `Excluded(start)..Included(end)` — start excluded, end included.
@@ -203,9 +189,7 @@ async fn test_excluded_start_included_end() {
         .get_range((Bound::Excluded(b"b".to_vec()), Bound::Included(b"d".to_vec())))
         .await
         .expect("excluded start, included end should succeed");
-    assert_eq!(results.len(), 2, "should return c, d");
-    assert_eq!(results[0].key, Bytes::from("c"));
-    assert_eq!(results[1].key, Bytes::from("d"));
+    assert_range_results!(results, [("c", "vc"), ("d", "vd")]);
 }
 
 /// `Included(start)..Excluded(end)` — start included, end excluded.
@@ -217,9 +201,7 @@ async fn test_included_start_excluded_end() {
         .get_range((Bound::Included(b"b".to_vec()), Bound::Excluded(b"d".to_vec())))
         .await
         .expect("included start, excluded end should succeed");
-    assert_eq!(results.len(), 2, "should return b, c");
-    assert_eq!(results[0].key, Bytes::from("b"));
-    assert_eq!(results[1].key, Bytes::from("c"));
+    assert_range_results!(results, [("b", "vb"), ("c", "vc")]);
 }
 
 /// `Unbounded..Unbounded` via tuple bounds — should return everything.
@@ -243,9 +225,7 @@ async fn test_excluded_start_unbounded_end() {
         .get_range((Bound::Excluded(b"c".to_vec()), Bound::<Vec<u8>>::Unbounded))
         .await
         .expect("excluded start, unbounded end should succeed");
-    assert_eq!(results.len(), 2, "should return d, e");
-    assert_eq!(results[0].key, Bytes::from("d"));
-    assert_eq!(results[1].key, Bytes::from("e"));
+    assert_range_results!(results, [("d", "vd"), ("e", "ve")]);
 }
 
 /// `Unbounded..Excluded(end)` — no start, excluded end.
@@ -257,9 +237,7 @@ async fn test_unbounded_start_excluded_end() {
         .get_range((Bound::<Vec<u8>>::Unbounded, Bound::Excluded(b"c".to_vec())))
         .await
         .expect("unbounded start, excluded end should succeed");
-    assert_eq!(results.len(), 2, "should return a, b");
-    assert_eq!(results[0].key, Bytes::from("a"));
-    assert_eq!(results[1].key, Bytes::from("b"));
+    assert_range_results!(results, [("a", "va"), ("b", "vb")]);
 }
 
 // ============================================================================
@@ -300,8 +278,7 @@ async fn test_boundary_between_existing_keys() {
         .get_range(b"b".to_vec()..b"ba".to_vec())
         .await
         .expect("range with boundary between keys should succeed");
-    assert_eq!(results.len(), 1, "only 'b' falls in range [b, ba)");
-    assert_eq!(results[0].key, Bytes::from("b"));
+    assert_range_results!(results, [("b", "vb")]);
 }
 
 // ============================================================================

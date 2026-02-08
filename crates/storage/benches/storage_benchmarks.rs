@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use inferadb_common_storage::{MemoryBackend, StorageBackend};
+use inferadb_common_storage::{HealthProbe, MemoryBackend, StorageBackend};
 use tokio::runtime::Runtime;
 
 // ---------------------------------------------------------------------------
@@ -510,7 +510,7 @@ fn health_check(c: &mut Criterion) {
         b.to_async(&rt).iter(|| {
             let be = backend.clone();
             async move {
-                be.health_check().await.expect("health check failed");
+                be.health_check(HealthProbe::Readiness).await.expect("health check failed");
             }
         });
     });

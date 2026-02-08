@@ -44,7 +44,7 @@ use parking_lot::Mutex;
 use crate::{
     StorageBackend,
     error::{StorageError, StorageResult},
-    health::HealthStatus,
+    health::{HealthProbe, HealthStatus},
     metrics::{Metrics, MetricsCollector},
     transaction::Transaction,
     types::KeyValue,
@@ -375,9 +375,9 @@ impl<B: StorageBackend> StorageBackend for RateLimitedBackend<B> {
         self.inner.transaction().await
     }
 
-    async fn health_check(&self) -> StorageResult<HealthStatus> {
+    async fn health_check(&self, probe: HealthProbe) -> StorageResult<HealthStatus> {
         // Health checks are always exempt from rate limiting
-        self.inner.health_check().await
+        self.inner.health_check(probe).await
     }
 }
 
@@ -391,7 +391,7 @@ impl<B: MetricsCollector> MetricsCollector for RateLimitedBackend<B> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::MemoryBackend;
+    use crate::{MemoryBackend, assert_storage_error};
 
     #[test]
     fn config_creation() {
@@ -443,8 +443,7 @@ mod tests {
             assert!(limiter.check(b"key").is_ok());
         }
         // Should be rejected
-        let err = limiter.check(b"key").unwrap_err();
-        assert!(matches!(err, StorageError::RateLimitExceeded { .. }));
+        assert_storage_error!(limiter.check(b"key"), RateLimitExceeded);
     }
 
     #[test]
@@ -492,8 +491,7 @@ mod tests {
         limited.set(b"b".to_vec(), b"v".to_vec()).await.unwrap();
 
         // Third should fail
-        let err = limited.set(b"c".to_vec(), b"v".to_vec()).await.unwrap_err();
-        assert!(matches!(err, StorageError::RateLimitExceeded { .. }));
+        assert_storage_error!(limited.set(b"c".to_vec(), b"v".to_vec()).await, RateLimitExceeded);
     }
 
     #[tokio::test]
@@ -507,7 +505,7 @@ mod tests {
         limited.set(b"a".to_vec(), b"v".to_vec()).await.unwrap();
 
         // Health check should still succeed and return a HealthStatus
-        let status = limited.health_check().await.unwrap();
+        let status = limited.health_check(HealthProbe::Readiness).await.unwrap();
         assert!(status.is_healthy());
     }
 

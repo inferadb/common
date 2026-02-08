@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use inferadb_common_storage::{MemoryBackend, StorageBackend};
+use inferadb_common_storage::{HealthProbe, MemoryBackend, StorageBackend};
 use tracing::Subscriber;
 use tracing_subscriber::{layer::SubscriberExt, registry::LookupSpan};
 
@@ -110,7 +110,7 @@ async fn memory_backend_health_check_creates_span() {
     let _guard = tracing::subscriber::set_default(subscriber);
 
     let backend = MemoryBackend::new();
-    let _ = backend.health_check().await;
+    let _ = backend.health_check(HealthProbe::Readiness).await;
 
     let recorded = spans.lock().expect("lock poisoned");
     assert!(
@@ -172,7 +172,7 @@ async fn all_crud_operations_produce_distinct_spans() {
     let _ = backend.get_range(b"a".to_vec()..b"z".to_vec()).await;
     backend.clear_range(b"a".to_vec()..b"z".to_vec()).await.expect("clear_range");
     let _ = backend.transaction().await;
-    let _ = backend.health_check().await;
+    let _ = backend.health_check(HealthProbe::Readiness).await;
 
     let recorded = spans.lock().expect("lock poisoned");
     let expected =
