@@ -95,6 +95,38 @@ fn current_span_id() -> Option<tracing::span::Id> {
     tracing::Span::current().id()
 }
 
+/// Context about retry state when a timeout occurs during a retry loop.
+///
+/// When `with_retry_timeout` times out, this struct captures what the retry
+/// loop was doing at the moment the deadline fired. Operators can use this
+/// to distinguish between timeout-during-backoff (retry config may be too
+/// aggressive) and timeout-during-backend-call (backend is slow or overloaded).
+#[derive(Debug)]
+pub struct TimeoutContext {
+    /// Number of retry attempts that completed before the timeout fired.
+    pub attempts_completed: u32,
+    /// Whether the timeout fired during the backoff sleep between retries
+    /// (as opposed to during an actual backend call).
+    pub during_backoff: bool,
+    /// The last error returned by the backend before the timeout.
+    /// `None` if the timeout fired during the very first attempt.
+    pub last_error: Option<Box<StorageError>>,
+}
+
+impl std::fmt::Display for TimeoutContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.during_backoff {
+            write!(
+                f,
+                "timeout during retry backoff after {} completed attempt(s)",
+                self.attempts_completed
+            )
+        } else {
+            write!(f, "timeout during backend operation on attempt {}", self.attempts_completed + 1)
+        }
+    }
+}
+
 /// Errors that can occur during storage operations.
 ///
 /// This enum represents the canonical set of errors that any storage backend
@@ -183,7 +215,15 @@ pub enum StorageError {
     ///
     /// The storage operation exceeded its configured time limit. This can occur
     /// during long-running queries, slow network conditions, or backend overload.
+    ///
+    /// When the timeout occurs during a retry loop (via `with_retry_timeout`),
+    /// the optional [`TimeoutContext`] provides details about the retry state
+    /// at the moment the deadline fired, helping operators distinguish between
+    /// timeout-during-backoff and timeout-during-backend-call.
     Timeout {
+        /// Retry context captured when the timeout fires during a retry loop.
+        /// `None` for timeouts outside of retry loops (e.g., standalone operations).
+        context: Option<TimeoutContext>,
         /// Span ID captured at error creation for trace correlation.
         span_id: Option<tracing::span::Id>,
     },
@@ -268,8 +308,12 @@ impl fmt::Display for StorageError {
                 write!(f, "Internal error")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::Timeout { span_id } => {
-                write!(f, "Operation timeout")?;
+            Self::Timeout { context, span_id } => {
+                if let Some(ctx) = context {
+                    write!(f, "Operation timeout: {ctx}")?;
+                } else {
+                    write!(f, "Operation timeout")?;
+                }
                 fmt_span_suffix(f, span_id)
             },
             Self::CasRetriesExhausted { attempts, span_id } => {
@@ -378,12 +422,27 @@ impl StorageError {
         }
     }
 
-    /// Creates a new `Timeout` error.
+    /// Creates a new `Timeout` error without retry context.
+    ///
+    /// Use [`timeout_with_context`](Self::timeout_with_context) when the
+    /// timeout occurs during a retry loop and retry state is available.
     ///
     /// Captures the current tracing span ID for log correlation.
     #[must_use]
     pub fn timeout() -> Self {
-        Self::Timeout { span_id: current_span_id() }
+        Self::Timeout { context: None, span_id: current_span_id() }
+    }
+
+    /// Creates a new `Timeout` error with retry context.
+    ///
+    /// This is used by `with_retry_timeout` to provide operators with
+    /// detailed information about what the retry loop was doing when the
+    /// overall timeout fired.
+    ///
+    /// Captures the current tracing span ID for log correlation.
+    #[must_use]
+    pub fn timeout_with_context(context: TimeoutContext) -> Self {
+        Self::Timeout { context: Some(context), span_id: current_span_id() }
     }
 
     /// Creates a new `CasRetriesExhausted` error.
@@ -478,6 +537,16 @@ impl StorageError {
             Self::Internal { message, .. } => {
                 format!("Internal error: {message}")
             },
+            Self::Timeout { context: Some(ctx), .. } => {
+                let mut detail = format!(
+                    "Timeout: {ctx}, during_backoff={}, attempts_completed={}",
+                    ctx.during_backoff, ctx.attempts_completed,
+                );
+                if let Some(last_err) = &ctx.last_error {
+                    detail.push_str(&format!(", last_error={}", last_err.detail()));
+                }
+                detail
+            },
             // Variants with no additional private context — detail matches Display
             _ => self.to_string(),
         }
@@ -563,6 +632,15 @@ mod tests {
                     .is_some()
             );
             assert!(StorageError::timeout().span_id().is_some());
+            assert!(
+                StorageError::timeout_with_context(TimeoutContext {
+                    attempts_completed: 1,
+                    during_backoff: false,
+                    last_error: None,
+                })
+                .span_id()
+                .is_some()
+            );
             assert!(StorageError::cas_retries_exhausted(3).span_id().is_some());
             assert!(StorageError::circuit_open().span_id().is_some());
             assert!(
@@ -639,5 +717,87 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn timeout_without_context_display() {
+        let err = StorageError::timeout();
+        assert_eq!(err.to_string(), "Operation timeout");
+    }
+
+    #[test]
+    fn timeout_with_context_display_during_backoff() {
+        let ctx = TimeoutContext {
+            attempts_completed: 3,
+            during_backoff: true,
+            last_error: Some(Box::new(StorageError::connection("unreachable"))),
+        };
+        let err = StorageError::timeout_with_context(ctx);
+        let display = err.to_string();
+        assert!(
+            display.contains("timeout during retry backoff after 3 completed attempt(s)"),
+            "unexpected display: {display}"
+        );
+    }
+
+    #[test]
+    fn timeout_with_context_display_during_backend_op() {
+        let ctx = TimeoutContext {
+            attempts_completed: 1,
+            during_backoff: false,
+            last_error: Some(Box::new(StorageError::connection("slow"))),
+        };
+        let err = StorageError::timeout_with_context(ctx);
+        let display = err.to_string();
+        assert!(
+            display.contains("timeout during backend operation on attempt 2"),
+            "unexpected display: {display}"
+        );
+    }
+
+    #[test]
+    fn timeout_with_context_detail_includes_all_fields() {
+        let ctx = TimeoutContext {
+            attempts_completed: 2,
+            during_backoff: true,
+            last_error: Some(Box::new(StorageError::connection("ledger.internal refused"))),
+        };
+        let err = StorageError::timeout_with_context(ctx);
+        let detail = err.detail();
+        assert!(detail.contains("during_backoff=true"), "detail: {detail}");
+        assert!(detail.contains("attempts_completed=2"), "detail: {detail}");
+        assert!(
+            detail.contains("last_error=Connection error: ledger.internal refused"),
+            "detail: {detail}"
+        );
+    }
+
+    #[test]
+    fn timeout_with_context_detail_no_last_error() {
+        let ctx = TimeoutContext { attempts_completed: 0, during_backoff: false, last_error: None };
+        let err = StorageError::timeout_with_context(ctx);
+        let detail = err.detail();
+        assert!(detail.contains("attempts_completed=0"), "detail: {detail}");
+        assert!(!detail.contains("last_error="), "detail should not contain last_error: {detail}");
+    }
+
+    #[test]
+    fn timeout_with_context_constructor_captures_span() {
+        with_subscriber(|| {
+            let span = tracing::info_span!("timeout_ctx_test");
+            let _guard = span.enter();
+
+            let ctx =
+                TimeoutContext { attempts_completed: 1, during_backoff: false, last_error: None };
+            let err = StorageError::timeout_with_context(ctx);
+            assert!(err.span_id().is_some(), "should capture span");
+        });
+    }
+
+    #[test]
+    fn timeout_with_context_is_transient() {
+        let ctx = TimeoutContext { attempts_completed: 1, during_backoff: true, last_error: None };
+        let err = StorageError::timeout_with_context(ctx);
+        assert!(err.is_transient(), "Timeout should be transient");
     }
 }

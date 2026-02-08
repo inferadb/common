@@ -100,7 +100,7 @@ pub mod types;
 // Re-export primary types at crate root for convenience
 pub use backend::StorageBackend;
 pub use batch::{BatchConfig, BatchFlushStats, BatchOperation, BatchResult, BatchWriter};
-pub use error::{BoxError, ConfigError, StorageError, StorageResult};
+pub use error::{BoxError, ConfigError, StorageError, StorageResult, TimeoutContext};
 pub use health::{HealthMetadata, HealthStatus};
 pub use memory::MemoryBackend;
 pub use metrics::{

@@ -13,12 +13,29 @@
 //! - Random jitter of 0–50% of the computed delay is added to prevent thundering-herd effects
 //!   across multiple clients
 
-use std::{future::Future, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
-use inferadb_common_storage::{Metrics, StorageError, StorageResult};
+use inferadb_common_storage::{Metrics, StorageError, StorageResult, TimeoutContext};
+use parking_lot::Mutex;
 use rand::Rng;
 
 use crate::config::{CasRetryConfig, RetryConfig};
+
+/// Tracks retry state for timeout context reporting.
+///
+/// Shared between `with_retry_tracked` and `with_retry_timeout` via `Arc<Mutex<...>>`.
+/// When a timeout cancels the retry loop, the timeout handler reads this state
+/// to produce a [`TimeoutContext`] with details about what the retry loop was doing.
+#[derive(Debug, Default)]
+struct RetryState {
+    /// Number of attempts that completed (returned a result, whether success or error).
+    attempts_completed: u32,
+    /// Whether the retry loop is currently sleeping (backoff) vs executing an operation.
+    during_backoff: bool,
+    /// The detail string of the last error returned by the backend.
+    /// Stored as a string because `StorageError` is not `Clone`.
+    last_error_detail: Option<String>,
+}
 
 /// Executes `operation` with automatic retry on transient errors.
 ///
@@ -96,13 +113,99 @@ where
         .unwrap_or_else(|| StorageError::internal("retry loop completed without result or error")))
 }
 
+/// Like [`with_retry`] but also updates a shared `RetryState` so that
+/// `with_retry_timeout` can produce informative timeout errors.
+async fn with_retry_tracked<F, Fut, T>(
+    config: &RetryConfig,
+    metrics: Option<&Metrics>,
+    operation_name: &str,
+    mut operation: F,
+    state: Arc<Mutex<RetryState>>,
+) -> StorageResult<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = StorageResult<T>>,
+{
+    let mut last_error: Option<StorageError> = None;
+
+    for attempt in 0..=config.max_retries {
+        // Mark: entering backend call (not in backoff)
+        state.lock().during_backoff = false;
+
+        match operation().await {
+            Ok(value) => {
+                if attempt > 0 {
+                    tracing::debug!(
+                        operation = operation_name,
+                        attempt = attempt + 1,
+                        "operation succeeded after retry",
+                    );
+                }
+                return Ok(value);
+            },
+            Err(err) if err.is_transient() && attempt < config.max_retries => {
+                if let Some(m) = metrics {
+                    m.record_retry();
+                }
+                let delay = compute_backoff(config, attempt);
+                tracing::debug!(
+                    operation = operation_name,
+                    attempt = attempt + 1,
+                    max_attempts = config.max_retries + 1,
+                    delay_ms = delay.as_millis() as u64,
+                    error = %err,
+                    "transient error, retrying after backoff",
+                );
+
+                // Update shared state before sleeping
+                {
+                    let mut s = state.lock();
+                    s.attempts_completed = attempt + 1;
+                    s.during_backoff = true;
+                    s.last_error_detail = Some(err.detail());
+                }
+
+                last_error = Some(err);
+                tokio::time::sleep(delay).await;
+            },
+            Err(err) => {
+                // Non-transient error on any attempt, or transient on last attempt
+                {
+                    let mut s = state.lock();
+                    s.attempts_completed = attempt + 1;
+                    s.last_error_detail = Some(err.detail());
+                }
+                if attempt > 0
+                    && err.is_transient()
+                    && let Some(m) = metrics
+                {
+                    m.record_retry_exhausted();
+                }
+                return Err(err);
+            },
+        }
+    }
+
+    // All retries exhausted — return the last transient error
+    if let Some(m) = metrics {
+        m.record_retry_exhausted();
+    }
+    Err(last_error
+        .unwrap_or_else(|| StorageError::internal("retry loop completed without result or error")))
+}
+
 /// Executes `operation` with retry **and** an overall timeout.
 ///
 /// This wraps [`with_retry`] with `tokio::time::timeout`, bounding the
 /// total wall-clock time of the operation including all retry attempts
 /// and backoff sleeps.
 ///
-/// Returns `StorageError::Timeout` if the deadline is exceeded.
+/// When the timeout fires, the resulting `StorageError::Timeout` includes
+/// a [`TimeoutContext`] that captures the retry state at the moment of
+/// cancellation — how many attempts completed, whether the timeout hit
+/// during a backoff sleep or a backend call, and the last backend error.
+/// This helps operators distinguish configuration issues (timeout too
+/// short for retry config) from backend slowness.
 pub(crate) async fn with_retry_timeout<F, Fut, T>(
     config: &RetryConfig,
     timeout: Duration,
@@ -114,9 +217,31 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = StorageResult<T>>,
 {
-    tokio::time::timeout(timeout, with_retry(config, metrics, operation_name, operation))
-        .await
-        .unwrap_or(Err(StorageError::timeout()))
+    let state = Arc::new(Mutex::new(RetryState::default()));
+    let state_clone = Arc::clone(&state);
+
+    match tokio::time::timeout(
+        timeout,
+        with_retry_tracked(config, metrics, operation_name, operation, state_clone),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_elapsed) => {
+            // Timeout fired — read the retry state to build context
+            let s = state.lock();
+            let last_error = s
+                .last_error_detail
+                .as_ref()
+                .map(|detail| Box::new(StorageError::internal(detail.clone())));
+            let context = TimeoutContext {
+                attempts_completed: s.attempts_completed,
+                during_backoff: s.during_backoff,
+                last_error,
+            };
+            Err(StorageError::timeout_with_context(context))
+        },
+    }
 }
 
 /// Retries a read-modify-write cycle on CAS conflict.
@@ -187,7 +312,7 @@ fn compute_backoff(config: &RetryConfig, attempt: u32) -> Duration {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -592,5 +717,165 @@ mod tests {
 
         assert!(result.is_ok());
         assert_eq!(call_count.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn test_timeout_during_first_attempt_has_context() {
+        let config = RetryConfig::builder()
+            .max_retries(3)
+            .initial_backoff(Duration::from_millis(10))
+            .build()
+            .unwrap();
+
+        let result: StorageResult<i32> =
+            with_retry_timeout(&config, Duration::from_millis(50), None, "test_op", || async {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                Ok(42)
+            })
+            .await;
+
+        let err = result.unwrap_err();
+        match &err {
+            StorageError::Timeout { context: Some(ctx), .. } => {
+                assert_eq!(ctx.attempts_completed, 0, "no attempt should have completed");
+                assert!(!ctx.during_backoff, "should not be during backoff on first attempt");
+                assert!(ctx.last_error.is_none(), "no prior error on first attempt");
+            },
+            other => panic!("expected Timeout with context, got: {other:?}"),
+        }
+        // Verify Display includes context
+        let display = err.to_string();
+        assert!(
+            display.contains("timeout during backend operation on attempt 1"),
+            "unexpected display: {display}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_timeout_during_backoff_sleep_has_context() {
+        // Fast-failing operation + long backoff → timeout fires during sleep
+        let config = RetryConfig::builder()
+            .max_retries(100)
+            .initial_backoff(Duration::from_secs(60))
+            .max_backoff(Duration::from_secs(60))
+            .build()
+            .unwrap();
+
+        let result: StorageResult<i32> =
+            with_retry_timeout(&config, Duration::from_millis(50), None, "test_op", || async {
+                Err(StorageError::connection("test failure"))
+            })
+            .await;
+
+        let err = result.unwrap_err();
+        match &err {
+            StorageError::Timeout { context: Some(ctx), .. } => {
+                assert!(ctx.attempts_completed >= 1, "at least one attempt should complete");
+                assert!(ctx.during_backoff, "should be during backoff when timeout fires");
+                assert!(ctx.last_error.is_some(), "should have last error from the failed attempt");
+            },
+            other => panic!("expected Timeout with context, got: {other:?}"),
+        }
+        let display = err.to_string();
+        assert!(display.contains("timeout during retry backoff"), "unexpected display: {display}");
+    }
+
+    #[tokio::test]
+    async fn test_timeout_during_nth_retry_attempt_has_context() {
+        // First attempt fails fast, second attempt hangs → timeout during backend op
+        let call_count = AtomicU32::new(0);
+
+        let config = RetryConfig::builder()
+            .max_retries(10)
+            .initial_backoff(Duration::from_millis(1))
+            .max_backoff(Duration::from_millis(1))
+            .build()
+            .unwrap();
+
+        let result: StorageResult<i32> =
+            with_retry_timeout(&config, Duration::from_millis(100), None, "test_op", || {
+                let attempt = call_count.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    if attempt < 1 {
+                        // First attempt: fail fast with transient error
+                        Err(StorageError::connection("transient"))
+                    } else {
+                        // Second attempt: hang
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        Ok(42)
+                    }
+                }
+            })
+            .await;
+
+        let err = result.unwrap_err();
+        match &err {
+            StorageError::Timeout { context: Some(ctx), .. } => {
+                assert_eq!(ctx.attempts_completed, 1, "first attempt completed before timeout");
+                assert!(!ctx.during_backoff, "should be during backend op, not backoff");
+                assert!(ctx.last_error.is_some(), "should have last error from first attempt");
+            },
+            other => panic!("expected Timeout with context, got: {other:?}"),
+        }
+        let display = err.to_string();
+        assert!(
+            display.contains("timeout during backend operation on attempt 2"),
+            "unexpected display: {display}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_timeout_detail_includes_retry_context() {
+        let config = RetryConfig::builder()
+            .max_retries(100)
+            .initial_backoff(Duration::from_secs(60))
+            .max_backoff(Duration::from_secs(60))
+            .build()
+            .unwrap();
+
+        let result: StorageResult<i32> =
+            with_retry_timeout(&config, Duration::from_millis(50), None, "test_op", || async {
+                Err(StorageError::connection("ledger unreachable"))
+            })
+            .await;
+
+        let err = result.unwrap_err();
+        let detail = err.detail();
+        assert!(
+            detail.contains("during_backoff=true"),
+            "detail should include during_backoff: {detail}"
+        );
+        assert!(
+            detail.contains("attempts_completed="),
+            "detail should include attempts_completed: {detail}"
+        );
+        assert!(detail.contains("last_error="), "detail should include last_error: {detail}");
+    }
+
+    #[tokio::test]
+    async fn test_timeout_without_retries_has_context() {
+        // max_retries=0 means just one attempt, no retries
+        let config = RetryConfig::builder()
+            .max_retries(0)
+            .initial_backoff(Duration::from_millis(1))
+            .build()
+            .unwrap();
+
+        let result: StorageResult<i32> =
+            with_retry_timeout(&config, Duration::from_millis(50), None, "test_op", || async {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                Ok(42)
+            })
+            .await;
+
+        let err = result.unwrap_err();
+        match &err {
+            StorageError::Timeout { context: Some(ctx), .. } => {
+                assert_eq!(ctx.attempts_completed, 0);
+                assert!(!ctx.during_backoff);
+                assert!(ctx.last_error.is_none());
+            },
+            other => panic!("expected Timeout with context, got: {other:?}"),
+        }
     }
 }
