@@ -341,6 +341,8 @@ impl SigningKeyCache {
     /// and bumps the invalidation generation counter to prevent any in-flight
     /// L2 fetches from re-populating L1 with stale data.
     ///
+    /// An audit event is emitted at INFO level for compliance tracking.
+    ///
     /// Call this when a key is known to be revoked or deleted.
     /// The next lookup will fetch fresh state from Ledger.
     pub async fn invalidate(&self, org_id: NamespaceId, kid: &str) {
@@ -349,12 +351,18 @@ impl SigningKeyCache {
         self.invalidation_gen.fetch_add(1, Ordering::Release);
         self.cache.invalidate(&cache_key).await;
         self.fallback.invalidate(&cache_key).await;
-        tracing::debug!(org_id = %org_id, kid = kid, "Invalidated signing key from all cache tiers");
+        tracing::info!(
+            audit.action = "invalidate_cache",
+            audit.resource = %format_args!("ns:{org_id}/kid:{kid}"),
+            audit.result = "success",
+            "audit_event"
+        );
     }
 
     /// Clears all keys from all cache tiers.
     ///
     /// Removes all entries from both the L1 TTL cache and the L3 fallback cache.
+    /// An audit event is emitted at INFO level for compliance tracking.
     /// Use sparingly - this causes a spike in Ledger fetches. Useful during
     /// key rotation events where all cached keys should be refreshed.
     pub async fn clear_all(&self) {
@@ -364,10 +372,13 @@ impl SigningKeyCache {
         self.invalidation_gen.fetch_add(1, Ordering::Release);
         self.cache.invalidate_all();
         self.fallback.invalidate_all();
-        tracing::warn!(
-            l1_cached_keys = l1_count,
-            fallback_cached_keys = fallback_count,
-            "Cleared all signing keys from all cache tiers"
+        tracing::info!(
+            audit.action = "clear_cache",
+            audit.resource = "all_signing_keys",
+            audit.result = "success",
+            audit.l1_evicted = l1_count,
+            audit.l3_evicted = fallback_count,
+            "audit_event"
         );
     }
 

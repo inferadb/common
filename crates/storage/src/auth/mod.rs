@@ -53,6 +53,8 @@
 //! # });
 //! ```
 
+pub mod audit;
+pub mod audited_store;
 mod metrics;
 mod signing_key;
 mod store;
