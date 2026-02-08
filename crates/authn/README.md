@@ -209,6 +209,74 @@ fn custom_validation(token: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Fuzz Testing
+
+This crate includes fuzz targets for security-critical JWT parsing paths using
+[cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) (LLVM libFuzzer).
+
+### Prerequisites
+
+```bash
+cargo install cargo-fuzz
+```
+
+### Fuzz Targets
+
+| Target             | Description                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------- |
+| `fuzz_jwt_parsing` | Raw byte strings fed to `decode_jwt_header`, `decode_jwt_claims`, `validate_claims`   |
+| `fuzz_jwt_claims`  | Structured inputs via `arbitrary` crate — generates valid-ish JWTs with random fields |
+
+### Running Fuzz Tests
+
+```bash
+# Run the raw JWT parsing fuzzer (runs indefinitely, Ctrl+C to stop)
+cd crates/authn
+cargo +nightly fuzz run fuzz_jwt_parsing
+
+# Run with a time limit (60 seconds)
+cargo +nightly fuzz run fuzz_jwt_parsing -- -max_total_time=60
+
+# Run the structured claims fuzzer
+cargo +nightly fuzz run fuzz_jwt_claims -- -max_total_time=60
+
+# Run with more parallelism
+cargo +nightly fuzz run fuzz_jwt_parsing -- -max_total_time=120 -jobs=4 -workers=4
+```
+
+### Seed Corpus
+
+Pre-built seed corpus files live in `fuzz/corpus/fuzz_jwt_parsing/` covering known
+attack vectors:
+
+- `alg_none` / `alg_hs256` / `alg_hs384` / `alg_hs512` — algorithm confusion attacks
+- `path_traversal_kid` / `null_byte_kid` — kid injection attacks
+- `oversized_payload` / `oversized_jti` — resource exhaustion
+- `invalid_base64` / `invalid_payload_json` — malformed encoding
+- `empty` / `single_dot` / `three_dots` — boundary cases
+
+### Extending the Corpus
+
+Add new seed inputs to `fuzz/corpus/<target_name>/`:
+
+```bash
+echo -n 'your-test-input' > fuzz/corpus/fuzz_jwt_parsing/my_new_case
+```
+
+The fuzzer will use seeds as starting points and mutate from there.
+
+### Reproducing Crashes
+
+If the fuzzer finds a crash, it saves the input in `fuzz/artifacts/<target>/`:
+
+```bash
+# Reproduce a specific crash
+cargo +nightly fuzz run fuzz_jwt_parsing fuzz/artifacts/fuzz_jwt_parsing/crash-<hash>
+```
+
+Fix the bug, add the crash input as a regression test in `jwt.rs::tests::fuzz_regressions`,
+and commit the fix.
+
 ## License
 
 Dual-licensed under MIT or Apache 2.0.

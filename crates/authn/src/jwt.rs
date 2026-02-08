@@ -654,6 +654,211 @@ mod tests {
             }
         }
     }
+
+    /// Regression tests from fuzz corpus: known-bad JWT inputs must never panic.
+    /// These cover attack vectors (alg:none, HS256, path traversal in kid, null bytes)
+    /// and edge cases (empty input, oversized payloads, invalid base64, malformed JSON).
+    mod fuzz_regressions {
+        use super::*;
+
+        /// Helper: exercise all parsing functions on a token string.
+        /// Returns `true` if claims were decoded (for chaining further checks).
+        fn exercise_parsing(token: &str) -> bool {
+            let _ = decode_jwt_header(token);
+            let claims_result = decode_jwt_claims(token);
+            if let Ok(ref claims) = claims_result {
+                let _ = validate_claims(claims, None);
+                let _ = validate_claims(claims, Some("https://api.inferadb.com/evaluate"));
+                let _ = validate_claims(claims, Some(&claims.aud));
+            }
+            claims_result.is_ok()
+        }
+
+        #[test]
+        fn empty_input_no_panic() {
+            assert!(!exercise_parsing(""));
+        }
+
+        #[test]
+        fn single_dot_no_panic() {
+            assert!(!exercise_parsing("."));
+        }
+
+        #[test]
+        fn two_dots_no_panic() {
+            assert!(!exercise_parsing(".."));
+        }
+
+        #[test]
+        fn three_dots_no_panic() {
+            assert!(!exercise_parsing("..."));
+        }
+
+        #[test]
+        fn plain_string_no_panic() {
+            assert!(!exercise_parsing("not-a-jwt"));
+        }
+
+        #[test]
+        fn alg_none_no_panic() {
+            // alg:none attack — must be rejected, not panic
+            let token = "eyJhbGciOiJub25lIn0.eyJpc3MiOiJ0ZXN0In0.";
+            assert!(!exercise_parsing(token));
+        }
+
+        #[test]
+        fn alg_hs256_no_panic() {
+            // Symmetric algorithm attack
+            let token = "eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJ0ZXN0In0.";
+            assert!(!exercise_parsing(token));
+        }
+
+        #[test]
+        fn invalid_base64_segments_no_panic() {
+            assert!(!exercise_parsing("!!!.!!!.!!!"));
+        }
+
+        #[test]
+        fn invalid_payload_base64_no_panic() {
+            let token = "eyJhbGciOiJFZERTQSJ9.not-valid-base64.sig";
+            assert!(!exercise_parsing(token));
+        }
+
+        #[test]
+        fn invalid_payload_json_no_panic() {
+            // Valid base64 but invalid JSON payload
+            use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+            let header = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"EdDSA\"}");
+            let payload = URL_SAFE_NO_PAD.encode(b"not-json");
+            let token = format!("{header}.{payload}.sig");
+            assert!(!exercise_parsing(&token));
+        }
+
+        #[test]
+        fn empty_claims_no_panic() {
+            use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+            let header = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"EdDSA\"}");
+            let payload = URL_SAFE_NO_PAD.encode(
+                b"{\"iss\":\"\",\"sub\":\"\",\"aud\":\"\",\"exp\":0,\"iat\":0,\"scope\":\"\"}",
+            );
+            let token = format!("{header}.{payload}.sig");
+            // Claims should decode but iss is empty → MissingClaim error
+            assert!(!exercise_parsing(&token));
+        }
+
+        #[test]
+        fn path_traversal_kid_no_panic() {
+            use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+            let header =
+                URL_SAFE_NO_PAD.encode(b"{\"alg\":\"EdDSA\",\"kid\":\"../../../etc/passwd\"}");
+            let payload = URL_SAFE_NO_PAD.encode(
+                b"{\"iss\":\"x\",\"sub\":\"x\",\"aud\":\"x\",\"exp\":9999999999,\"iat\":1,\"scope\":\"x\"}"
+            );
+            let token = format!("{header}.{payload}.");
+            // Header with path traversal kid — should parse but kid validation rejects
+            let _ = decode_jwt_header(&token);
+            let _ = decode_jwt_claims(&token);
+        }
+
+        #[test]
+        fn null_byte_kid_no_panic() {
+            use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+            let header =
+                URL_SAFE_NO_PAD.encode(b"{\"alg\":\"EdDSA\",\"kid\":\"key-id\\u0000injected\"}");
+            let payload = URL_SAFE_NO_PAD.encode(
+                b"{\"iss\":\"x\",\"sub\":\"x\",\"aud\":\"x\",\"exp\":9999999999,\"iat\":1,\"scope\":\"x\"}"
+            );
+            let token = format!("{header}.{payload}.");
+            let _ = decode_jwt_header(&token);
+            let _ = decode_jwt_claims(&token);
+        }
+
+        #[test]
+        fn oversized_jti_no_panic() {
+            use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+            let header = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"EdDSA\"}");
+            let jti = "J".repeat(10_000);
+            let payload_json = format!(
+                "{{\"iss\":\"x\",\"sub\":\"x\",\"aud\":\"x\",\"exp\":9999999999,\"iat\":1,\"scope\":\"x\",\"jti\":\"{}\"}}",
+                jti
+            );
+            let payload = URL_SAFE_NO_PAD.encode(payload_json.as_bytes());
+            let token = format!("{header}.{payload}.");
+            // Should parse without panic — jti is just a string field
+            exercise_parsing(&token);
+        }
+
+        #[test]
+        fn newlines_in_token_no_panic() {
+            assert!(!exercise_parsing("eyJhbGciOiJFZERTQSJ9\n.eyJpc3MiOiJ0ZXN0In0\n."));
+        }
+
+        #[test]
+        fn bracket_injection_no_panic() {
+            assert!(!exercise_parsing("a]]]].b.c"));
+        }
+
+        #[test]
+        fn oversized_payload_no_panic() {
+            use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+            let header = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"EdDSA\"}");
+            let big_iss = "A".repeat(100_000);
+            let payload_json = format!(
+                "{{\"iss\":\"{}\",\"sub\":\"x\",\"aud\":\"x\",\"exp\":1,\"iat\":1,\"scope\":\"x\"}}",
+                big_iss
+            );
+            let payload = URL_SAFE_NO_PAD.encode(payload_json.as_bytes());
+            let token = format!("{header}.{payload}.sig");
+            exercise_parsing(&token);
+        }
+
+        #[test]
+        fn nested_jwt_no_panic() {
+            // Nested JWT: the payload contains another JWT-like structure
+            use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+            let inner = "eyJhbGciOiJub25lIn0.eyJpc3MiOiJldmlsIn0.";
+            let header = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"EdDSA\"}");
+            let payload_json = format!(
+                "{{\"iss\":\"{inner}\",\"sub\":\"x\",\"aud\":\"x\",\"exp\":9999999999,\"iat\":1,\"scope\":\"x\"}}"
+            );
+            let payload = URL_SAFE_NO_PAD.encode(payload_json.as_bytes());
+            let token = format!("{header}.{payload}.");
+            exercise_parsing(&token);
+        }
+
+        #[test]
+        fn unicode_in_claims_no_panic() {
+            use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+            let header = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"EdDSA\"}");
+            let payload_json = "{\"iss\":\"\u{1F4A9}\",\"sub\":\"\u{FEFF}\",\"aud\":\"\u{0000}\",\"exp\":9999999999,\"iat\":1,\"scope\":\"\u{202E}evil\"}";
+            let payload = URL_SAFE_NO_PAD.encode(payload_json.as_bytes());
+            let token = format!("{header}.{payload}.");
+            exercise_parsing(&token);
+        }
+
+        #[test]
+        fn extreme_timestamps_no_panic() {
+            use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+            let header = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"EdDSA\"}");
+            // u64::MAX timestamps
+            let payload = URL_SAFE_NO_PAD.encode(
+                b"{\"iss\":\"x\",\"sub\":\"x\",\"aud\":\"x\",\"exp\":18446744073709551615,\"iat\":18446744073709551615,\"scope\":\"x\"}"
+            );
+            let token = format!("{header}.{payload}.");
+            exercise_parsing(&token);
+        }
+
+        #[test]
+        fn zero_timestamps_no_panic() {
+            use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+            let header = URL_SAFE_NO_PAD.encode(b"{\"alg\":\"EdDSA\"}");
+            let payload = URL_SAFE_NO_PAD.encode(
+                b"{\"iss\":\"x\",\"sub\":\"x\",\"aud\":\"x\",\"exp\":0,\"iat\":0,\"scope\":\"x\"}",
+            );
+            let token = format!("{header}.{payload}.");
+            exercise_parsing(&token);
+        }
+    }
 }
 
 #[cfg(test)]
