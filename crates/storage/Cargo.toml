@@ -35,6 +35,10 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
 tracing-subscriber.workspace = true
 
+[[test]]
+name = "conformance"
+required-features = ["testutil"]
+
 [[bench]]
 name = "storage_benchmarks"
 harness = false

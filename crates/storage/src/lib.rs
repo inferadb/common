@@ -85,6 +85,9 @@
 pub mod auth;
 pub mod backend;
 pub mod batch;
+#[cfg(any(test, feature = "testutil"))]
+#[allow(clippy::expect_used, clippy::panic)]
+pub mod conformance;
 pub mod error;
 pub mod health;
 pub mod memory;
