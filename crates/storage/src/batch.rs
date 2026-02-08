@@ -19,7 +19,7 @@
 //! writer.delete(b"old_key".to_vec());
 //!
 //! // Flush all at once
-//! let stats = writer.flush().await.unwrap();
+//! let stats = writer.flush_all().await.unwrap();
 //! assert_eq!(stats.operations_count, 3);
 //! # });
 //! ```
@@ -30,11 +30,14 @@
 //! The default configuration uses 9MB as the effective limit to leave room for
 //! metadata overhead, staying safely under the 10MB FoundationDB limit.
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use tracing::{debug, trace, warn};
 
-use crate::{ConfigError, StorageBackend, StorageResult};
+use crate::{ConfigError, StorageBackend, StorageError, StorageResult};
 
 /// Transaction size limit (10MB with safety margin).
 /// We use 9MB as the effective limit to leave room for metadata overhead.
@@ -180,12 +183,116 @@ impl BatchOperation {
 pub struct BatchFlushStats {
     /// Number of operations flushed
     pub operations_count: usize,
+    /// Number of operations that succeeded
+    pub succeeded_count: usize,
+    /// Number of operations that failed
+    pub failed_count: usize,
     /// Number of sub-batches created (due to size limits)
     pub batches_count: usize,
     /// Total bytes written
     pub total_bytes: usize,
     /// Time taken to flush
     pub duration: Duration,
+}
+
+/// Result of a batch flush with per-operation error reporting.
+///
+/// Each entry corresponds to one operation in the original batch, in the same
+/// order they were added via [`BatchWriter::set`] or [`BatchWriter::delete`].
+/// When a sub-batch (transaction) fails, all operations in that sub-batch share
+/// the same error via `Arc`.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use inferadb_common_storage::batch::BatchResult;
+/// # fn example(result: BatchResult) {
+/// if result.has_failures() {
+///     let failed = result.failed_indices();
+///     // Retry only the failed operations
+/// }
+/// # }
+/// ```
+#[derive(Debug, Clone)]
+pub struct BatchResult {
+    /// Per-operation results, indexed by operation order.
+    results: Vec<Result<(), Arc<StorageError>>>,
+    /// Flush statistics.
+    stats: BatchFlushStats,
+}
+
+impl BatchResult {
+    /// Returns the per-operation results.
+    #[must_use = "per-operation results indicate which operations succeeded or failed"]
+    pub fn results(&self) -> &[Result<(), Arc<StorageError>>] {
+        &self.results
+    }
+
+    /// Returns the flush statistics.
+    #[must_use]
+    pub fn stats(&self) -> &BatchFlushStats {
+        &self.stats
+    }
+
+    /// Returns `true` if any operation failed.
+    #[must_use]
+    pub fn has_failures(&self) -> bool {
+        self.results.iter().any(|r| r.is_err())
+    }
+
+    /// Returns `true` if all operations succeeded.
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        self.results.iter().all(|r| r.is_ok())
+    }
+
+    /// Returns the indices of failed operations.
+    #[must_use]
+    pub fn failed_indices(&self) -> Vec<usize> {
+        self.results
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| if r.is_err() { Some(i) } else { None })
+            .collect()
+    }
+
+    /// Returns the number of operations that succeeded.
+    #[must_use]
+    pub fn succeeded_count(&self) -> usize {
+        self.results.iter().filter(|r| r.is_ok()).count()
+    }
+
+    /// Returns the number of operations that failed.
+    #[must_use]
+    pub fn failed_count(&self) -> usize {
+        self.results.iter().filter(|r| r.is_err()).count()
+    }
+
+    /// Converts this result into a single `StorageResult<BatchFlushStats>`,
+    /// returning the first error if any operation failed.
+    ///
+    /// This is useful for callers that want the old all-or-nothing behavior.
+    pub fn into_result(self) -> StorageResult<BatchFlushStats> {
+        // Find the first error, then drop all remaining results to release Arc refs.
+        let mut first_err: Option<Arc<StorageError>> = None;
+        for result in self.results {
+            if let Err(e) = result
+                && first_err.is_none()
+            {
+                first_err = Some(e);
+            }
+            // Other errors are dropped here, decrementing Arc refcounts
+        }
+        match first_err {
+            None => Ok(self.stats),
+            Some(arc_err) => match Arc::try_unwrap(arc_err) {
+                Ok(e) => Err(e),
+                // Shouldn't happen since we dropped all other refs above,
+                // but handle defensively.
+                Err(arc_err) => Err(StorageError::internal(arc_err.to_string())),
+            },
+        }
+    }
 }
 
 /// Batch writer for accumulating and flushing write operations
@@ -249,6 +356,7 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
     }
 
     /// Split operations into sub-batches that fit within size limits
+    #[cfg(test)]
     fn split_into_batches(&self) -> Vec<Vec<&BatchOperation>> {
         if self.operations.is_empty() {
             return Vec::new();
@@ -298,20 +406,102 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
         batches
     }
 
-    /// Flush all pending operations to the backend
+    /// Split operations into sub-batches, preserving original operation indices.
     ///
-    /// This method splits operations into appropriately-sized batches and
-    /// commits each batch in a separate transaction for optimal performance.
-    pub async fn flush(&mut self) -> StorageResult<BatchFlushStats> {
+    /// Each entry is `(original_index, &BatchOperation)`.
+    fn split_into_indexed_batches(&self) -> Vec<Vec<(usize, &BatchOperation)>> {
         if self.operations.is_empty() {
-            return Ok(BatchFlushStats::default());
+            return Vec::new();
+        }
+
+        let max_bytes =
+            if self.config.enabled { self.config.max_batch_bytes } else { TRANSACTION_SIZE_LIMIT };
+
+        let max_ops = if self.config.enabled { self.config.max_batch_size } else { usize::MAX };
+
+        let mut batches = Vec::new();
+        let mut current_batch = Vec::new();
+        let mut current_bytes = 0usize;
+
+        for (idx, op) in self.operations.iter().enumerate() {
+            let op_size = op.size_bytes();
+
+            // If this single operation exceeds the limit, it goes in its own batch
+            if op_size > max_bytes {
+                if !current_batch.is_empty() {
+                    batches.push(current_batch);
+                    current_batch = Vec::new();
+                    current_bytes = 0;
+                }
+                batches.push(vec![(idx, op)]);
+                continue;
+            }
+
+            // Check if adding this operation would exceed limits
+            if (current_bytes + op_size > max_bytes || current_batch.len() >= max_ops)
+                && !current_batch.is_empty()
+            {
+                batches.push(current_batch);
+                current_batch = Vec::new();
+                current_bytes = 0;
+            }
+
+            current_batch.push((idx, op));
+            current_bytes += op_size;
+        }
+
+        if !current_batch.is_empty() {
+            batches.push(current_batch);
+        }
+
+        batches
+    }
+
+    /// Execute a single sub-batch as a transaction.
+    async fn execute_batch(&self, entries: Vec<(usize, &BatchOperation)>) -> StorageResult<()> {
+        let mut txn = self.backend.transaction().await?;
+
+        for (_, op) in entries {
+            match op {
+                BatchOperation::Set { key, value } => {
+                    txn.set(key.clone(), value.clone());
+                },
+                BatchOperation::Delete { key } => {
+                    txn.delete(key.clone());
+                },
+            }
+        }
+
+        txn.commit().await
+    }
+
+    /// Flush all pending operations, failing if any operation fails.
+    ///
+    /// This is a convenience wrapper around [`flush`](Self::flush) that returns
+    /// the first error encountered, providing the simpler all-or-nothing API.
+    pub async fn flush_all(&mut self) -> StorageResult<BatchFlushStats> {
+        self.flush().await.into_result()
+    }
+
+    /// Flush all pending operations to the backend with per-operation error reporting.
+    ///
+    /// Operations are split into appropriately-sized sub-batches. Each sub-batch is
+    /// committed in a separate transaction. If a sub-batch fails, the error is
+    /// recorded for all operations in that sub-batch and processing continues with
+    /// remaining sub-batches.
+    ///
+    /// Use [`flush_all`](Self::flush_all) for the simpler all-or-nothing API.
+    pub async fn flush(&mut self) -> BatchResult {
+        if self.operations.is_empty() {
+            return BatchResult { results: Vec::new(), stats: BatchFlushStats::default() };
         }
 
         let start = Instant::now();
         let total_ops = self.operations.len();
         let total_bytes = self.current_size_bytes;
 
-        let batches = self.split_into_batches();
+        // Build batches with original operation indices
+        let batches = self.split_into_indexed_batches();
         let batches_count = batches.len();
 
         debug!(
@@ -321,27 +511,28 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
             "Flushing batch writes"
         );
 
-        // Execute each sub-batch in its own transaction
-        for (batch_idx, batch_ops) in batches.into_iter().enumerate() {
-            let mut txn = self.backend.transaction().await?;
+        // Per-operation results, initialized to Ok
+        let mut results: Vec<Result<(), Arc<StorageError>>> = vec![Ok(()); total_ops];
+        let mut succeeded_count = 0usize;
+        let mut failed_count = 0usize;
 
-            for op in batch_ops {
-                match op {
-                    BatchOperation::Set { key, value } => {
-                        txn.set(key.clone(), value.clone());
-                    },
-                    BatchOperation::Delete { key } => {
-                        txn.delete(key.clone());
-                    },
-                }
+        for (batch_idx, batch_entries) in batches.into_iter().enumerate() {
+            let indices: Vec<usize> = batch_entries.iter().map(|&(idx, _)| idx).collect();
+
+            match self.execute_batch(batch_entries).await {
+                Ok(()) => {
+                    succeeded_count += indices.len();
+                    trace!(batch = batch_idx, ops = indices.len(), "Batch committed successfully");
+                },
+                Err(e) => {
+                    let arc_err = Arc::new(e);
+                    warn!(batch = batch_idx, error = %arc_err, "Batch commit failed");
+                    failed_count += indices.len();
+                    for idx in indices {
+                        results[idx] = Err(Arc::clone(&arc_err));
+                    }
+                },
             }
-
-            txn.commit().await.map_err(|e| {
-                warn!(batch = batch_idx, error = %e, "Batch commit failed");
-                e
-            })?;
-
-            trace!(batch = batch_idx, "Batch committed successfully");
         }
 
         // Clear the pending operations
@@ -350,6 +541,8 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
 
         let stats = BatchFlushStats {
             operations_count: total_ops,
+            succeeded_count,
+            failed_count,
             batches_count,
             total_bytes,
             duration: start.elapsed(),
@@ -357,12 +550,14 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
 
         debug!(
             operations = stats.operations_count,
+            succeeded = stats.succeeded_count,
+            failed = stats.failed_count,
             batches = stats.batches_count,
             duration_ms = stats.duration.as_millis(),
             "Batch flush complete"
         );
 
-        Ok(stats)
+        BatchResult { results, stats }
     }
 
     /// Clear all pending operations without flushing
@@ -455,7 +650,7 @@ mod tests {
 
         assert_eq!(writer.pending_count(), 2);
 
-        let stats = writer.flush().await.expect("flush failed");
+        let stats = writer.flush_all().await.expect("flush failed");
         assert_eq!(stats.operations_count, 2);
         assert_eq!(stats.batches_count, 1);
 
@@ -477,7 +672,7 @@ mod tests {
         let mut writer = BatchWriter::new(backend.clone(), BatchConfig::default());
         writer.delete(b"to_delete".to_vec());
 
-        writer.flush().await.expect("flush failed");
+        writer.flush_all().await.expect("flush failed");
 
         let v = backend.get(b"to_delete").await.expect("get failed");
         assert!(v.is_none());
@@ -495,7 +690,7 @@ mod tests {
             writer.set(format!("key{i}").into_bytes(), format!("value{i}").into_bytes());
         }
 
-        let stats = writer.flush().await.expect("flush failed");
+        let stats = writer.flush_all().await.expect("flush failed");
         assert_eq!(stats.operations_count, 12);
         assert_eq!(stats.batches_count, 3);
     }
@@ -566,7 +761,7 @@ mod tests {
         let backend = MemoryBackend::new();
         let mut writer = BatchWriter::new(backend, BatchConfig::default());
 
-        let stats = writer.flush().await.expect("flush failed");
+        let stats = writer.flush_all().await.expect("flush failed");
         assert_eq!(stats.operations_count, 0);
         assert_eq!(stats.batches_count, 0);
     }
@@ -613,7 +808,7 @@ mod tests {
             writer.set(format!("k{i}").into_bytes(), vec![0; 100]);
         }
 
-        let stats = writer.flush().await.expect("flush failed");
+        let stats = writer.flush_all().await.expect("flush failed");
         assert_eq!(stats.operations_count, 5);
         assert!(stats.batches_count >= 2); // Should be split into multiple batches
     }
@@ -630,7 +825,7 @@ mod tests {
         writer.set(b"key".to_vec(), vec![0; 100]);
 
         // This should still flush successfully (operation goes in its own batch)
-        let stats = writer.flush().await.expect("flush failed");
+        let stats = writer.flush_all().await.expect("flush failed");
         assert_eq!(stats.operations_count, 1);
         assert_eq!(stats.batches_count, 1);
     }
@@ -649,7 +844,7 @@ mod tests {
         // Add another normal operation
         writer.set(b"k2".to_vec(), b"v2".to_vec());
 
-        let stats = writer.flush().await.expect("flush failed");
+        let stats = writer.flush_all().await.expect("flush failed");
         assert_eq!(stats.operations_count, 3);
         // Should be split: [k1], [big], [k2]
         assert!(stats.batches_count >= 2);
@@ -665,7 +860,7 @@ mod tests {
             writer.set(format!("key{i}").into_bytes(), format!("value{i}").into_bytes());
         }
 
-        let stats = writer.flush().await.expect("flush failed");
+        let stats = writer.flush_all().await.expect("flush failed");
         assert_eq!(stats.operations_count, 10);
         // With disabled config, uses TRANSACTION_SIZE_LIMIT and usize::MAX for ops
         // So all should fit in one batch
@@ -676,9 +871,386 @@ mod tests {
     fn test_batch_flush_stats_default() {
         let stats = BatchFlushStats::default();
         assert_eq!(stats.operations_count, 0);
+        assert_eq!(stats.succeeded_count, 0);
+        assert_eq!(stats.failed_count, 0);
         assert_eq!(stats.batches_count, 0);
         assert_eq!(stats.total_bytes, 0);
         assert_eq!(stats.duration, std::time::Duration::ZERO);
+    }
+
+    #[test]
+    fn test_batch_flush_stats_counts() {
+        let stats = BatchFlushStats {
+            operations_count: 10,
+            succeeded_count: 7,
+            failed_count: 3,
+            batches_count: 2,
+            total_bytes: 1000,
+            duration: std::time::Duration::from_millis(50),
+        };
+        assert_eq!(stats.succeeded_count, 7);
+        assert_eq!(stats.failed_count, 3);
+        assert_eq!(stats.succeeded_count + stats.failed_count, stats.operations_count);
+    }
+
+    #[test]
+    fn test_batch_result_all_success() {
+        let result = BatchResult {
+            results: vec![Ok(()), Ok(()), Ok(())],
+            stats: BatchFlushStats {
+                operations_count: 3,
+                succeeded_count: 3,
+                failed_count: 0,
+                ..Default::default()
+            },
+        };
+        assert!(result.is_success());
+        assert!(!result.has_failures());
+        assert_eq!(result.succeeded_count(), 3);
+        assert_eq!(result.failed_count(), 0);
+        assert!(result.failed_indices().is_empty());
+    }
+
+    #[test]
+    fn test_batch_result_partial_failure() {
+        let err = Arc::new(StorageError::connection("test failure"));
+        let result = BatchResult {
+            results: vec![Ok(()), Err(Arc::clone(&err)), Err(Arc::clone(&err)), Ok(())],
+            stats: BatchFlushStats {
+                operations_count: 4,
+                succeeded_count: 2,
+                failed_count: 2,
+                ..Default::default()
+            },
+        };
+        assert!(!result.is_success());
+        assert!(result.has_failures());
+        assert_eq!(result.succeeded_count(), 2);
+        assert_eq!(result.failed_count(), 2);
+        assert_eq!(result.failed_indices(), vec![1, 2]);
+    }
+
+    #[test]
+    fn test_batch_result_into_result_success() {
+        let result = BatchResult {
+            results: vec![Ok(()), Ok(())],
+            stats: BatchFlushStats {
+                operations_count: 2,
+                succeeded_count: 2,
+                ..Default::default()
+            },
+        };
+        let stats = result.into_result().unwrap();
+        assert_eq!(stats.operations_count, 2);
+    }
+
+    #[test]
+    fn test_batch_result_into_result_failure() {
+        let err = Arc::new(StorageError::connection("batch failed"));
+        let result =
+            BatchResult { results: vec![Ok(()), Err(err)], stats: BatchFlushStats::default() };
+        let e = result.into_result().unwrap_err();
+        assert!(e.to_string().contains("Connection error"));
+    }
+
+    /// A test wrapper around `MemoryBackend` that fails specific transaction commits.
+    ///
+    /// The `fail_commits` set controls which transaction commits (by 0-based index)
+    /// return an error. All other operations delegate transparently.
+    #[derive(Clone)]
+    struct FailOnCommitBackend {
+        inner: MemoryBackend,
+        commit_count: Arc<std::sync::atomic::AtomicUsize>,
+        fail_commits: Arc<std::collections::HashSet<usize>>,
+    }
+
+    impl FailOnCommitBackend {
+        fn new(fail_commits: std::collections::HashSet<usize>) -> Self {
+            Self {
+                inner: MemoryBackend::new(),
+                commit_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                fail_commits: Arc::new(fail_commits),
+            }
+        }
+    }
+
+    /// Transaction wrapper that conditionally fails on commit.
+    /// Only supports `set`, `delete`, and `commit` — sufficient for `BatchWriter` tests.
+    struct FailOnCommitTransaction {
+        inner: std::sync::Mutex<Box<dyn crate::Transaction>>,
+        should_fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::Transaction for FailOnCommitTransaction {
+        async fn get(&self, _key: &[u8]) -> StorageResult<Option<bytes::Bytes>> {
+            // BatchWriter never calls get on transactions
+            Err(StorageError::internal("get not supported on FailOnCommitTransaction"))
+        }
+
+        fn set(&mut self, key: Vec<u8>, value: Vec<u8>) {
+            self.inner.get_mut().expect("lock poisoned").set(key, value);
+        }
+
+        fn delete(&mut self, key: Vec<u8>) {
+            self.inner.get_mut().expect("lock poisoned").delete(key);
+        }
+
+        fn compare_and_set(
+            &mut self,
+            key: Vec<u8>,
+            expected: Option<Vec<u8>>,
+            new_value: Vec<u8>,
+        ) -> StorageResult<()> {
+            self.inner.get_mut().expect("lock poisoned").compare_and_set(key, expected, new_value)
+        }
+
+        async fn commit(self: Box<Self>) -> StorageResult<()> {
+            if self.should_fail {
+                Err(StorageError::connection("simulated commit failure"))
+            } else {
+                self.inner.into_inner().expect("lock poisoned").commit().await
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::StorageBackend for FailOnCommitBackend {
+        async fn get(&self, key: &[u8]) -> StorageResult<Option<bytes::Bytes>> {
+            self.inner.get(key).await
+        }
+
+        async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()> {
+            self.inner.set(key, value).await
+        }
+
+        async fn compare_and_set(
+            &self,
+            key: &[u8],
+            expected: Option<&[u8]>,
+            new_value: Vec<u8>,
+        ) -> StorageResult<()> {
+            self.inner.compare_and_set(key, expected, new_value).await
+        }
+
+        async fn delete(&self, key: &[u8]) -> StorageResult<()> {
+            self.inner.delete(key).await
+        }
+
+        async fn get_range<R>(&self, range: R) -> StorageResult<Vec<crate::KeyValue>>
+        where
+            R: std::ops::RangeBounds<Vec<u8>> + Send,
+        {
+            self.inner.get_range(range).await
+        }
+
+        async fn clear_range<R>(&self, range: R) -> StorageResult<()>
+        where
+            R: std::ops::RangeBounds<Vec<u8>> + Send,
+        {
+            self.inner.clear_range(range).await
+        }
+
+        async fn set_with_ttl(
+            &self,
+            key: Vec<u8>,
+            value: Vec<u8>,
+            ttl: std::time::Duration,
+        ) -> StorageResult<()> {
+            self.inner.set_with_ttl(key, value, ttl).await
+        }
+
+        async fn transaction(&self) -> StorageResult<Box<dyn crate::Transaction>> {
+            let idx = self.commit_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let should_fail = self.fail_commits.contains(&idx);
+            let inner_txn = self.inner.transaction().await?;
+            Ok(Box::new(FailOnCommitTransaction {
+                inner: std::sync::Mutex::new(inner_txn),
+                should_fail,
+            }))
+        }
+
+        async fn health_check(&self) -> StorageResult<()> {
+            self.inner.health_check().await
+        }
+    }
+
+    #[tokio::test]
+    async fn test_flush_all_succeeds_reports_all_ok() {
+        let backend = MemoryBackend::new();
+        let config = BatchConfig::builder().max_batch_size(2).build().unwrap();
+        let mut writer = BatchWriter::new(backend.clone(), config);
+
+        writer.set(b"k1".to_vec(), b"v1".to_vec());
+        writer.set(b"k2".to_vec(), b"v2".to_vec());
+        writer.set(b"k3".to_vec(), b"v3".to_vec());
+
+        let result = writer.flush().await;
+        assert!(result.is_success());
+        assert!(!result.has_failures());
+        assert_eq!(result.stats().operations_count, 3);
+        assert_eq!(result.stats().succeeded_count, 3);
+        assert_eq!(result.stats().failed_count, 0);
+        assert_eq!(result.stats().batches_count, 2); // 2 ops + 1 op
+        assert_eq!(result.results().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_flush_partial_failure_continues_processing() {
+        // Batch size of 2 → 3 ops make 2 batches: [k1,k2], [k3]
+        // Fail the first batch (commit index 0), succeed the second
+        let mut fail_set = std::collections::HashSet::new();
+        fail_set.insert(0);
+        let backend = FailOnCommitBackend::new(fail_set);
+        let config = BatchConfig::builder().max_batch_size(2).build().unwrap();
+        let mut writer = BatchWriter::new(backend.clone(), config);
+
+        writer.set(b"k1".to_vec(), b"v1".to_vec());
+        writer.set(b"k2".to_vec(), b"v2".to_vec());
+        writer.set(b"k3".to_vec(), b"v3".to_vec());
+
+        let result = writer.flush().await;
+        assert!(result.has_failures());
+        assert!(!result.is_success());
+        assert_eq!(result.stats().succeeded_count, 1);
+        assert_eq!(result.stats().failed_count, 2);
+        assert_eq!(result.failed_indices(), vec![0, 1]);
+
+        // k1, k2 should NOT be in the backend (batch 0 failed)
+        assert!(backend.get(b"k1").await.unwrap().is_none());
+        assert!(backend.get(b"k2").await.unwrap().is_none());
+
+        // k3 SHOULD be in the backend (batch 1 succeeded)
+        assert_eq!(backend.get(b"k3").await.unwrap().unwrap().as_ref(), b"v3");
+    }
+
+    #[tokio::test]
+    async fn test_flush_all_batches_fail() {
+        // Fail all commits
+        let mut fail_set = std::collections::HashSet::new();
+        fail_set.insert(0);
+        fail_set.insert(1);
+        let backend = FailOnCommitBackend::new(fail_set);
+        let config = BatchConfig::builder().max_batch_size(1).build().unwrap();
+        let mut writer = BatchWriter::new(backend, config);
+
+        writer.set(b"k1".to_vec(), b"v1".to_vec());
+        writer.set(b"k2".to_vec(), b"v2".to_vec());
+
+        let result = writer.flush().await;
+        assert!(result.has_failures());
+        assert_eq!(result.stats().succeeded_count, 0);
+        assert_eq!(result.stats().failed_count, 2);
+        assert_eq!(result.failed_indices(), vec![0, 1]);
+    }
+
+    #[tokio::test]
+    async fn test_flush_all_convenience_returns_error_on_partial_failure() {
+        let mut fail_set = std::collections::HashSet::new();
+        fail_set.insert(0);
+        let backend = FailOnCommitBackend::new(fail_set);
+        let config = BatchConfig::builder().max_batch_size(2).build().unwrap();
+        let mut writer = BatchWriter::new(backend, config);
+
+        writer.set(b"k1".to_vec(), b"v1".to_vec());
+        writer.set(b"k2".to_vec(), b"v2".to_vec());
+        writer.set(b"k3".to_vec(), b"v3".to_vec());
+
+        // flush_all should return error because batch 0 failed
+        let err = writer.flush_all().await.unwrap_err();
+        assert!(
+            err.to_string().contains("Connection error"),
+            "expected 'Connection error', got: '{}'",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_flush_empty_returns_empty_result() {
+        let backend = MemoryBackend::new();
+        let mut writer = BatchWriter::new(backend, BatchConfig::default());
+
+        let result = writer.flush().await;
+        assert!(result.is_success());
+        assert_eq!(result.results().len(), 0);
+        assert_eq!(result.stats().operations_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_flush_clears_pending_after_partial_failure() {
+        let mut fail_set = std::collections::HashSet::new();
+        fail_set.insert(0);
+        let backend = FailOnCommitBackend::new(fail_set);
+        let config = BatchConfig::builder().max_batch_size(2).build().unwrap();
+        let mut writer = BatchWriter::new(backend, config);
+
+        writer.set(b"k1".to_vec(), b"v1".to_vec());
+        writer.set(b"k2".to_vec(), b"v2".to_vec());
+
+        let result = writer.flush().await;
+        assert!(result.has_failures());
+
+        // After flush (even partial failure), pending operations are cleared
+        assert_eq!(writer.pending_count(), 0);
+        assert_eq!(writer.pending_bytes(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_retry_failed_operations() {
+        // First flush: batch 0 fails, batch 1 succeeds
+        let mut fail_set = std::collections::HashSet::new();
+        fail_set.insert(0);
+        let backend = FailOnCommitBackend::new(fail_set);
+        let config = BatchConfig::builder().max_batch_size(2).build().unwrap();
+        let mut writer = BatchWriter::new(backend.clone(), config.clone());
+
+        writer.set(b"k1".to_vec(), b"v1".to_vec());
+        writer.set(b"k2".to_vec(), b"v2".to_vec());
+        writer.set(b"k3".to_vec(), b"v3".to_vec());
+        writer.set(b"k4".to_vec(), b"v4".to_vec());
+
+        let result = writer.flush().await;
+        let failed = result.failed_indices();
+        assert_eq!(failed, vec![0, 1]);
+
+        // The caller can identify failed ops and retry them in a new writer.
+        // Commit index 2 will succeed (only index 0 was configured to fail).
+        let mut retry_writer = BatchWriter::new(backend.clone(), config);
+        // Re-add only the operations that failed (k1, k2)
+        retry_writer.set(b"k1".to_vec(), b"v1".to_vec());
+        retry_writer.set(b"k2".to_vec(), b"v2".to_vec());
+
+        let retry_result = retry_writer.flush().await;
+        assert!(retry_result.is_success());
+
+        // All keys should now exist
+        assert_eq!(backend.get(b"k1").await.unwrap().unwrap().as_ref(), b"v1");
+        assert_eq!(backend.get(b"k2").await.unwrap().unwrap().as_ref(), b"v2");
+        assert_eq!(backend.get(b"k3").await.unwrap().unwrap().as_ref(), b"v3");
+        assert_eq!(backend.get(b"k4").await.unwrap().unwrap().as_ref(), b"v4");
+    }
+
+    #[tokio::test]
+    async fn test_flush_failed_ops_share_same_error_arc() {
+        let mut fail_set = std::collections::HashSet::new();
+        fail_set.insert(0);
+        let backend = FailOnCommitBackend::new(fail_set);
+        let config = BatchConfig::builder().max_batch_size(3).build().unwrap();
+        let mut writer = BatchWriter::new(backend, config);
+
+        writer.set(b"k1".to_vec(), b"v1".to_vec());
+        writer.set(b"k2".to_vec(), b"v2".to_vec());
+        writer.set(b"k3".to_vec(), b"v3".to_vec());
+
+        let result = writer.flush().await;
+        // All 3 ops in one batch, batch fails → all 3 should have the same Arc
+        assert_eq!(result.failed_count(), 3);
+        let errors: Vec<_> =
+            result.results().iter().filter_map(|r| r.as_ref().err().cloned()).collect();
+        assert_eq!(errors.len(), 3);
+        // All errors should point to the same allocation
+        assert!(Arc::ptr_eq(&errors[0], &errors[1]));
+        assert!(Arc::ptr_eq(&errors[1], &errors[2]));
     }
 
     mod proptests {

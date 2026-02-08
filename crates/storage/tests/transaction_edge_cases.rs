@@ -157,7 +157,7 @@ async fn test_oversized_batch_splits_correctly() {
         writer.set(key.into_bytes(), value);
     }
 
-    let stats = writer.flush().await.expect("flush should succeed");
+    let stats = writer.flush_all().await.expect("flush should succeed");
 
     // Should have split into multiple batches
     assert!(stats.batches_count >= 2, "expected multiple batches, got {}", stats.batches_count);
@@ -189,7 +189,7 @@ async fn test_batch_split_by_count_limit() {
         writer.set(format!("key-{i}").into_bytes(), b"value".to_vec());
     }
 
-    let stats = writer.flush().await.expect("flush should succeed");
+    let stats = writer.flush_all().await.expect("flush should succeed");
     assert_eq!(stats.batches_count, 4);
     assert_eq!(stats.operations_count, 20);
 
@@ -219,7 +219,7 @@ async fn test_oversized_single_operation_in_own_batch() {
     writer.set(b"large".to_vec(), vec![0xFFu8; 500]); // Exceeds 100B limit
     writer.set(b"small-2".to_vec(), b"tiny".to_vec());
 
-    let stats = writer.flush().await.expect("flush");
+    let stats = writer.flush_all().await.expect("flush");
 
     // Large op gets its own batch; small ops may share or get separate batches
     assert!(
@@ -259,7 +259,7 @@ async fn test_empty_batch_flush_noop() {
     let mut writer =
         BatchWriter::new(backend, BatchConfig::builder().build().expect("valid batch config"));
 
-    let stats = writer.flush().await.expect("empty flush");
+    let stats = writer.flush_all().await.expect("empty flush");
     assert_eq!(stats.operations_count, 0);
     assert_eq!(stats.batches_count, 0);
 }
