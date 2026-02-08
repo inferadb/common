@@ -97,19 +97,22 @@ impl CircuitBreakerConfig {
 
         if failure_threshold == 0 {
             return Err(ConfigError::BelowMinimum {
-                field: "failure_threshold".into(),
-                minimum: "1".into(),
-                actual: "0".into(),
+                field: "failure_threshold",
+                min: "1".into(),
+                value: "0".into(),
             });
         }
         if recovery_timeout.is_zero() {
-            return Err(ConfigError::MustBePositive { field: "recovery_timeout".into() });
+            return Err(ConfigError::MustBePositive {
+                field: "recovery_timeout",
+                value: "0s".into(),
+            });
         }
         if half_open_success_threshold == 0 {
             return Err(ConfigError::BelowMinimum {
-                field: "half_open_success_threshold".into(),
-                minimum: "1".into(),
-                actual: "0".into(),
+                field: "half_open_success_threshold",
+                min: "1".into(),
+                value: "0".into(),
             });
         }
         Ok(Self { failure_threshold, recovery_timeout, half_open_success_threshold })

@@ -84,6 +84,8 @@
 #![warn(missing_docs)]
 
 mod backend;
+/// Circuit breaker for fail-fast during backend outages.
+pub mod circuit_breaker;
 mod config;
 mod error;
 mod keys;
@@ -98,6 +100,10 @@ pub mod auth;
 pub mod testutil;
 
 pub use backend::LedgerBackend;
+pub use circuit_breaker::{
+    CircuitBreaker, CircuitBreakerConfig, CircuitBreakerMetrics, CircuitState,
+    DEFAULT_FAILURE_THRESHOLD, DEFAULT_HALF_OPEN_SUCCESS_THRESHOLD, DEFAULT_RECOVERY_TIMEOUT,
+};
 pub use config::{
     CasRetryConfig, DEFAULT_CAS_RETRY_BASE_DELAY, DEFAULT_INITIAL_BACKOFF, DEFAULT_LIST_TIMEOUT,
     DEFAULT_MAX_BACKOFF, DEFAULT_MAX_CAS_RETRIES, DEFAULT_MAX_RANGE_RESULTS, DEFAULT_MAX_RETRIES,

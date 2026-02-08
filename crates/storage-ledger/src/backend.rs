@@ -284,6 +284,44 @@ impl LedgerBackend {
         Ok(())
     }
 
+    /// Checks the circuit breaker and returns `CircuitOpen` if it's open.
+    fn check_circuit(&self) -> StorageResult<()> {
+        if let Some(ref cb) = self.circuit_breaker
+            && !cb.allow_request()
+        {
+            return Err(StorageError::circuit_open());
+        }
+        Ok(())
+    }
+
+    /// Records a storage result with the circuit breaker.
+    ///
+    /// Only transient errors (connection, timeout) are recorded as failures.
+    fn record_circuit_result<T>(&self, result: &StorageResult<T>) {
+        if let Some(ref cb) = self.circuit_breaker {
+            match result {
+                Ok(_) => cb.record_success(),
+                Err(e) if e.is_transient() => cb.record_failure(),
+                Err(_) => {
+                    // Non-transient errors (NotFound, Conflict, etc.) don't indicate
+                    // backend health issues — don't affect circuit breaker state.
+                },
+            }
+        }
+    }
+
+    /// Returns the circuit breaker metrics, if a circuit breaker is configured.
+    #[must_use]
+    pub fn circuit_breaker_metrics(&self) -> Option<crate::circuit_breaker::CircuitBreakerMetrics> {
+        self.circuit_breaker.as_ref().map(crate::circuit_breaker::CircuitBreaker::metrics)
+    }
+
+    /// Returns the current circuit breaker state, if a circuit breaker is configured.
+    #[must_use]
+    pub fn circuit_breaker_state(&self) -> Option<crate::circuit_breaker::CircuitState> {
+        self.circuit_breaker.as_ref().map(crate::circuit_breaker::CircuitBreaker::state)
+    }
+
     /// Performs a read with the configured consistency level.
     async fn do_read(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, LedgerStorageError> {
         let result = match self.read_consistency {
@@ -326,9 +364,10 @@ impl LedgerBackend {
 impl StorageBackend for LedgerBackend {
     #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
+        self.check_circuit()?;
         let encoded_key = encode_key(key);
 
-        with_retry_timeout(
+        let result = with_retry_timeout(
             &self.retry_config,
             self.timeout_config.read_timeout,
             None,
@@ -341,15 +380,18 @@ impl StorageBackend for LedgerBackend {
                 }
             },
         )
-        .await
+        .await;
+        self.record_circuit_result(&result);
+        result
     }
 
     #[tracing::instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len()))]
     async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()> {
+        self.check_circuit()?;
         self.check_sizes(&key, &value)?;
         let encoded_key = encode_key(&key);
 
-        with_retry_timeout(
+        let result = with_retry_timeout(
             &self.retry_config,
             self.timeout_config.write_timeout,
             None,
@@ -366,7 +408,9 @@ impl StorageBackend for LedgerBackend {
                     .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
             },
         )
-        .await
+        .await;
+        self.record_circuit_result(&result);
+        result
     }
 
     #[tracing::instrument(skip(self, key, expected, new_value), fields(key_len = key.len()))]
@@ -376,6 +420,7 @@ impl StorageBackend for LedgerBackend {
         expected: Option<&[u8]>,
         new_value: Vec<u8>,
     ) -> StorageResult<()> {
+        self.check_circuit()?;
         self.check_sizes(key, &new_value)?;
         let encoded_key = encode_key(key);
 
@@ -387,7 +432,7 @@ impl StorageBackend for LedgerBackend {
         use inferadb_ledger_sdk::SdkError;
         use tonic::Code;
 
-        with_retry_timeout(
+        let result = with_retry_timeout(
             &self.retry_config,
             self.timeout_config.write_timeout,
             None,
@@ -414,14 +459,17 @@ impl StorageBackend for LedgerBackend {
                 }
             },
         )
-        .await
+        .await;
+        self.record_circuit_result(&result);
+        result
     }
 
     #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {
+        self.check_circuit()?;
         let encoded_key = encode_key(key);
 
-        with_retry_timeout(
+        let result = with_retry_timeout(
             &self.retry_config,
             self.timeout_config.write_timeout,
             None,
@@ -438,7 +486,9 @@ impl StorageBackend for LedgerBackend {
                     .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
             },
         )
-        .await
+        .await;
+        self.record_circuit_result(&result);
+        result
     }
 
     #[tracing::instrument(skip(self, range))]
@@ -446,6 +496,8 @@ impl StorageBackend for LedgerBackend {
     where
         R: RangeBounds<Vec<u8>> + Send,
     {
+        self.check_circuit()?;
+
         // Convert range bounds to hex-encoded strings
         let (start_key, start_inclusive) = match range.start_bound() {
             Bound::Included(k) => (Some(encode_key(k)), true),
@@ -480,7 +532,7 @@ impl StorageBackend for LedgerBackend {
 
         // Paginate through results using page_token, bounded by list timeout.
         let list_timeout = self.timeout_config.list_timeout;
-        tokio::time::timeout(list_timeout, async {
+        let result = tokio::time::timeout(list_timeout, async {
             let mut all_key_values = Vec::new();
             let mut page_token: Option<String> = None;
 
@@ -565,7 +617,9 @@ impl StorageBackend for LedgerBackend {
             Ok(all_key_values)
         })
         .await
-        .unwrap_or(Err(StorageError::timeout()))
+        .unwrap_or(Err(StorageError::timeout()));
+        self.record_circuit_result(&result);
+        result
     }
 
     #[tracing::instrument(skip(self, range))]
@@ -573,6 +627,8 @@ impl StorageBackend for LedgerBackend {
     where
         R: RangeBounds<Vec<u8>> + Send,
     {
+        self.check_circuit()?;
+
         // First, get all keys in the range (retried per-page internally)
         let keys_to_delete = self.get_range(range).await?;
 
@@ -587,7 +643,7 @@ impl StorageBackend for LedgerBackend {
             .collect();
 
         // Execute as batch delete with retry and timeout
-        with_retry_timeout(
+        let result = with_retry_timeout(
             &self.retry_config,
             self.timeout_config.list_timeout,
             None,
@@ -600,7 +656,9 @@ impl StorageBackend for LedgerBackend {
                     .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
             },
         )
-        .await
+        .await;
+        self.record_circuit_result(&result);
+        result
     }
 
     /// Stores a key-value pair with automatic expiration.
@@ -616,11 +674,12 @@ impl StorageBackend for LedgerBackend {
     /// the Unix epoch, since a valid absolute timestamp cannot be computed.
     #[tracing::instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len(), ttl_ms = ttl.as_millis() as u64))]
     async fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> StorageResult<()> {
+        self.check_circuit()?;
         self.check_sizes(&key, &value)?;
         let encoded_key = encode_key(&key);
         let expires_at = Self::compute_expiration_timestamp(ttl)?;
 
-        with_retry_timeout(
+        let result = with_retry_timeout(
             &self.retry_config,
             self.timeout_config.write_timeout,
             None,
@@ -641,11 +700,14 @@ impl StorageBackend for LedgerBackend {
                     .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
             },
         )
-        .await
+        .await;
+        self.record_circuit_result(&result);
+        result
     }
 
     #[tracing::instrument(skip(self))]
     async fn transaction(&self) -> StorageResult<Box<dyn Transaction>> {
+        self.check_circuit()?;
         let txn = LedgerTransaction::new(
             Arc::clone(&self.client),
             self.namespace_id,
@@ -657,9 +719,9 @@ impl StorageBackend for LedgerBackend {
 
     #[tracing::instrument(skip(self))]
     async fn health_check(&self) -> StorageResult<()> {
-        // health_check() returns bool: true = healthy, false = degraded but available
-        // It returns Err for unavailable
-        with_retry_timeout(
+        // Health checks bypass the circuit breaker — they are used to probe
+        // backend health and should always attempt a real connection.
+        let result = with_retry_timeout(
             &self.retry_config,
             self.timeout_config.read_timeout,
             None,
@@ -675,7 +737,9 @@ impl StorageBackend for LedgerBackend {
                 Ok(())
             },
         )
-        .await
+        .await;
+        self.record_circuit_result(&result);
+        result
     }
 }
 
