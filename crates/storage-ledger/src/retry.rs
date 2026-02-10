@@ -40,8 +40,8 @@ struct RetryState {
 
 /// Executes `operation` with automatic retry on transient errors.
 ///
-/// Returns the result of the first successful call, or the last error
-/// if all retry attempts are exhausted.
+/// Returns the result of the first successful call, any non-transient error
+/// immediately, or the last transient error if all retry attempts are exhausted.
 ///
 /// # Retry Eligibility
 ///
@@ -200,7 +200,7 @@ where
 
 /// Executes `operation` with retry **and** an overall timeout.
 ///
-/// This wraps [`with_retry`] with `tokio::time::timeout`, bounding the
+/// This wraps the retry loop with [`tokio::time::timeout`], bounding the
 /// total wall-clock time of the operation including all retry attempts
 /// and backoff sleeps.
 ///

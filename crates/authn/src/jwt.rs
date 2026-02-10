@@ -104,7 +104,9 @@ impl JwtClaims {
             .ok_or_else(|| AuthError::missing_claim("org_id"))
     }
 
-    /// Parses scopes from the space-separated string.
+    /// Parses scopes from the space-separated `scope` claim.
+    ///
+    /// Returns an empty `Vec` if the scope string is empty or contains only whitespace.
     #[must_use]
     pub fn parse_scopes(&self) -> Vec<String> {
         self.scope.split_whitespace().map(|s| s.to_string()).collect()
@@ -195,9 +197,9 @@ pub fn decode_jwt_claims(token: &str) -> Result<JwtClaims, AuthError> {
 ///
 /// * `claims` - The JWT claims to validate
 /// * `expected_audience` - Optional expected audience value
-/// * `max_iat_age` - Maximum allowed age for the `iat` claim. Defaults to [`DEFAULT_MAX_IAT_AGE`]
-///   (24 hours) when `Some(None)` or not overridden. Pass `Some(duration)` to set a custom max age,
-///   or `None` to disable the `iat` age check entirely.
+/// * `max_iat_age` - Maximum allowed age for the `iat` claim. Pass `Some(duration)` to enforce a
+///   maximum age (e.g., [`DEFAULT_MAX_IAT_AGE`] for 24 hours), or `None` to disable the check
+///   entirely.
 ///
 /// # Errors
 ///

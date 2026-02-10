@@ -194,6 +194,8 @@ pub struct CasRetryConfig {
 #[bon::bon]
 impl CasRetryConfig {
     /// Creates a new CAS retry configuration.
+    ///
+    /// Set `max_retries` to `0` to disable CAS retries entirely.
     #[builder]
     pub fn new(
         #[builder(default = DEFAULT_MAX_CAS_RETRIES)] max_retries: u32,
@@ -443,7 +445,11 @@ impl LedgerBackendConfig {
     /// * `read_consistency` - Read consistency level (default: Linearizable).
     /// * `page_size` - Number of entities per page for range queries (default: 10,000).
     /// * `max_range_results` - Safety cap on total range results (default: 100,000).
+    /// * `retry_config` - Retry policy for transient failures (default: 3 retries, 100ms backoff).
     /// * `timeout_config` - Per-operation timeouts (default: 5s read, 10s write, 30s list).
+    /// * `size_limits` - Key/value size validation (default: none).
+    /// * `circuit_breaker_config` - Circuit breaker for fail-fast during outages (default: none).
+    /// * `cancellation_token` - Token for graceful shutdown (default: none).
     ///
     /// # Errors
     ///

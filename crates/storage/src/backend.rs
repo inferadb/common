@@ -85,7 +85,11 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// - `Ok(Some(bytes))` if the key exists
     /// - `Ok(None)` if the key doesn't exist
-    /// - `Err(...)` on storage errors
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] on backend failures (e.g.,
+    /// [`Connection`](StorageError::Connection), [`Timeout`](StorageError::Timeout)).
     #[must_use = "storage operations may fail and errors must be handled"]
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>>;
 
@@ -97,6 +101,11 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// * `key` - The key to store
     /// * `value` - The value to associate with the key
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::SizeLimitExceeded`] — `key` or `value` exceeds configured size limits.
+    /// - Other [`StorageError`] variants on backend failures.
     #[must_use = "storage operations may fail and errors must be handled"]
     async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()>;
 
@@ -323,6 +332,11 @@ pub trait StorageBackend: Send + Sync {
     /// # Arguments
     ///
     /// * `key` - The key to delete
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] on backend failures (e.g.,
+    /// [`Connection`](StorageError::Connection), [`Timeout`](StorageError::Timeout)).
     #[must_use = "storage operations may fail and errors must be handled"]
     async fn delete(&self, key: &[u8]) -> StorageResult<()>;
 
@@ -344,6 +358,10 @@ pub trait StorageBackend: Send + Sync {
     /// # Returns
     ///
     /// A vector of [`KeyValue`] pairs within the specified range.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] on backend failures.
     #[must_use = "storage operations may fail and errors must be handled"]
     async fn get_range<R>(&self, range: R) -> StorageResult<Vec<KeyValue>>
     where
@@ -356,6 +374,10 @@ pub trait StorageBackend: Send + Sync {
     /// # Arguments
     ///
     /// * `range` - The key range to clear
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] on backend failures.
     #[must_use = "storage operations may fail and errors must be handled"]
     async fn clear_range<R>(&self, range: R) -> StorageResult<()>
     where
@@ -375,6 +397,11 @@ pub trait StorageBackend: Send + Sync {
     /// * `key` - The key to store
     /// * `value` - The value to associate with the key
     /// * `ttl` - Time-to-live duration after which the key expires
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::SizeLimitExceeded`] — `key` or `value` exceeds configured size limits.
+    /// - Other [`StorageError`] variants on backend failures.
     #[must_use = "storage operations may fail and errors must be handled"]
     async fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> StorageResult<()>;
 
@@ -386,6 +413,11 @@ pub trait StorageBackend: Send + Sync {
     /// # Returns
     ///
     /// A boxed [`Transaction`] trait object.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if the transaction cannot be started (e.g., backend
+    /// unavailable or shutting down).
     #[must_use = "storage operations may fail and errors must be handled"]
     async fn transaction(&self) -> StorageResult<Box<dyn Transaction>>;
 
@@ -407,7 +439,12 @@ pub trait StorageBackend: Send + Sync {
     /// - `Ok(HealthStatus::Healthy(_))` — probe passed
     /// - `Ok(HealthStatus::Degraded(_, reason))` — probe passed with caveats
     /// - `Ok(HealthStatus::Unhealthy(_, reason))` — probe failed
-    /// - `Err(...)` — the health check itself failed (e.g., timeout)
+    /// - `Err(...)` — the health check itself failed
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if the health check itself fails (e.g., timeout
+    /// acquiring a lock or a backend connection failure).
     #[must_use = "health check results indicate backend availability and must be inspected"]
     async fn health_check(&self, probe: HealthProbe) -> StorageResult<HealthStatus>;
 }

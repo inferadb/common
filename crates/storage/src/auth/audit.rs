@@ -193,6 +193,8 @@ impl AuditLogger for NoopAuditLogger {
 }
 
 /// Constructs a resource identifier string from namespace and kid.
+///
+/// Returns a string in the format `"ns:{namespace_id}/kid:{kid}"`.
 pub fn key_resource(namespace_id: impl fmt::Display, kid: &str) -> String {
     format!("ns:{namespace_id}/kid:{kid}")
 }

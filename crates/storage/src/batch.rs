@@ -106,7 +106,10 @@ impl BatchConfig {
         Ok(Self { max_batch_size, max_batch_bytes, enabled })
     }
 
-    /// Creates a disabled batch config.
+    /// Creates a batch config with batching disabled.
+    ///
+    /// When disabled, [`should_flush`](BatchWriter::should_flush) returns `true` whenever
+    /// there are pending operations.
     #[must_use]
     pub fn disabled() -> Self {
         Self {
@@ -117,6 +120,9 @@ impl BatchConfig {
     }
 
     /// Creates a batch config optimized for large transactions.
+    ///
+    /// Uses [`TRANSACTION_SIZE_LIMIT`] (9 MB) as the maximum batch byte size,
+    /// allowing sub-batches to fill up to the FoundationDB transaction limit.
     #[must_use]
     pub fn for_large_transactions() -> Self {
         Self {
@@ -189,20 +195,20 @@ impl BatchOperation {
     }
 }
 
-/// Statistics from a batch flush operation
+/// Statistics from a batch flush operation.
 #[derive(Debug, Clone, Default)]
 pub struct BatchFlushStats {
-    /// Number of operations flushed
+    /// Number of operations flushed.
     pub operations_count: usize,
-    /// Number of operations that succeeded
+    /// Number of operations that succeeded.
     pub succeeded_count: usize,
-    /// Number of operations that failed
+    /// Number of operations that failed.
     pub failed_count: usize,
-    /// Number of sub-batches created (due to size limits)
+    /// Number of sub-batches created (due to size limits).
     pub batches_count: usize,
-    /// Total bytes written
+    /// Total bytes written.
     pub total_bytes: usize,
-    /// Time taken to flush
+    /// Time taken to flush.
     pub duration: Duration,
 }
 
@@ -319,7 +325,10 @@ pub struct BatchWriter<B: StorageBackend> {
 }
 
 impl<B: StorageBackend + Clone> BatchWriter<B> {
-    /// Creates a new batch writer.
+    /// Creates a new batch writer backed by the given storage backend.
+    ///
+    /// The writer accumulates operations until [`flush`](Self::flush) or
+    /// [`flush_all`](Self::flush_all) is called.
     #[must_use]
     pub fn new(backend: B, config: BatchConfig) -> Self {
         Self { backend, operations: Vec::new(), current_size_bytes: 0, config }
@@ -494,6 +503,10 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
     ///
     /// This is a convenience wrapper around [`flush`](Self::flush) that returns
     /// the first error encountered, providing the simpler all-or-nothing API.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`StorageError`] encountered across all sub-batches.
     #[must_use = "flush may fail and partial results must be handled"]
     pub async fn flush_all(&mut self) -> StorageResult<BatchFlushStats> {
         self.flush().await.into_result()

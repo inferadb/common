@@ -744,6 +744,8 @@ impl From<inferadb_common_storage::StorageError> for AuthError {
 }
 
 /// Result type alias for authentication operations.
+///
+/// Shorthand for `std::result::Result<T, `[`AuthError`]`>`.
 pub type Result<T> = std::result::Result<T, AuthError>;
 
 #[cfg(test)]

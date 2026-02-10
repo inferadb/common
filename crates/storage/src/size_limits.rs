@@ -86,9 +86,10 @@ impl Default for SizeLimits {
 
 /// Validates key and value sizes against the given limits.
 ///
-/// Returns `Ok(())` when both sizes are within bounds, or
-/// `Err(StorageError::SizeLimitExceeded)` identifying which limit was
-/// violated.
+/// # Errors
+///
+/// Returns [`StorageError::SizeLimitExceeded`] identifying whether the `"key"` or
+/// `"value"` exceeded its limit.
 pub fn validate_sizes(key: &[u8], value: &[u8], limits: &SizeLimits) -> Result<(), StorageError> {
     if key.len() > limits.max_key_size {
         return Err(StorageError::size_limit_exceeded("key", key.len(), limits.max_key_size));
@@ -99,8 +100,15 @@ pub fn validate_sizes(key: &[u8], value: &[u8], limits: &SizeLimits) -> Result<(
     Ok(())
 }
 
-/// Validates key size only (for operations where the value is not available,
-/// e.g. delete or get operations that want key-length protection).
+/// Validates key size only.
+///
+/// Useful for operations where the value is not available (e.g., delete or
+/// get operations that want key-length protection).
+///
+/// # Errors
+///
+/// Returns [`StorageError::SizeLimitExceeded`] with `kind: "key"` if the key
+/// exceeds the configured limit.
 pub fn validate_key_size(key: &[u8], limits: &SizeLimits) -> Result<(), StorageError> {
     if key.len() > limits.max_key_size {
         return Err(StorageError::size_limit_exceeded("key", key.len(), limits.max_key_size));

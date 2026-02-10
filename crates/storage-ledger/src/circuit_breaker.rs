@@ -7,13 +7,11 @@
 //! # State Machine
 //!
 //! ```text
-//! ┌────────┐  failure_threshold  ┌──────┐  recovery_timeout   ┌──────────┐
-//! │ Closed │ ──────exceeded────→ │ Open │ ────elapsed──────→  │ HalfOpen │
-//! │        │ ←───success──────── │      │                     │          │
-//! └────────┘                     └──────┘  ←──probe fails───  └──────────┘
-//!                                           ──probe ok──────→  ┌────────┐
-//!                                                              │ Closed │
-//!                                                              └────────┘
+//! ┌────────┐  failure_threshold  ┌──────┐  recovery_timeout  ┌──────────┐
+//! │ Closed │ ──────exceeded────→ │ Open │ ────elapsed─────→  │ HalfOpen │
+//! └────────┘                     └──────┘ ←──probe fails──── └──────────┘
+//!      ↑                                                          │
+//!      └──────────────── success_threshold met ───────────────────┘
 //! ```
 
 use std::time::{Duration, Instant};

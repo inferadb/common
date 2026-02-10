@@ -12,6 +12,10 @@
 //! - [`StorageError::Internal`] - Backend-specific internal errors
 //! - [`StorageError::Timeout`] - Operation exceeded time limit
 //! - [`StorageError::CasRetriesExhausted`] - CAS retries exhausted due to sustained contention
+//! - [`StorageError::CircuitOpen`] - Circuit breaker is open and rejecting requests
+//! - [`StorageError::SizeLimitExceeded`] - Key or value exceeds configured size limit
+//! - [`StorageError::RateLimitExceeded`] - Rate limit exceeded; retry after indicated duration
+//! - [`StorageError::ShuttingDown`] - Backend is shutting down and rejecting new operations
 //! - [`ConfigError`] - Configuration value failed validation at construction time
 //!
 //! # Trace Context

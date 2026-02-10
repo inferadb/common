@@ -42,6 +42,12 @@ where
     L: AuditLogger,
 {
     /// Creates a new audited key store wrapping the given store and logger.
+    ///
+    /// # Arguments
+    ///
+    /// * `inner` - The underlying key store to delegate operations to.
+    /// * `logger` - The audit logger that receives [`AuditEvent`]s.
+    /// * `actor` - Identity string included in audit events (e.g., `"system"`, `"admin@org.com"`).
     pub fn new(inner: S, logger: L, actor: impl Into<Arc<str>>) -> Self {
         Self { inner, logger, actor: actor.into() }
     }

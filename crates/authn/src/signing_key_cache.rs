@@ -211,7 +211,7 @@ impl SigningKeyCache {
         Self::with_capacity(key_store, ttl, DEFAULT_CACHE_CAPACITY)
     }
 
-    /// Creates a new signing key cache with custom L1 capacity.
+    /// Creates a new signing key cache with custom capacity for L1 and L3.
     ///
     /// Uses [`DEFAULT_FALLBACK_TTL`] for the L3 fallback cache staleness bound.
     ///

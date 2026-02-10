@@ -228,14 +228,13 @@ impl SigningKeyMetricsSnapshot {
         }
     }
 
-    /// Returns the count of deserialization errors encountered during key listing.
+    /// Returns the count of serialization/deserialization errors.
     ///
-    /// Non-zero values indicate keys in storage that could not be parsed,
+    /// Non-zero values may indicate keys in storage that could not be parsed,
     /// possibly due to schema migration or data corruption. Operators should
     /// alert on this counter and investigate the affected keys.
     ///
-    /// This is a convenience accessor over `error_serialization` scoped to
-    /// the deserialization direction.
+    /// This is a convenience alias for `error_serialization`.
     #[must_use]
     pub fn deserialization_errors(&self) -> u64 {
         self.error_serialization

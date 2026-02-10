@@ -659,7 +659,8 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
     /// Unlike the default sequential implementation, this issues one network
     /// round-trip regardless of how many keys are being stored. Individual
     /// serialization failures are reported per-key; the remaining keys are
-    /// still submitted in the batch.
+    /// still submitted in the batch. If the batch write itself fails, all
+    /// successfully-serialized keys are reported as [`StorageError::Internal`].
     #[tracing::instrument(skip(self, keys), fields(count = keys.len()))]
     async fn create_keys(
         &self,

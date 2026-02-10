@@ -49,7 +49,7 @@ pub trait ReplayDetector: Send + Sync {
     async fn check_and_mark(&self, jti: &str, expires_in: Duration) -> Result<(), AuthError>;
 }
 
-/// Per-entry expiry policy that stores the remaining lifetime at insertion time.
+/// Per-entry expiry policy that computes remaining lifetime from the stored expiration instant.
 struct JtiExpiry;
 
 impl moka::Expiry<String, Instant> for JtiExpiry {

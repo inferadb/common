@@ -323,7 +323,8 @@ impl LedgerBackend {
     ///
     /// If the backend was constructed without a
     /// [`CancellationToken`](tokio_util::sync::CancellationToken), this method
-    /// creates one internally so that subsequent operations are rejected.
+    /// is a no-op. To enable shutdown support, provide a token via
+    /// [`LedgerBackendConfig`].
     ///
     /// This method is idempotent — calling it multiple times has no additional
     /// effect.

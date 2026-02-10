@@ -1,7 +1,7 @@
 //! Rate limiting for storage backends.
 //!
 //! Provides a [`TokenBucketLimiter`] implementation
-//! that protect backends from overload. The [`RateLimitedBackend`] wrapper
+//! that protects backends from overload. The [`RateLimitedBackend`] wrapper
 //! applies rate limiting transparently before delegating to the inner backend.
 //!
 //! # Per-Namespace Limiting
@@ -232,8 +232,12 @@ impl TokenBucketLimiter {
         self
     }
 
-    /// Checks the rate limit, returning `Ok(())` if allowed or
-    /// `Err(StorageError::RateLimitExceeded)` if rejected.
+    /// Checks the rate limit for the given key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError::RateLimitExceeded`] with a `retry_after` hint if the
+    /// bucket is empty.
     pub fn check(&self, key: &[u8]) -> StorageResult<()> {
         // Per-namespace limiting if extractor is configured
         if let Some(extractor) = &self.extractor
@@ -315,6 +319,9 @@ impl<B: std::fmt::Debug> std::fmt::Debug for RateLimitedBackend<B> {
 
 impl<B: StorageBackend> RateLimitedBackend<B> {
     /// Wraps a backend with the given rate limiter.
+    ///
+    /// The limiter is wrapped in an [`Arc`] internally, so the
+    /// `RateLimitedBackend` can be cloned cheaply.
     pub fn new(inner: B, limiter: TokenBucketLimiter) -> Self {
         Self { inner, limiter: Arc::new(limiter) }
     }
