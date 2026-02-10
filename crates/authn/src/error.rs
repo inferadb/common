@@ -589,7 +589,7 @@ impl AuthError {
     /// expected values, key IDs, and backend error details. **Never expose
     /// this output to external callers.**
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```no_run
     /// use inferadb_common_authn::error::AuthError;
@@ -697,7 +697,7 @@ impl AuthError {
     ///   Callers needing retry for JWKS/OIDC fetches should implement retry at the HTTP transport
     ///   layer.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```no_run
     /// use inferadb_common_authn::error::AuthError;

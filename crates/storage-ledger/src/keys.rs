@@ -10,13 +10,16 @@ use crate::error::LedgerStorageError;
 
 /// Encodes a key as a hexadecimal string.
 ///
-/// This encoding preserves byte ordering, which is essential for
-/// correct range scan behavior.
+/// This encoding preserves lexicographic byte ordering, which is critical
+/// for correct range query behavior over Ledger's string-based key space.
 pub(crate) fn encode_key(key: &[u8]) -> String {
     hex::encode(key)
 }
 
 /// Decodes a hexadecimal key string back to bytes.
+///
+/// The decoding is the inverse of [`encode_key`] and preserves the
+/// original lexicographic ordering of the raw byte keys.
 pub(crate) fn decode_key(key: &str) -> std::result::Result<Vec<u8>, LedgerStorageError> {
     hex::decode(key).map_err(|e| LedgerStorageError::key_encoding(e.to_string()))
 }

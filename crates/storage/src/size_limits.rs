@@ -25,7 +25,7 @@ pub const DEFAULT_MAX_VALUE_SIZE: usize = 512 * 1024;
 /// Both limits must be at least 1. Use [`SizeLimits::default`] for the
 /// standard limits, or construct with custom values.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```no_run
 /// use inferadb_common_storage::SizeLimits;

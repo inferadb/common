@@ -56,7 +56,7 @@ pub const DEFAULT_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 ///
 /// Set `max_retries` to `0` to disable retries entirely.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```
 /// use std::time::Duration;
@@ -167,7 +167,7 @@ pub const DEFAULT_CAS_RETRY_BASE_DELAY: Duration = Duration::from_millis(50);
 /// Each retry waits `base_delay + random(0..base_delay)`. The uniform
 /// jitter reduces contention when multiple writers target the same key.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```
 /// use std::time::Duration;
@@ -232,7 +232,7 @@ impl Default for CasRetryConfig {
 ///
 /// All three timeout durations must be positive (`> Duration::ZERO`).
 ///
-/// # Example
+/// # Examples
 ///
 /// ```
 /// use std::time::Duration;
@@ -344,7 +344,7 @@ impl Default for TimeoutConfig {
 /// - `page_size` must be `>= 1`
 /// - `max_range_results` must be `>= 1`
 ///
-/// # Example
+/// # Examples
 ///
 /// ```no_run
 /// // Requires a running Ledger server for the `ClientConfig` connection.

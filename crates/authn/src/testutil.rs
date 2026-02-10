@@ -30,7 +30,7 @@ use rand_core::OsRng;
 use serde_json::json;
 use zeroize::Zeroizing;
 
-/// Generate a test Ed25519 key pair.
+/// Generates a test Ed25519 key pair.
 ///
 /// Returns `(pkcs8_der, public_key_base64url)` where:
 /// - `pkcs8_der` is the private key in PKCS#8 DER format wrapped in [`Zeroizing`] (suitable for
@@ -62,7 +62,7 @@ pub fn generate_test_keypair() -> (Zeroizing<Vec<u8>>, String) {
     (pkcs8_der, public_key_b64)
 }
 
-/// Create a valid JWT signed with an Ed25519 key in PKCS#8 DER format.
+/// Creates a valid JWT signed with an Ed25519 key in PKCS#8 DER format.
 ///
 /// The JWT contains standard claims (`iss`, `sub`, `aud`, `exp`, `iat`,
 /// `scope`) and the given `org_id`. The `kid` header is set to the
@@ -92,7 +92,7 @@ pub fn create_signed_jwt(pkcs8_der: &[u8], kid: &str, org_id: &str) -> String {
     jsonwebtoken::encode(&header, &claims, &encoding_key).expect("Failed to encode test JWT")
 }
 
-/// Create a valid JWT with a `jti` claim, signed with an Ed25519 key in PKCS#8 DER format.
+/// Creates a valid JWT with a `jti` claim, signed with an Ed25519 key in PKCS#8 DER format.
 ///
 /// Identical to [`create_signed_jwt`] but also includes a `jti` (JWT ID) claim
 /// for replay detection testing.
@@ -122,7 +122,7 @@ pub fn create_signed_jwt_with_jti(pkcs8_der: &[u8], kid: &str, org_id: &str, jti
     jsonwebtoken::encode(&header, &claims, &encoding_key).expect("Failed to encode test JWT")
 }
 
-/// Create a raw JWT string from arbitrary header and payload JSON.
+/// Creates a raw JWT string from arbitrary header and payload JSON.
 ///
 /// The resulting JWT has the structure `{header_b64}.{payload_b64}.`
 /// with an empty signature. This is useful for testing rejection of
@@ -138,7 +138,7 @@ pub fn craft_raw_jwt(header_json: &serde_json::Value, payload_json: &serde_json:
     format!("{header_b64}.{payload_b64}.")
 }
 
-/// Create a [`PublicSigningKey`] suitable for testing.
+/// Creates a [`PublicSigningKey`] suitable for testing.
 ///
 /// Generates a fresh Ed25519 key pair internally. The key is active,
 /// not revoked, and valid from 1 hour ago with no expiry.
@@ -163,7 +163,7 @@ pub fn create_test_signing_key(kid: &str) -> (Zeroizing<Vec<u8>>, PublicSigningK
     (pkcs8_der, key)
 }
 
-/// Create a [`PublicSigningKey`] with a specific public key string.
+/// Creates a [`PublicSigningKey`] with a specific public key string.
 ///
 /// This is useful when you already have a key pair and want to create
 /// a `PublicSigningKey` that matches it. The key is active, not revoked,
@@ -183,7 +183,7 @@ pub fn create_test_signing_key_with_pubkey(kid: &str, public_key_b64: &str) -> P
     }
 }
 
-/// Assert that a [`Result<T, AuthError>`] is an `Err` matching the given [`AuthError`] variant.
+/// Asserts that a [`Result<T, AuthError>`] is an `Err` matching the given [`AuthError`] variant.
 ///
 /// Works with any `AuthError` variant. On failure, prints the expected variant
 /// and the actual result for debugging.

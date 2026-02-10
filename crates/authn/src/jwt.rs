@@ -2,7 +2,7 @@
 //!
 //! This module provides types and functions for decoding and validating JWTs.
 //!
-//! # Example
+//! # Examples
 //!
 //! ```no_run
 //! // Requires a valid JWT token string.
@@ -83,7 +83,7 @@ pub struct JwtClaims {
 }
 
 impl JwtClaims {
-    /// Require the organization ID from claims, returning an error if absent.
+    /// Requires the organization ID from claims, returning an error if absent.
     ///
     /// Use this when the `org_id` claim is mandatory for the operation (e.g., JWT verification
     /// where the org ID is needed to look up the signing key). For optional access, use
@@ -104,21 +104,21 @@ impl JwtClaims {
             .ok_or_else(|| AuthError::missing_claim("org_id"))
     }
 
-    /// Parse scopes from space-separated string.
+    /// Parses scopes from the space-separated string.
     #[must_use]
     pub fn parse_scopes(&self) -> Vec<String> {
         self.scope.split_whitespace().map(|s| s.to_string()).collect()
     }
 
-    /// Extract vault ID (Snowflake ID) from claims.
+    /// Extracts vault ID (Snowflake ID) from claims.
     ///
-    /// Returns None if not present.
+    /// Returns `None` if not present.
     #[must_use]
     pub fn extract_vault_id(&self) -> Option<String> {
         self.vault_id.clone()
     }
 
-    /// Get the organization ID from claims, if present.
+    /// Returns the organization ID from claims, if present.
     ///
     /// Returns the raw `org_id` claim value without validation. Use
     /// [`require_org_id`](Self::require_org_id) when the org ID is mandatory and you want an
@@ -129,7 +129,7 @@ impl JwtClaims {
     }
 }
 
-/// Decode JWT header without verification.
+/// Decodes a JWT header without verification.
 ///
 /// # Errors
 ///
@@ -141,7 +141,7 @@ pub fn decode_jwt_header(token: &str) -> Result<Header, AuthError> {
         .map_err(|e| AuthError::invalid_token_format(format!("Failed to decode JWT header: {}", e)))
 }
 
-/// Decode JWT claims without verification (used to extract issuer for key lookup).
+/// Decodes JWT claims without verification (used to extract issuer for key lookup).
 ///
 /// # Errors
 ///
@@ -189,7 +189,7 @@ pub fn decode_jwt_claims(token: &str) -> Result<JwtClaims, AuthError> {
     Ok(claims)
 }
 
-/// Validate JWT claims (timestamp and audience checks).
+/// Validates JWT claims (timestamp and audience checks).
 ///
 /// # Arguments
 ///
@@ -254,7 +254,7 @@ pub fn validate_claims(
     Ok(())
 }
 
-/// Verify JWT signature with a public key.
+/// Verifies a JWT signature with a public key.
 ///
 /// # Errors
 ///
@@ -276,7 +276,7 @@ pub fn verify_signature(
     Ok(token_data.claims)
 }
 
-/// Verify JWT signature using Ledger-backed signing key cache.
+/// Verifies a JWT signature using the Ledger-backed signing key cache.
 ///
 /// This function verifies JWTs using public signing keys fetched from Ledger:
 /// 1. Decodes the JWT header to extract the key ID (`kid`) and algorithm
@@ -304,7 +304,7 @@ pub fn verify_signature(
 /// - The key cannot be found in Ledger or is inactive/revoked/expired
 /// - The signature is invalid
 ///
-/// # Example
+/// # Examples
 ///
 /// ```no_run
 /// // Requires a valid JWT token and a signing key registered in the cache.
@@ -382,7 +382,7 @@ pub async fn verify_with_signing_key_cache(
     Ok(verified_claims)
 }
 
-/// Verify JWT signature with replay detection via JTI tracking.
+/// Verifies a JWT signature with replay detection via JTI tracking.
 ///
 /// Extends [`verify_with_signing_key_cache`] with replay prevention:
 /// after successful signature verification, the token's `jti` claim is
@@ -407,7 +407,7 @@ pub async fn verify_with_signing_key_cache(
 /// - [`AuthError::MissingJti`] if the token lacks a `jti` claim
 /// - [`AuthError::TokenReplayed`] if the JTI was already seen
 ///
-/// # Example
+/// # Examples
 ///
 /// ```no_run
 /// use std::sync::Arc;

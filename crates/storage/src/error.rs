@@ -21,7 +21,7 @@
 //! of errors with the request that produced them, bridging the gap between
 //! error types and distributed tracing infrastructure.
 //!
-//! # Example
+//! # Examples
 //!
 //! ```
 //! use inferadb_common_storage::{StorageError, StorageResult};

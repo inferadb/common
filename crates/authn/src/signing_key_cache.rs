@@ -22,7 +22,7 @@
 //! - **Eviction**: Time-based expiration + capacity limits
 //! - **Invalidation**: Keys become invalid on next fetch after Ledger state changes
 //!
-//! # Example
+//! # Examples
 //!
 //! ```no_run
 //! // Requires a `PublicSigningKeyStore` implementation (e.g., LedgerSigningKeyStore).
@@ -112,7 +112,9 @@ struct FallbackEntry {
 /// Cache for public signing keys fetched from Ledger.
 ///
 /// Wraps [`PublicSigningKeyStore`] with in-memory caching to avoid
-/// Ledger round-trips on every token validation.
+/// Ledger round-trips on every token validation. An optional background
+/// refresh task (see [`with_refresh_interval`](Self::with_refresh_interval))
+/// proactively re-fetches active keys before their TTL expires.
 ///
 /// # Key Validation
 ///
@@ -191,7 +193,7 @@ impl SigningKeyCache {
     /// * `key_store` - Backend store (typically Ledger-backed)
     /// * `ttl` - Time-to-live for L1 cached keys
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```no_run
     /// // Requires a `PublicSigningKeyStore` implementation (e.g., LedgerSigningKeyStore).
@@ -277,9 +279,9 @@ impl SigningKeyCache {
         }
     }
 
-    /// Gets the decoding key for JWT validation.
+    /// Returns the decoding key for JWT validation.
     ///
-    /// Checks local cache first, then fetches from Ledger on miss.
+    /// Checks the local cache first, then fetches from Ledger on miss.
     /// The key is validated for state (active, not revoked, within validity window)
     /// before being returned.
     ///

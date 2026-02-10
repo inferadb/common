@@ -10,7 +10,7 @@ use bytes::Bytes;
 /// This struct represents a single entry from the storage backend,
 /// containing both the key and its associated value as byte sequences.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```
 /// use bytes::Bytes;
@@ -38,7 +38,7 @@ impl KeyValue {
     /// * `key` - The key as a byte sequence
     /// * `value` - The value as a byte sequence
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// use bytes::Bytes;
@@ -100,7 +100,7 @@ define_id!(
     /// misuse — passing a `VaultId` where a `NamespaceId` is expected
     /// is a compile-time error.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// use inferadb_common_storage::NamespaceId;
@@ -118,7 +118,7 @@ define_id!(
     /// Vaults represent blockchain chains within a Ledger namespace.
     /// When present, all key-value operations are scoped to the vault.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// use inferadb_common_storage::VaultId;
@@ -135,7 +135,7 @@ define_id!(
     /// Links a [`PublicSigningKey`](crate::auth::PublicSigningKey) to the
     /// API client that will use it for authentication.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// use inferadb_common_storage::ClientId;
@@ -152,7 +152,7 @@ define_id!(
     /// Provides a back-reference to the certificate record in Control
     /// for auditing and management purposes.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// use inferadb_common_storage::CertId;

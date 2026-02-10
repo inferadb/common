@@ -59,7 +59,7 @@ use crate::{
 /// | [`transaction`](StorageBackend::transaction) | Begin an atomic transaction |
 /// | [`health_check`](StorageBackend::health_check) | Verify backend availability |
 ///
-/// # Example
+/// # Examples
 ///
 /// ```
 /// use bytes::Bytes;
@@ -270,7 +270,7 @@ pub trait StorageBackend: Send + Sync {
     /// - [`StorageError::SizeLimitExceeded`](crate::StorageError) — `key` or serialized `new_value`
     ///   exceeds configured size limits.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```no_run
     /// use inferadb_common_storage::{MemoryBackend, StorageBackend};

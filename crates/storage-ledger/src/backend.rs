@@ -54,7 +54,7 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
 /// `LedgerBackend` is `Send + Sync` and can be safely shared across threads.
 /// The underlying SDK client manages connection pooling internally.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```no_run
 /// // Requires a running Ledger server.
@@ -146,7 +146,7 @@ impl LedgerBackend {
     /// - Configuration is invalid
     /// - Unable to connect to Ledger
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```no_run
     /// // Requires a running Ledger server.

@@ -36,7 +36,7 @@ use crate::error::AuthError;
 /// The detector is responsible for automatically cleaning up expired entries.
 #[async_trait]
 pub trait ReplayDetector: Send + Sync {
-    /// Check whether a JTI has been seen before and mark it as seen.
+    /// Checks whether a JTI has been seen before and marks it as seen.
     ///
     /// # Arguments
     ///
@@ -81,7 +81,7 @@ pub struct InMemoryReplayDetector {
 }
 
 impl InMemoryReplayDetector {
-    /// Create a new replay detector with the given maximum capacity.
+    /// Creates a new replay detector with the given maximum capacity.
     ///
     /// # Arguments
     ///

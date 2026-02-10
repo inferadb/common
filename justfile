@@ -24,12 +24,16 @@ fmt-check:
 fmt:
     cargo +nightly fmt
 
+# Check documentation builds without warnings
+doc-check:
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
 # Check for unused dependencies
 udeps:
     cargo +nightly udeps --all-targets
 
-# Run all checks including udeps
-check-all: check udeps
+# Run all checks including udeps and doc-check
+check-all: check udeps doc-check
 
 # Update dependencies to latest versions
 update:

@@ -87,10 +87,15 @@ pub struct LatencyPercentiles {
 
 // ── Namespace Metrics ───────────────────────────────────────────────────
 
-/// Default maximum number of tracked namespaces before overflow goes to the "other" bucket.
+/// Default maximum number of tracked namespaces before overflow goes to the `"_other"` bucket.
+///
+/// 100 is chosen to cover typical multi-tenant deployments without excessive memory overhead
+/// (each namespace adds ~104 bytes of counter state).
 pub const DEFAULT_MAX_TRACKED_NAMESPACES: usize = 100;
 
-/// The sentinel namespace name used for operations that exceed the cardinality bound.
+/// Sentinel namespace name for operations that exceed the cardinality bound.
+///
+/// The leading underscore prevents collisions with user-defined namespaces.
 const OTHER_BUCKET: &str = "_other";
 
 /// Per-namespace operation counters.
@@ -187,7 +192,8 @@ impl NamespaceTracker {
         Self { counters: HashMap::new(), max_namespaces }
     }
 
-    /// Get or create counters for the given namespace, respecting the cardinality bound.
+    /// Returns counters for the given namespace, creating them if needed, respecting the
+    /// cardinality bound.
     fn get_or_insert(&mut self, namespace: &str) -> &mut NamespaceCounters {
         // Determine the effective key: the namespace itself if within cardinality
         // limit, or the overflow bucket otherwise.
@@ -318,7 +324,7 @@ fn percentile_index(len: usize, percentile: u32) -> usize {
 
 // ── MetricsSnapshot ─────────────────────────────────────────────────────
 
-/// Metrics snapshot for export
+/// Metrics snapshot for export.
 #[derive(Debug, Clone, Default, bon::Builder)]
 pub struct MetricsSnapshot {
     /// Total GET operations
@@ -421,19 +427,19 @@ pub struct MetricsSnapshot {
 }
 
 impl MetricsSnapshot {
-    /// Calculate average GET latency in microseconds
+    /// Returns the average GET latency in microseconds.
     #[must_use]
     pub fn avg_get_latency_us(&self) -> f64 {
         if self.get_count == 0 { 0.0 } else { self.get_latency_us as f64 / self.get_count as f64 }
     }
 
-    /// Calculate average SET latency in microseconds
+    /// Returns the average SET latency in microseconds.
     #[must_use]
     pub fn avg_set_latency_us(&self) -> f64 {
         if self.set_count == 0 { 0.0 } else { self.set_latency_us as f64 / self.set_count as f64 }
     }
 
-    /// Calculate average DELETE latency in microseconds
+    /// Returns the average DELETE latency in microseconds.
     #[must_use]
     pub fn avg_delete_latency_us(&self) -> f64 {
         if self.delete_count == 0 {
@@ -443,7 +449,7 @@ impl MetricsSnapshot {
         }
     }
 
-    /// Calculate average GET_RANGE latency in microseconds
+    /// Returns the average GET_RANGE latency in microseconds.
     #[must_use]
     pub fn avg_get_range_latency_us(&self) -> f64 {
         if self.get_range_count == 0 {
@@ -453,7 +459,7 @@ impl MetricsSnapshot {
         }
     }
 
-    /// Calculate average CLEAR_RANGE latency in microseconds
+    /// Returns the average CLEAR_RANGE latency in microseconds.
     #[must_use]
     pub fn avg_clear_range_latency_us(&self) -> f64 {
         if self.clear_range_count == 0 {
@@ -463,7 +469,7 @@ impl MetricsSnapshot {
         }
     }
 
-    /// Calculate average TRANSACTION latency in microseconds
+    /// Returns the average TRANSACTION latency in microseconds.
     #[must_use]
     pub fn avg_transaction_latency_us(&self) -> f64 {
         if self.transaction_count == 0 {
@@ -473,21 +479,21 @@ impl MetricsSnapshot {
         }
     }
 
-    /// Calculate cache hit rate (0.0 - 1.0)
+    /// Returns the cache hit rate (0.0 - 1.0).
     #[must_use]
     pub fn cache_hit_rate(&self) -> f64 {
         let total = self.cache_hits + self.cache_misses;
         if total == 0 { 0.0 } else { self.cache_hits as f64 / total as f64 }
     }
 
-    /// Calculate error rate (0.0 - 1.0)
+    /// Returns the error rate (0.0 - 1.0).
     #[must_use]
     pub fn error_rate(&self) -> f64 {
         let total_ops = self.total_operations();
         if total_ops == 0 { 0.0 } else { self.error_count as f64 / total_ops as f64 }
     }
 
-    /// Calculate conflict rate (0.0 - 1.0)
+    /// Returns the conflict rate (0.0 - 1.0).
     #[must_use]
     pub fn conflict_rate(&self) -> f64 {
         if self.transaction_count == 0 {
@@ -497,7 +503,7 @@ impl MetricsSnapshot {
         }
     }
 
-    /// Total operations count
+    /// Returns the total operations count.
     #[must_use]
     pub fn total_operations(&self) -> u64 {
         self.get_count
@@ -511,7 +517,7 @@ impl MetricsSnapshot {
 
 // ── Metrics / MetricsInner ──────────────────────────────────────────────
 
-/// Metrics collector for storage operations
+/// Collects operation counts, latencies, error rates, and cache statistics for a storage backend.
 #[derive(Clone)]
 pub struct Metrics {
     inner: Arc<MetricsInner>,
@@ -566,7 +572,7 @@ struct MetricsInner {
 }
 
 impl Metrics {
-    /// Create a new metrics collector
+    /// Creates a new metrics collector.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -606,7 +612,7 @@ impl Metrics {
         }
     }
 
-    /// Create a new metrics collector with a custom namespace cardinality limit.
+    /// Creates a new metrics collector with a custom namespace cardinality limit.
     ///
     /// `max_tracked_namespaces` controls how many distinct namespaces are tracked
     /// individually. Operations for namespaces beyond this limit are aggregated
@@ -648,7 +654,7 @@ impl Metrics {
         }
     }
 
-    /// Record a GET operation
+    /// Records a GET operation.
     pub fn record_get(&self, duration: Duration) {
         let us = duration.as_micros() as u64;
         self.inner.get_count.fetch_add(1, Ordering::Relaxed);
@@ -656,7 +662,7 @@ impl Metrics {
         self.inner.get_histogram.record(us);
     }
 
-    /// Record a SET operation
+    /// Records a SET operation.
     pub fn record_set(&self, duration: Duration) {
         let us = duration.as_micros() as u64;
         self.inner.set_count.fetch_add(1, Ordering::Relaxed);
@@ -664,7 +670,7 @@ impl Metrics {
         self.inner.set_histogram.record(us);
     }
 
-    /// Record a DELETE operation
+    /// Records a DELETE operation.
     pub fn record_delete(&self, duration: Duration) {
         let us = duration.as_micros() as u64;
         self.inner.delete_count.fetch_add(1, Ordering::Relaxed);
@@ -672,7 +678,7 @@ impl Metrics {
         self.inner.delete_histogram.record(us);
     }
 
-    /// Record a GET_RANGE operation
+    /// Records a GET_RANGE operation.
     pub fn record_get_range(&self, duration: Duration) {
         let us = duration.as_micros() as u64;
         self.inner.get_range_count.fetch_add(1, Ordering::Relaxed);
@@ -680,7 +686,7 @@ impl Metrics {
         self.inner.get_range_histogram.record(us);
     }
 
-    /// Record a CLEAR_RANGE operation
+    /// Records a CLEAR_RANGE operation.
     pub fn record_clear_range(&self, duration: Duration) {
         let us = duration.as_micros() as u64;
         self.inner.clear_range_count.fetch_add(1, Ordering::Relaxed);
@@ -688,13 +694,13 @@ impl Metrics {
         self.inner.clear_range_histogram.record(us);
     }
 
-    /// Record a CLEAR_RANGE error
+    /// Records a CLEAR_RANGE error.
     pub fn record_clear_range_error(&self) {
         self.inner.clear_range_error_count.fetch_add(1, Ordering::Relaxed);
         self.inner.error_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a TRANSACTION operation
+    /// Records a TRANSACTION operation.
     pub fn record_transaction(&self, duration: Duration) {
         let us = duration.as_micros() as u64;
         self.inner.transaction_count.fetch_add(1, Ordering::Relaxed);
@@ -702,42 +708,42 @@ impl Metrics {
         self.inner.transaction_histogram.record(us);
     }
 
-    /// Record an error
+    /// Records an error.
     pub fn record_error(&self) {
         self.inner.error_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a transaction conflict
+    /// Records a transaction conflict.
     pub fn record_conflict(&self) {
         self.inner.conflict_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a timeout error
+    /// Records a timeout error.
     pub fn record_timeout(&self) {
         self.inner.timeout_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a cache hit
+    /// Records a cache hit.
     pub fn record_cache_hit(&self) {
         self.inner.cache_hits.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a cache miss
+    /// Records a cache miss.
     pub fn record_cache_miss(&self) {
         self.inner.cache_misses.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a TTL operation
+    /// Records a TTL operation.
     pub fn record_ttl_operation(&self) {
         self.inner.ttl_operations.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a health check
+    /// Records a health check.
     pub fn record_health_check(&self) {
         self.inner.health_check_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a retry attempt.
+    /// Records a retry attempt.
     ///
     /// Called each time a transient failure triggers a retry. The count
     /// tracks individual retry attempts, not operations that were retried.
@@ -745,7 +751,7 @@ impl Metrics {
         self.inner.retry_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record a retry-exhausted event.
+    /// Records a retry-exhausted event.
     ///
     /// Called when all retry attempts have been exhausted and the operation
     /// fails permanently. This is a subset of `error_count`.
@@ -759,7 +765,7 @@ impl Metrics {
     // breakdown. Pass `namespace` to attribute the operation to a specific
     // tenant/namespace for multi-tenant observability.
 
-    /// Record a GET operation attributed to a namespace.
+    /// Records a GET operation attributed to a namespace.
     pub fn record_get_ns(&self, duration: Duration, namespace: &str) {
         self.record_get(duration);
         let us = duration.as_micros() as u64;
@@ -769,7 +775,7 @@ impl Metrics {
         c.get_latency_us += us;
     }
 
-    /// Record a SET operation attributed to a namespace.
+    /// Records a SET operation attributed to a namespace.
     pub fn record_set_ns(&self, duration: Duration, namespace: &str) {
         self.record_set(duration);
         let us = duration.as_micros() as u64;
@@ -779,7 +785,7 @@ impl Metrics {
         c.set_latency_us += us;
     }
 
-    /// Record a DELETE operation attributed to a namespace.
+    /// Records a DELETE operation attributed to a namespace.
     pub fn record_delete_ns(&self, duration: Duration, namespace: &str) {
         self.record_delete(duration);
         let us = duration.as_micros() as u64;
@@ -789,7 +795,7 @@ impl Metrics {
         c.delete_latency_us += us;
     }
 
-    /// Record a GET_RANGE operation attributed to a namespace.
+    /// Records a GET_RANGE operation attributed to a namespace.
     pub fn record_get_range_ns(&self, duration: Duration, namespace: &str) {
         self.record_get_range(duration);
         let us = duration.as_micros() as u64;
@@ -799,7 +805,7 @@ impl Metrics {
         c.get_range_latency_us += us;
     }
 
-    /// Record a CLEAR_RANGE operation attributed to a namespace.
+    /// Records a CLEAR_RANGE operation attributed to a namespace.
     pub fn record_clear_range_ns(&self, duration: Duration, namespace: &str) {
         self.record_clear_range(duration);
         let us = duration.as_micros() as u64;
@@ -809,7 +815,7 @@ impl Metrics {
         c.clear_range_latency_us += us;
     }
 
-    /// Record a TRANSACTION operation attributed to a namespace.
+    /// Records a TRANSACTION operation attributed to a namespace.
     pub fn record_transaction_ns(&self, duration: Duration, namespace: &str) {
         self.record_transaction(duration);
         let us = duration.as_micros() as u64;
@@ -819,7 +825,7 @@ impl Metrics {
         c.transaction_latency_us += us;
     }
 
-    /// Record an error attributed to a namespace.
+    /// Records an error attributed to a namespace.
     pub fn record_error_ns(&self, namespace: &str) {
         self.record_error();
         let mut tracker = self.inner.namespace_tracker.lock();
@@ -827,7 +833,7 @@ impl Metrics {
         c.error_count += 1;
     }
 
-    /// Get a snapshot of current metrics.
+    /// Returns a snapshot of current metrics.
     ///
     /// Reads all counters using `Relaxed` ordering. The snapshot is approximately
     /// consistent — individual counter values are accurate, but counters may
@@ -871,7 +877,7 @@ impl Metrics {
         }
     }
 
-    /// Reset all metrics to zero
+    /// Resets all metrics to zero.
     pub fn reset(&self) {
         self.inner.get_count.store(0, Ordering::Relaxed);
         self.inner.set_count.store(0, Ordering::Relaxed);
@@ -904,7 +910,7 @@ impl Metrics {
         self.inner.namespace_tracker.lock().reset();
     }
 
-    /// Log current metrics at INFO level
+    /// Logs current metrics at INFO level.
     pub fn log_metrics(&self) {
         let snapshot = self.snapshot();
 
@@ -979,9 +985,9 @@ impl Default for Metrics {
     }
 }
 
-/// Trait for collecting metrics from storage backends
+/// Trait for collecting metrics from storage backends.
 pub trait MetricsCollector {
-    /// Get metrics instance
+    /// Returns the metrics instance.
     fn metrics(&self) -> &Metrics;
 }
 

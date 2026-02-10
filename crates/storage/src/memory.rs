@@ -10,7 +10,7 @@
 //! - **TTL support**: Background task cleans up expired keys
 //! - **Transaction support**: MVCC-like semantics with read-your-writes
 //!
-//! # Example
+//! # Examples
 //!
 //! ```
 //! use inferadb_common_storage::{MemoryBackend, StorageBackend};
@@ -110,7 +110,7 @@ impl MemoryBackend {
     /// expired keys (those set with TTL via [`set_with_ttl`](StorageBackend::set_with_ttl)).
     /// The task stops automatically when all clones of the backend are dropped.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```
     /// use inferadb_common_storage::MemoryBackend;
@@ -131,7 +131,7 @@ impl MemoryBackend {
     /// transaction `commit`) will reject keys or values that exceed the
     /// configured [`SizeLimits`].
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```no_run
     /// use inferadb_common_storage::{MemoryBackend, SizeLimits};

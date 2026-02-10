@@ -10,7 +10,7 @@
 //! rate limits via a configurable [`NamespaceExtractor`]. Each namespace gets
 //! its own token bucket, preventing noisy-neighbor issues.
 //!
-//! # Example
+//! # Examples
 //!
 //! ```no_run
 //! use std::time::Duration;

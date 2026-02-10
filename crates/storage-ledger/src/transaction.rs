@@ -73,7 +73,7 @@ struct CasOperation {
 ///   by the ledger at commit time, not locally. This means CAS detects conflicts even from other
 ///   clients.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```no_run
 /// // Requires a running Ledger server.

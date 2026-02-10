@@ -36,7 +36,7 @@
 //! - `ed25519_dalek::SigningKey` — used only in test code. The `SigningKey` type implements its own
 //!   [`Zeroize`](zeroize::Zeroize) on drop.
 //!
-//! ## Example
+//! ## Examples
 //!
 //! ```no_run
 //! // Requires a `PublicSigningKeyStore` implementation and a valid JWT token.

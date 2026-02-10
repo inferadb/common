@@ -25,7 +25,7 @@ use inferadb_ledger_sdk::{ClientConfig, ServerSource, mock::MockLedgerServer};
 
 use crate::{backend::LedgerBackend, config::LedgerBackendConfig};
 
-/// Create a [`ClientConfig`] pointing at the given mock server.
+/// Creates a [`ClientConfig`] pointing at the given mock server.
 ///
 /// Uses `"test-client"` as the default client ID. If you need a specific
 /// client ID (e.g., for multi-client tests), use [`test_client_config_with_id`].
@@ -33,7 +33,7 @@ pub fn test_client_config(server: &MockLedgerServer) -> ClientConfig {
     test_client_config_with_id(server, "test-client")
 }
 
-/// Create a [`ClientConfig`] with a specific client ID.
+/// Creates a [`ClientConfig`] with a specific client ID.
 ///
 /// # Panics
 ///
@@ -47,7 +47,7 @@ pub fn test_client_config_with_id(server: &MockLedgerServer, client_id: &str) ->
         .expect("valid client config")
 }
 
-/// Create a [`LedgerBackend`] connected to the given mock server.
+/// Creates a [`LedgerBackend`] connected to the given mock server.
 ///
 /// Uses default configuration: namespace 1, vault 0, no pagination
 /// overrides. For custom configuration, build the backend manually
@@ -67,7 +67,7 @@ pub async fn create_test_backend(server: &MockLedgerServer) -> LedgerBackend {
     LedgerBackend::new(config).await.expect("backend creation should succeed")
 }
 
-/// Create a [`LedgerBackend`] with custom pagination settings.
+/// Creates a [`LedgerBackend`] with custom pagination settings.
 ///
 /// Useful for testing pagination behavior with smaller page sizes.
 ///

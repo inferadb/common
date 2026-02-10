@@ -90,6 +90,7 @@
 //!   tests.
 
 #![deny(unsafe_code)]
+#![warn(missing_docs)]
 
 pub mod auth;
 pub mod backend;

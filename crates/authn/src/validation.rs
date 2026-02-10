@@ -39,7 +39,7 @@ pub const FORBIDDEN_ALGORITHMS: &[&str] = &["none", "HS256", "HS384", "HS512"];
 /// produce confusing errors at the signature verification stage.
 pub const ACCEPTED_ALGORITHMS: &[&str] = &["EdDSA"];
 
-/// Validate JWT algorithm against security policies.
+/// Validates the JWT algorithm against security policies.
 ///
 /// This function enforces strict algorithm security per RFC 8725:
 /// - ALWAYS rejects symmetric algorithms (HS256, HS384, HS512)
@@ -97,7 +97,7 @@ pub fn validate_algorithm(alg: &str) -> Result<(), AuthError> {
 /// Maximum allowed length for a JWT `kid` header parameter.
 pub const MAX_KID_LENGTH: usize = 256;
 
-/// Validate the JWT `kid` (Key ID) header parameter.
+/// Validates the JWT `kid` (Key ID) header parameter.
 ///
 /// The `kid` is used as a cache key and storage lookup key. Validating it
 /// at JWT parsing time — before any cache or storage interaction — prevents

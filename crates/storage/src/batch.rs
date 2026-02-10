@@ -4,7 +4,7 @@
 //! and flushes them in optimized batches. It automatically splits large batches
 //! to respect transaction size limits.
 //!
-//! # Usage
+//! # Examples
 //!
 //! ```
 //! use inferadb_common_storage::{MemoryBackend, batch::{BatchWriter, BatchConfig}};
@@ -145,17 +145,27 @@ impl BatchConfig {
     }
 }
 
-/// Represents a single write operation in a batch
+/// A single write operation in a batch.
 #[derive(Debug, Clone)]
 pub enum BatchOperation {
-    /// Set a key-value pair
-    Set { key: Vec<u8>, value: Vec<u8> },
-    /// Delete a key
-    Delete { key: Vec<u8> },
+    /// Stores a key-value pair. Overwrites any existing value for the key.
+    Set {
+        /// The key to store.
+        key: Vec<u8>,
+        /// The value to associate with the key.
+        value: Vec<u8>,
+    },
+    /// Removes a key and its associated value. No-op if the key does not exist.
+    Delete {
+        /// The key to remove.
+        key: Vec<u8>,
+    },
 }
 
 impl BatchOperation {
-    /// Calculate the approximate size of this operation in bytes
+    /// Calculates the approximate size of this operation in bytes.
+    ///
+    /// Includes an estimated 50-byte overhead for transaction encoding.
     #[must_use]
     pub fn size_bytes(&self) -> usize {
         match self {
@@ -170,7 +180,7 @@ impl BatchOperation {
         }
     }
 
-    /// Get the key for this operation
+    /// Returns the key associated with this operation.
     #[must_use]
     pub fn key(&self) -> &[u8] {
         match self {
@@ -298,10 +308,9 @@ impl BatchResult {
     }
 }
 
-/// Batch writer for accumulating and flushing write operations
+/// Accumulates write operations and flushes them in optimized batches.
 ///
-/// This writer accumulates write operations and flushes them in optimized batches.
-/// It automatically splits large batches to respect transaction size limits.
+/// Automatically splits large batches to respect transaction size limits.
 pub struct BatchWriter<B: StorageBackend> {
     backend: B,
     operations: Vec<BatchOperation>,
@@ -310,39 +319,39 @@ pub struct BatchWriter<B: StorageBackend> {
 }
 
 impl<B: StorageBackend + Clone> BatchWriter<B> {
-    /// Create a new batch writer
+    /// Creates a new batch writer.
     #[must_use]
     pub fn new(backend: B, config: BatchConfig) -> Self {
         Self { backend, operations: Vec::new(), current_size_bytes: 0, config }
     }
 
-    /// Add a set operation to the batch
+    /// Adds a set operation to the batch.
     pub fn set(&mut self, key: Vec<u8>, value: Vec<u8>) {
         let op = BatchOperation::Set { key, value };
         self.current_size_bytes += op.size_bytes();
         self.operations.push(op);
     }
 
-    /// Add a delete operation to the batch
+    /// Adds a delete operation to the batch.
     pub fn delete(&mut self, key: Vec<u8>) {
         let op = BatchOperation::Delete { key };
         self.current_size_bytes += op.size_bytes();
         self.operations.push(op);
     }
 
-    /// Get the current number of pending operations
+    /// Returns the number of pending operations.
     #[must_use]
     pub fn pending_count(&self) -> usize {
         self.operations.len()
     }
 
-    /// Get the current estimated size in bytes
+    /// Returns the estimated size of pending operations in bytes.
     #[must_use]
     pub fn pending_bytes(&self) -> usize {
         self.current_size_bytes
     }
 
-    /// Check if the batch should be flushed based on size limits
+    /// Returns whether the batch should be flushed based on configured size limits.
     #[must_use]
     pub fn should_flush(&self) -> bool {
         if !self.config.enabled {
@@ -352,7 +361,7 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
             || self.current_size_bytes >= self.config.max_batch_bytes
     }
 
-    /// Get a reference to pending operations
+    /// Returns the pending operations.
     #[must_use]
     pub fn pending_operations(&self) -> &[BatchOperation] {
         &self.operations
@@ -583,7 +592,7 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
         BatchResult { results, stats }
     }
 
-    /// Clear all pending operations without flushing
+    /// Clears all pending operations without flushing.
     pub fn clear(&mut self) {
         self.operations.clear();
         self.current_size_bytes = 0;

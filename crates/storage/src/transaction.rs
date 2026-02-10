@@ -10,7 +10,7 @@
 //! - **Read-your-writes**: Reads within a transaction see pending writes
 //! - **Buffering**: Writes are buffered until commit
 //!
-//! # Example
+//! # Examples
 //!
 //! ```
 //! use inferadb_common_storage::{MemoryBackend, StorageBackend};

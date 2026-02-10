@@ -132,7 +132,7 @@ pub struct AuditEvent {
 /// audit services.
 #[async_trait]
 pub trait AuditLogger: Send + Sync {
-    /// Record an audit event.
+    /// Records an audit event.
     ///
     /// Implementations should not fail silently — log delivery failures
     /// should be surfaced through the observability stack.

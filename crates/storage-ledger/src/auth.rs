@@ -25,7 +25,7 @@
 //! `namespace_id == org_id`. Each organization has its own isolated
 //! namespace for signing keys.
 //!
-//! # Example
+//! # Examples
 //!
 //! ```no_run
 //! // Requires a running Ledger server.
@@ -171,7 +171,7 @@ impl LedgerSigningKeyStore {
     /// latencies, and error rates. Metrics are thread-safe and can be
     /// shared across multiple store instances.
     ///
-    /// # Example
+    /// # Examples
     ///
     /// ```no_run
     /// // Requires a running Ledger server.

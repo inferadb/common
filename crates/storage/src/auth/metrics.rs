@@ -3,7 +3,7 @@
 //! Provides observability into signing key lifecycle operations including
 //! counts, latencies, percentiles, and error rates.
 //!
-//! # Example
+//! # Examples
 //!
 //! ```
 //! use std::time::Duration;
@@ -285,7 +285,7 @@ struct SigningKeyMetricsInner {
 /// Thread-safe metrics collection using atomic counters. Designed to be
 /// shared across threads via cloning (uses `Arc` internally).
 ///
-/// # Example
+/// # Examples
 ///
 /// ```
 /// use std::time::{Duration, Instant};
