@@ -361,7 +361,7 @@ pub enum Operation {
     HealthCheck,
 }
 
-/// A factory that produces a [`StorageError`] on each invocation.
+/// Factory that produces a [`StorageError`] on each invocation.
 ///
 /// Use the provided constructors ([`error_factory_connection`],
 /// [`error_factory_timeout`], etc.) or supply a custom closure.
@@ -450,7 +450,7 @@ impl FailureConfig {
     }
 }
 
-/// A [`StorageBackend`] wrapper that injects configurable failures.
+/// [`StorageBackend`] wrapper that injects configurable failures.
 ///
 /// `FailingBackend` wraps any backend and injects errors according to the
 /// [`FailureConfig`]. Untargeted operations delegate directly to the inner

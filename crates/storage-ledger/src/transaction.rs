@@ -16,7 +16,7 @@ use inferadb_ledger_sdk::{LedgerClient, Operation, ReadConsistency, SetCondition
 
 use crate::{error::LedgerStorageError, keys::encode_key};
 
-/// A compare-and-set operation to be verified at commit time.
+/// Compare-and-set operation to be verified at commit time.
 #[derive(Debug, Clone)]
 struct CasOperation {
     /// Hex-encoded key.

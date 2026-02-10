@@ -37,9 +37,9 @@ use crate::{
 /// to disable the check (e.g. for long-lived machine-to-machine tokens).
 pub const DEFAULT_MAX_IAT_AGE: std::time::Duration = std::time::Duration::from_secs(86_400);
 
-/// JWT claims structure.
+/// Standard and custom claims extracted from InferaDB JWTs.
 ///
-/// Per the Management API specification, JWTs should have the following structure:
+/// Per the Management API specification, JWTs have the following structure:
 ///
 /// ```json
 /// {
@@ -83,7 +83,7 @@ pub struct JwtClaims {
 }
 
 impl JwtClaims {
-    /// Requires the organization ID from claims, returning an error if absent.
+    /// Returns the organization ID, or an error if absent or empty.
     ///
     /// Use this when the `org_id` claim is mandatory for the operation (e.g., JWT verification
     /// where the org ID is needed to look up the signing key). For optional access, use
@@ -112,9 +112,7 @@ impl JwtClaims {
         self.scope.split_whitespace().map(|s| s.to_string()).collect()
     }
 
-    /// Extracts vault ID (Snowflake ID) from claims.
-    ///
-    /// Returns `None` if not present.
+    /// Returns the vault ID from claims, if present.
     #[must_use]
     pub fn extract_vault_id(&self) -> Option<String> {
         self.vault_id.clone()
@@ -191,7 +189,7 @@ pub fn decode_jwt_claims(token: &str) -> Result<JwtClaims, AuthError> {
     Ok(claims)
 }
 
-/// Validates JWT claims (timestamp and audience checks).
+/// Validates JWT claims for expiration, issued-at age, and audience.
 ///
 /// # Arguments
 ///

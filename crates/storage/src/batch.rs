@@ -40,8 +40,10 @@ use tracing::{debug, trace, warn};
 
 use crate::{ConfigError, StorageBackend, StorageError, StorageResult};
 
-/// Transaction size limit (10MB with safety margin).
-/// We use 9MB as the effective limit to leave room for metadata overhead.
+/// Effective transaction size limit (9 MiB).
+///
+/// Leaves ~1 MiB headroom below the 10 MiB FoundationDB hard limit
+/// for transaction metadata overhead.
 pub const TRANSACTION_SIZE_LIMIT: usize = 9 * 1024 * 1024;
 
 /// Default maximum batch size (number of operations).
@@ -151,7 +153,7 @@ impl BatchConfig {
     }
 }
 
-/// A single write operation in a batch.
+/// Single write operation in a batch.
 #[derive(Debug, Clone)]
 pub enum BatchOperation {
     /// Stores a key-value pair. Overwrites any existing value for the key.

@@ -16,7 +16,7 @@ use inferadb_ledger_sdk::SdkError;
 use thiserror::Error;
 use tonic::Code;
 
-/// Result type alias for Ledger storage operations.
+/// Result type alias using [`LedgerStorageError`].
 pub type Result<T> = std::result::Result<T, LedgerStorageError>;
 
 /// Captures the span ID from the current tracing span, if any.
@@ -42,7 +42,7 @@ fn current_span_id() -> Option<tracing::span::Id> {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum LedgerStorageError {
-    /// Error from the Ledger SDK.
+    /// Error from the Ledger SDK, produced when an SDK call fails.
     Sdk {
         /// The underlying SDK error.
         #[source]
@@ -51,7 +51,7 @@ pub enum LedgerStorageError {
         span_id: Option<tracing::span::Id>,
     },
 
-    /// Configuration error.
+    /// Configuration error, produced during backend or config construction.
     Config {
         /// Description of the configuration error.
         message: String,
@@ -59,7 +59,7 @@ pub enum LedgerStorageError {
         span_id: Option<tracing::span::Id>,
     },
 
-    /// Key encoding error.
+    /// Key encoding error, produced during hex encode/decode of storage keys.
     KeyEncoding {
         /// Description of the encoding error.
         message: String,
@@ -67,7 +67,7 @@ pub enum LedgerStorageError {
         span_id: Option<tracing::span::Id>,
     },
 
-    /// Transaction error.
+    /// Transaction error, produced during commit or operation buffering.
     Transaction {
         /// Description of the transaction error.
         message: String,

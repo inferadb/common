@@ -39,11 +39,11 @@ use crate::{
     types::KeyValue,
 };
 
-/// Abstract storage backend for key-value operations.
+/// Key-value storage backend.
 ///
-/// This trait defines the interface that all storage backends must implement.
-/// Backends are expected to be thread-safe (`Send + Sync`) and support
-/// concurrent operations.
+/// All storage implementations ([`MemoryBackend`](crate::MemoryBackend),
+/// `LedgerBackend`, etc.) implement this trait. Backends must be thread-safe
+/// (`Send + Sync`) and support concurrent operations.
 ///
 /// # Key Operations
 ///

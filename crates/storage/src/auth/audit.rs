@@ -124,7 +124,7 @@ pub struct AuditEvent {
     pub metadata: HashMap<String, String>,
 }
 
-/// Trait for audit log backends.
+/// Audit log backend.
 ///
 /// Implementations should be durable and tamper-evident where possible.
 /// The trait is intentionally simple — a single `log` method — to

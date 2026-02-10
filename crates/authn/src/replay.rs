@@ -30,7 +30,7 @@ use moka::{future::Cache, policy::EvictionPolicy};
 
 use crate::error::AuthError;
 
-/// Trait for JWT replay detection.
+/// Detects and rejects replayed JWTs via JTI tracking.
 ///
 /// Implementations track seen JTI values and reject duplicates.
 /// The detector is responsible for automatically cleaning up expired entries.

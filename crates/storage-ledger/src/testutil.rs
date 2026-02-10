@@ -49,9 +49,9 @@ pub fn test_client_config_with_id(server: &MockLedgerServer, client_id: &str) ->
 
 /// Creates a [`LedgerBackend`] connected to the given mock server.
 ///
-/// Uses default configuration: namespace 1, vault 0, no pagination
-/// overrides. For custom configuration, build the backend manually
-/// using [`test_client_config`].
+/// Uses namespace 1, vault 0, and default pagination settings.
+/// For custom configuration, build the backend manually using
+/// [`test_client_config`].
 ///
 /// # Panics
 ///

@@ -158,7 +158,7 @@ pub struct CircuitBreaker {
     inner: std::sync::Arc<Mutex<Inner>>,
 }
 
-/// A snapshot of circuit breaker metrics.
+/// Snapshot of circuit breaker metrics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CircuitBreakerMetrics {
     /// Current circuit state.

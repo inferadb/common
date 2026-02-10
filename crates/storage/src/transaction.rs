@@ -41,7 +41,7 @@ use crate::error::StorageResult;
 
 /// Transaction handle for atomic multi-operation commits.
 ///
-/// A transaction buffers operations (sets, deletes, and compare-and-sets)
+/// Buffers operations (sets, deletes, and compare-and-sets)
 /// until [`commit`](Transaction::commit) is called, at which point all
 /// operations are applied atomically — either all succeed or none do.
 ///

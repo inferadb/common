@@ -71,7 +71,10 @@ use crate::error::AuthError;
 /// with performance (reduces Ledger round-trips).
 pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(300);
 
-/// Default maximum cache capacity.
+/// Default maximum cache capacity (10,000 entries).
+///
+/// Suitable for services handling up to 10,000 distinct signing keys
+/// across all namespaces.
 pub const DEFAULT_CACHE_CAPACITY: u64 = 10_000;
 
 /// Default maximum fallback cache capacity.
@@ -100,16 +103,16 @@ pub const DEFAULT_FALLBACK_WARN_THRESHOLD: f64 = 80.0;
 /// Default fill percentage at which a critical alert is emitted (95%).
 pub const DEFAULT_FALLBACK_CRITICAL_THRESHOLD: f64 = 95.0;
 
-/// An entry in the fallback (L3) cache, carrying the decoding key
-/// along with the timestamp at which it was inserted. The insertion
-/// time enables logging the entry age when the fallback is used.
+/// Fallback (L3) cache entry carrying the decoding key and insertion
+/// timestamp. The insertion time enables logging the entry age when
+/// the fallback is used.
 #[derive(Clone)]
 struct FallbackEntry {
     key: Arc<DecodingKey>,
     inserted_at: Instant,
 }
 
-/// Cache for public signing keys fetched from Ledger.
+/// Ledger-backed cache for JWT public signing key lookup and validation.
 ///
 /// Wraps [`PublicSigningKeyStore`] with in-memory caching to avoid
 /// Ledger round-trips on every token validation. An optional background

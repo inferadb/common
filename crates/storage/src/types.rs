@@ -5,10 +5,9 @@
 
 use bytes::Bytes;
 
-/// A key-value pair returned from range queries.
+/// Key-value pair returned from range queries.
 ///
-/// This struct represents a single entry from the storage backend,
-/// containing both the key and its associated value as byte sequences.
+/// Contains the key and its associated value as byte sequences.
 ///
 /// # Examples
 ///

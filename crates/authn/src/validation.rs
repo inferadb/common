@@ -95,6 +95,8 @@ pub fn validate_algorithm(alg: &str) -> Result<(), AuthError> {
 }
 
 /// Maximum allowed length for a JWT `kid` header parameter.
+///
+/// Prevents cache key bloat and storage abuse from adversarial inputs.
 pub const MAX_KID_LENGTH: usize = 256;
 
 /// Validates the JWT `kid` (Key ID) header parameter.

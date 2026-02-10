@@ -39,7 +39,7 @@ use std::{fmt, sync::Arc};
 
 use thiserror::Error;
 
-/// A boxed error type for source chain tracking.
+/// Boxed error type for source chain tracking.
 pub type BoxError = Arc<dyn std::error::Error + Send + Sync>;
 
 /// Result type alias for storage operations.
@@ -137,9 +137,8 @@ impl std::fmt::Display for TimeoutContext {
 
 /// Errors that can occur during storage operations.
 ///
-/// This enum represents the canonical set of errors that any storage backend
-/// can produce. Backend implementations should map their internal error types
-/// to these variants.
+/// Backend implementations map their internal error types to these canonical
+/// variants, providing consistent error handling across all storage backends.
 ///
 /// Errors preserve their source chain via the `#[source]` attribute, enabling
 /// debugging tools to display the full error context.

@@ -708,7 +708,7 @@ impl Metrics {
         self.inner.transaction_histogram.record(us);
     }
 
-    /// Records an error.
+    /// Increments the general error counter.
     pub fn record_error(&self) {
         self.inner.error_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -985,9 +985,9 @@ impl Default for Metrics {
     }
 }
 
-/// Trait for collecting metrics from storage backends.
+/// Exposes the [`Metrics`] instance for a storage backend.
 pub trait MetricsCollector {
-    /// Returns the metrics instance.
+    /// Returns a reference to the backend's metrics collector.
     fn metrics(&self) -> &Metrics;
 }
 

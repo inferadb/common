@@ -38,7 +38,7 @@ fn fmt_span_suffix(f: &mut fmt::Formatter<'_>, span_id: &Option<tracing::span::I
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum AuthError {
-    /// Malformed JWT - cannot be decoded.
+    /// Malformed JWT that cannot be decoded.
     InvalidTokenFormat {
         /// Description of the token format error.
         message: String,

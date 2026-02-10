@@ -70,7 +70,7 @@ pub mod jwt;
 pub mod replay;
 /// Ledger-backed signing key cache.
 pub mod signing_key_cache;
-/// Shared test utilities for authentication testing.
+/// Shared test utilities for authentication testing (requires `testutil` feature).
 #[cfg(any(test, feature = "testutil"))]
 #[allow(clippy::expect_used)]
 pub mod testutil;

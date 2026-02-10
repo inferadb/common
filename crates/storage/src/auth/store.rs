@@ -52,11 +52,10 @@ use crate::{
 /// Storage key prefix for signing keys within a namespace.
 pub const SIGNING_KEY_PREFIX: &str = "signing-keys/";
 
-/// Storage trait for public signing key lifecycle operations.
+/// Persistence layer for public signing key lifecycle operations.
 ///
-/// This trait abstracts the persistence layer for public signing keys,
-/// allowing different implementations for production (Ledger) and
-/// testing (in-memory).
+/// Abstracts key storage so production (Ledger) and testing (in-memory)
+/// can share the same interface.
 ///
 /// # Namespace Mapping
 ///

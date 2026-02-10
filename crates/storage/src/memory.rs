@@ -413,7 +413,7 @@ impl StorageBackend for MemoryBackend {
     }
 }
 
-/// A compare-and-set operation to be verified at commit time.
+/// Compare-and-set operation to be verified at commit time.
 #[derive(Debug, Clone)]
 struct CasOperation {
     key: Vec<u8>,

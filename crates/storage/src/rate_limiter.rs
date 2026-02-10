@@ -152,9 +152,9 @@ pub trait NamespaceExtractor: Send + Sync {
     fn extract(&self, key: &[u8]) -> Option<String>;
 }
 
-/// A rate limiter using the token bucket algorithm.
+/// Token-bucket rate limiter with optional per-namespace buckets.
 ///
-/// Thread-safe via internal `parking_lot::Mutex`. Supports both a global
+/// Thread-safe via internal [`parking_lot::Mutex`]. Supports both a global
 /// bucket and optional per-namespace buckets.
 pub struct TokenBucketLimiter {
     global: Mutex<BucketState>,
@@ -296,7 +296,7 @@ impl TokenBucketLimiter {
     }
 }
 
-/// A [`StorageBackend`] wrapper that applies rate limiting before
+/// [`StorageBackend`] wrapper that applies rate limiting before
 /// delegating to the inner backend.
 ///
 /// Read operations (`get`, `get_range`) and write operations (`set`,
