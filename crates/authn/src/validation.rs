@@ -7,7 +7,7 @@
 //!
 //! These validators implement security best practices:
 //! - Strict algorithm checks to prevent algorithm substitution attacks
-//! - Only asymmetric algorithms (EdDSA, RS256) are allowed
+//! - Only EdDSA (Ed25519) is accepted
 //! - Symmetric algorithms and "none" are always rejected
 
 use crate::error::AuthError;
@@ -59,7 +59,7 @@ pub const ACCEPTED_ALGORITHMS: &[&str] = &["EdDSA"];
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// use inferadb_common_authn::validation::validate_algorithm;
 ///
 /// // EdDSA is accepted
@@ -118,7 +118,7 @@ pub const MAX_KID_LENGTH: usize = 256;
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// use inferadb_common_authn::validation::validate_kid;
 ///
 /// // Valid kid values

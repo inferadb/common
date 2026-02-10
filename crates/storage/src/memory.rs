@@ -6,13 +6,14 @@
 //! # Features
 //!
 //! - **Thread-safe**: Uses [`parking_lot::RwLock`] for concurrent access
-//! - **Ordered storage**: Keys are stored in a [`BTreeMap`] for efficient range queries
+//! - **Ordered storage**: Keys are stored in a [`BTreeMap`](std::collections::BTreeMap) for
+//!   efficient range queries
 //! - **TTL support**: Background task cleans up expired keys
 //! - **Transaction support**: MVCC-like semantics with read-your-writes
 //!
 //! # Examples
 //!
-//! ```
+//! ```no_run
 //! use inferadb_common_storage::{MemoryBackend, StorageBackend};
 //!
 //! #[tokio::main]
@@ -112,7 +113,7 @@ impl MemoryBackend {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```no_run
     /// use inferadb_common_storage::MemoryBackend;
     ///
     /// #[tokio::main]

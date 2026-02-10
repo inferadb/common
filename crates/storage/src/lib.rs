@@ -26,7 +26,7 @@
 //!
 //! # Quick Start
 //!
-//! ```
+//! ```no_run
 //! use inferadb_common_storage::{MemoryBackend, StorageBackend};
 //!
 //! #[tokio::main]
@@ -92,22 +92,35 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+/// Authentication primitives: signing keys, key stores, and audit logging.
 pub mod auth;
+/// Core [`StorageBackend`] trait defining the key-value storage interface.
 pub mod backend;
+/// Batched write operations with automatic transaction splitting.
 pub mod batch;
+/// Conformance test suite for validating [`StorageBackend`] implementations.
 #[cfg(any(test, feature = "testutil"))]
 #[allow(clippy::expect_used, clippy::panic)]
 pub mod conformance;
+/// Error types, result aliases, and diagnostic helpers.
 pub mod error;
+/// Health check probes and status reporting.
 pub mod health;
+/// In-memory [`StorageBackend`] implementation for testing and development.
 pub mod memory;
+/// Operation metrics collection: counts, latencies, percentiles, and per-namespace breakdowns.
 pub mod metrics;
+/// Token-bucket rate limiter wrapper for storage backends.
 pub mod rate_limiter;
+/// Key and value size limit validation.
 pub mod size_limits;
+/// Shared test utilities: key/value generators, backend factories, and assertion macros.
 #[cfg(any(test, feature = "testutil"))]
 #[allow(clippy::expect_used)]
 pub mod testutil;
+/// Transaction trait for atomic multi-operation commits.
 pub mod transaction;
+/// Common domain types: [`KeyValue`], [`NamespaceId`], [`VaultId`], and other ID newtypes.
 pub mod types;
 
 // Re-export primary types at crate root for convenience

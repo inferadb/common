@@ -24,8 +24,9 @@
 //!
 //! # Storage Trait
 //!
-//! The [`PublicSigningKeyStore`] trait provides the interface for key lifecycle
-//! operations. Use [`MemorySigningKeyStore`] for testing.
+//! The [`PublicSigningKeyStore`](crate::auth::PublicSigningKeyStore) trait provides the interface
+//! for key lifecycle operations. Use [`MemorySigningKeyStore`](crate::auth::MemorySigningKeyStore)
+//! for testing.
 //!
 //! # Example
 //!

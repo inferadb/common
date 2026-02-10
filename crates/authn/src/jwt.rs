@@ -256,9 +256,18 @@ pub fn validate_claims(
 
 /// Verifies a JWT signature with a public key.
 ///
+/// # Arguments
+///
+/// * `token` - The raw JWT string (header.payload.signature)
+/// * `key` - The public [`DecodingKey`] used to verify the signature
+/// * `algorithm` - The expected [`Algorithm`] (must match the JWT header)
+///
 /// # Errors
 ///
-/// Returns an error if signature verification fails.
+/// Returns [`AuthError::InvalidSignature`] if the signature does not match
+/// the token contents and key. Returns [`AuthError::TokenExpired`] if the
+/// `exp` claim indicates the token has expired (expiration validation is
+/// enabled).
 #[must_use = "signature verification may fail and errors must be handled"]
 #[tracing::instrument(skip(token, key))]
 pub fn verify_signature(

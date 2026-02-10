@@ -155,6 +155,10 @@ impl LedgerSigningKeyStore {
     /// Use `ReadConsistency::Eventual` for read-heavy workloads where
     /// slight staleness is acceptable. Note that eventual consistency
     /// may delay key revocation propagation.
+    ///
+    /// **Note:** This creates a new store instance with default CAS retry configuration.
+    /// To customize both read consistency and CAS retries, call
+    /// [`with_cas_retry_config`](Self::with_cas_retry_config) on the returned instance.
     #[must_use]
     pub fn with_read_consistency(client: Arc<LedgerClient>, consistency: ReadConsistency) -> Self {
         Self {

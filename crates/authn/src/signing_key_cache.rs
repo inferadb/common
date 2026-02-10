@@ -10,8 +10,9 @@
 //! JWT arrives → extract kid, org_id
 //!              → check local cache (L1)
 //!              → miss? fetch from Ledger via PublicSigningKeyStore (L2)
+//!              → L2 fails? check fallback cache (L3, staleness-bounded)
 //!              → validate key state (active, not revoked, within validity window)
-//!              → cache decoding key locally
+//!              → cache decoding key in L1 and L3
 //!              → verify signature
 //! ```
 //!
@@ -454,13 +455,12 @@ impl SigningKeyCache {
 
     /// Releases all cached resources for graceful shutdown.
     ///
-    /// Clears all cache tiers (L1 and L3 fallback) and bumps the
-    /// invalidation generation to prevent in-flight lookups from
-    /// re-populating the cache.
+    /// Cancels the background refresh task (if running) and awaits its
+    /// completion, then clears all cache tiers (L1 and L3 fallback) via
+    /// [`clear_all`](Self::clear_all).
     ///
-    /// This is functionally equivalent to [`clear_all`](Self::clear_all) and
-    /// is provided for API consistency with other shutdown-aware types in the
-    /// workspace.
+    /// Unlike `clear_all`, this method also stops background refresh to
+    /// prevent the cache from being re-populated after shutdown begins.
     pub async fn shutdown(&self) {
         // Signal the background refresh task to stop, if running.
         self.cancel_token.cancel();

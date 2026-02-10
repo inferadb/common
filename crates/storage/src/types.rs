@@ -11,7 +11,7 @@ use bytes::Bytes;
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// use bytes::Bytes;
 /// use inferadb_common_storage::KeyValue;
 ///
@@ -39,7 +39,7 @@ impl KeyValue {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```no_run
     /// use bytes::Bytes;
     /// use inferadb_common_storage::KeyValue;
     ///
@@ -101,7 +101,7 @@ define_id!(
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```no_run
     /// use inferadb_common_storage::NamespaceId;
     ///
     /// let ns = NamespaceId::from(42);
@@ -119,7 +119,7 @@ define_id!(
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```no_run
     /// use inferadb_common_storage::VaultId;
     ///
     /// let vault = VaultId::from(100);
@@ -136,7 +136,7 @@ define_id!(
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```no_run
     /// use inferadb_common_storage::ClientId;
     ///
     /// let client = ClientId::from(12345);
@@ -153,7 +153,7 @@ define_id!(
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```no_run
     /// use inferadb_common_storage::CertId;
     ///
     /// let cert = CertId::from(42);

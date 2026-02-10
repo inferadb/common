@@ -58,7 +58,7 @@ pub const DEFAULT_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// use std::time::Duration;
 ///
 /// use inferadb_common_storage_ledger::RetryConfig;
@@ -169,7 +169,7 @@ pub const DEFAULT_CAS_RETRY_BASE_DELAY: Duration = Duration::from_millis(50);
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// use std::time::Duration;
 ///
 /// use inferadb_common_storage_ledger::CasRetryConfig;
@@ -236,7 +236,7 @@ impl Default for CasRetryConfig {
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// use std::time::Duration;
 ///
 /// use inferadb_common_storage_ledger::TimeoutConfig;

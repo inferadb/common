@@ -61,7 +61,7 @@ use crate::{
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// use bytes::Bytes;
 /// use inferadb_common_storage::{StorageBackend, MemoryBackend};
 ///

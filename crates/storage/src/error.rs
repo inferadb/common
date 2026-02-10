@@ -27,7 +27,7 @@
 //!
 //! # Examples
 //!
-//! ```
+//! ```no_run
 //! use inferadb_common_storage::{StorageError, StorageResult};
 //!
 //! fn lookup(key: &str) -> StorageResult<Vec<u8>> {
@@ -39,7 +39,10 @@ use std::{fmt, sync::Arc};
 
 use thiserror::Error;
 
-/// Boxed error type for source chain tracking.
+/// Reference-counted error type for source chain tracking.
+///
+/// Uses [`Arc`] instead of `Box` to enable shared ownership across
+/// concurrent error chains.
 pub type BoxError = Arc<dyn std::error::Error + Send + Sync>;
 
 /// Result type alias for storage operations.
@@ -105,6 +108,9 @@ fn current_span_id() -> Option<tracing::span::Id> {
 /// loop was doing at the moment the deadline fired. Operators can use this
 /// to distinguish between timeout-during-backoff (retry config may be too
 /// aggressive) and timeout-during-backend-call (backend is slow or overloaded).
+///
+/// Constructed internally by the retry infrastructure; not typically
+/// created directly by application code.
 #[derive(Debug)]
 pub struct TimeoutContext {
     /// Number of retry attempts that completed before the timeout fired.

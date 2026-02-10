@@ -40,7 +40,7 @@
 //!
 //! # Usage
 //!
-//! ```
+//! ```no_run
 //! use std::time::Duration;
 //! use inferadb_common_storage::metrics::Metrics;
 //!

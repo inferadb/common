@@ -139,19 +139,25 @@ pub mod auth;
 #[allow(clippy::expect_used)]
 pub mod testutil;
 
+/// Ledger-backed storage backend.
 pub use backend::LedgerBackend;
+/// Circuit breaker types for fail-fast during backend outages.
 pub use circuit_breaker::{
     CircuitBreaker, CircuitBreakerConfig, CircuitBreakerMetrics, CircuitState,
     DEFAULT_FAILURE_THRESHOLD, DEFAULT_HALF_OPEN_SUCCESS_THRESHOLD, DEFAULT_RECOVERY_TIMEOUT,
 };
+/// Configuration types and default constants for the Ledger backend.
 pub use config::{
     CasRetryConfig, DEFAULT_CAS_RETRY_BASE_DELAY, DEFAULT_INITIAL_BACKOFF, DEFAULT_LIST_TIMEOUT,
     DEFAULT_MAX_BACKOFF, DEFAULT_MAX_CAS_RETRIES, DEFAULT_MAX_RANGE_RESULTS, DEFAULT_MAX_RETRIES,
     DEFAULT_PAGE_SIZE, DEFAULT_READ_TIMEOUT, DEFAULT_WRITE_TIMEOUT, LedgerBackendConfig,
     RetryConfig, TimeoutConfig,
 };
+/// Ledger-specific error types and result alias.
 pub use error::{LedgerStorageError, Result};
+/// Configuration validation error type.
 pub use inferadb_common_storage::ConfigError;
-// Re-export SDK types needed to build LedgerBackendConfig
+/// Re-exported SDK types needed to build [`LedgerBackendConfig`].
 pub use inferadb_ledger_sdk::{ClientConfig, ReadConsistency, ServerSource, TraceConfig};
+/// Ledger-backed transaction implementation.
 pub use transaction::LedgerTransaction;
