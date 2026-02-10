@@ -324,6 +324,7 @@ mod tests {
             message: "key not found".into(),
             request_id: None,
             trace_id: None,
+            error_details: None,
         };
         let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
@@ -337,6 +338,7 @@ mod tests {
             message: "transaction conflict".into(),
             request_id: None,
             trace_id: None,
+            error_details: None,
         };
         let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
@@ -350,6 +352,7 @@ mod tests {
             message: "key exists".into(),
             request_id: None,
             trace_id: None,
+            error_details: None,
         };
         let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
@@ -363,6 +366,7 @@ mod tests {
             message: "invalid key format".into(),
             request_id: None,
             trace_id: None,
+            error_details: None,
         };
         let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
@@ -492,6 +496,7 @@ mod tests {
             message: "precondition failed".into(),
             request_id: None,
             trace_id: None,
+            error_details: None,
         };
         let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
@@ -505,6 +510,7 @@ mod tests {
             message: "data corrupted".into(),
             request_id: None,
             trace_id: None,
+            error_details: None,
         };
         let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
@@ -519,6 +525,7 @@ mod tests {
             message: "access denied".into(),
             request_id: None,
             trace_id: None,
+            error_details: None,
         };
         let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
@@ -533,6 +540,7 @@ mod tests {
             message: "not authed".into(),
             request_id: None,
             trace_id: None,
+            error_details: None,
         };
         let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
@@ -547,6 +555,7 @@ mod tests {
             message: "unknown error".into(),
             request_id: None,
             trace_id: None,
+            error_details: None,
         };
         let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
