@@ -62,19 +62,19 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
-/// Authentication error types.
+/// Authentication error types and the crate-wide [`Result`](error::Result) alias.
 pub mod error;
-/// JWT validation and claims.
+/// JWT decoding, claims parsing, and signature verification.
 pub mod jwt;
-/// JWT replay prevention via JTI tracking.
+/// JWT replay prevention via JTI (JWT ID) tracking.
 pub mod replay;
-/// Ledger-backed signing key cache.
+/// Ledger-backed signing key cache with TTL and fallback tiers.
 pub mod signing_key_cache;
-/// Shared test utilities for authentication testing (requires `testutil` feature).
+/// Shared test utilities for authentication testing (requires the `testutil` feature).
 #[cfg(any(test, feature = "testutil"))]
 #[allow(clippy::expect_used)]
 pub mod testutil;
-/// Algorithm validation.
+/// Algorithm and key-ID validation for JWT headers.
 pub mod validation;
 
 // Re-export key types for convenience

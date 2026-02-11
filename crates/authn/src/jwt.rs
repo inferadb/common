@@ -113,6 +113,9 @@ impl JwtClaims {
     }
 
     /// Returns the vault ID from claims, if present.
+    ///
+    /// Returns the raw `vault_id` claim value. Use this when the vault ID
+    /// is optional for the operation.
     #[must_use]
     pub fn extract_vault_id(&self) -> Option<String> {
         self.vault_id.clone()

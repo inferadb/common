@@ -34,7 +34,7 @@ use crate::types::{CertId, ClientId};
 /// - `now >= valid_from`
 /// - `valid_until.is_none() || now <= valid_until`
 ///
-/// # Example
+/// # Examples
 ///
 /// ```
 /// use chrono::{Duration, Utc};

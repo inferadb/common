@@ -312,7 +312,7 @@ pub trait PublicSigningKeyStore: Send + Sync {
 /// Uses [`parking_lot::RwLock`] for efficient concurrent access with
 /// reader-writer semantics.
 ///
-/// # Example
+/// # Examples
 ///
 /// ```
 /// use chrono::Utc;

@@ -28,7 +28,7 @@
 //! for key lifecycle operations. Use [`MemorySigningKeyStore`](crate::auth::MemorySigningKeyStore)
 //! for testing.
 //!
-//! # Example
+//! # Examples
 //!
 //! ```
 //! use inferadb_common_storage::auth::{
