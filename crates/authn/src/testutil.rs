@@ -72,7 +72,8 @@ pub fn generate_test_keypair() -> (Zeroizing<Vec<u8>>, String) {
 ///
 /// # Panics
 ///
-/// Panics if JWT encoding fails (should not happen with valid inputs).
+/// Panics if JWT encoding fails. This indicates an invalid `pkcs8_der`
+/// key — should not occur with keys from [`generate_test_keypair`].
 pub fn create_signed_jwt(pkcs8_der: &[u8], kid: &str, org_id: &str) -> String {
     let now = Utc::now().timestamp() as u64;
     let claims = json!({
@@ -101,7 +102,8 @@ pub fn create_signed_jwt(pkcs8_der: &[u8], kid: &str, org_id: &str) -> String {
 ///
 /// # Panics
 ///
-/// Panics if JWT encoding fails (should not happen with valid inputs).
+/// Panics if JWT encoding fails. This indicates an invalid `pkcs8_der`
+/// key — should not occur with keys from [`generate_test_keypair`].
 pub fn create_signed_jwt_with_jti(pkcs8_der: &[u8], kid: &str, org_id: &str, jti: &str) -> String {
     let now = Utc::now().timestamp() as u64;
     let claims = json!({
@@ -185,8 +187,12 @@ pub fn create_test_signing_key_with_pubkey(kid: &str, public_key_b64: &str) -> P
 
 /// Asserts that a [`Result<T, AuthError>`] is an `Err` matching the given [`AuthError`] variant.
 ///
-/// Works with any `AuthError` variant. On failure, prints the expected variant
-/// and the actual result for debugging.
+/// Works with any `AuthError` variant.
+///
+/// # Panics
+///
+/// Panics if the result is `Ok` or contains a different [`AuthError`] variant
+/// than expected. Prints the expected variant and actual result for debugging.
 ///
 /// # Examples
 ///

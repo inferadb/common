@@ -119,7 +119,7 @@ pub struct TimeoutContext {
     /// (as opposed to during an actual backend call).
     pub during_backoff: bool,
     /// The last error returned by the backend before the timeout.
-    /// `None` if the timeout fired during the very first attempt.
+    /// `None` if the timeout fired during the first attempt.
     ///
     /// This error is reconstructed from [`StorageError::detail()`] because
     /// future cancellation on timeout drops the original error. The source

@@ -87,7 +87,11 @@ pub async fn populated_backend(prefix: &str, count: usize, value_size: usize) ->
     backend
 }
 
-/// Assert that a [`StorageResult`] is a [`StorageError::Conflict`].
+/// Asserts that a [`StorageResult`] is a [`StorageError::Conflict`].
+///
+/// # Panics
+///
+/// Panics if the result is `Ok` or contains a different [`StorageError`] variant.
 ///
 /// # Examples
 ///
@@ -118,7 +122,11 @@ macro_rules! assert_conflict {
     };
 }
 
-/// Assert that a [`StorageResult`] is a [`StorageError::NotFound`].
+/// Asserts that a [`StorageResult`] is a [`StorageError::NotFound`].
+///
+/// # Panics
+///
+/// Panics if the result is `Ok` or contains a different [`StorageError`] variant.
 ///
 /// # Examples
 ///
@@ -149,10 +157,11 @@ macro_rules! assert_not_found {
     };
 }
 
-/// Assert that a [`StorageResult`] is `Ok`.
+/// Asserts that a [`StorageResult`] is `Ok` and returns the inner value.
 ///
-/// Returns the inner value on success, panics with a descriptive message
-/// on failure.
+/// # Panics
+///
+/// Panics with the error details if the result is `Err`.
 ///
 /// # Examples
 ///
@@ -181,7 +190,11 @@ macro_rules! assert_storage_ok {
     };
 }
 
-/// Assert that a [`StorageResult`] contains a [`StorageError::Timeout`].
+/// Asserts that a [`StorageResult`] contains a [`StorageError::Timeout`].
+///
+/// # Panics
+///
+/// Panics if the result is `Ok` or contains a different [`StorageError`] variant.
 #[macro_export]
 macro_rules! assert_timeout {
     ($result:expr) => {
@@ -208,10 +221,14 @@ pub fn is_timeout<T>(result: &StorageResult<T>) -> bool {
     matches!(result, Err(StorageError::Timeout { .. }))
 }
 
-/// Assert that a [`StorageResult`] is an `Err` matching the given [`StorageError`] variant.
+/// Asserts that a [`StorageResult`] is an `Err` matching the given [`StorageError`] variant.
 ///
-/// This is a generic version of the per-variant assertion macros. It works with
-/// any `StorageError` variant, including struct variants with fields.
+/// Works with any [`StorageError`] variant, including struct variants with fields.
+///
+/// # Panics
+///
+/// Panics if the result is `Ok` or contains a different [`StorageError`] variant
+/// than expected. Prints the expected variant and actual result for debugging.
 ///
 /// # Examples
 ///
@@ -244,9 +261,13 @@ macro_rules! assert_storage_error {
     };
 }
 
-/// Assert that a [`KeyValue`] pair matches the expected key and value.
+/// Asserts that a [`KeyValue`] pair matches the expected key and value.
 ///
 /// Accepts either `&[u8]` slices or `&str` for the expected key and value.
+///
+/// # Panics
+///
+/// Panics if the key or value does not match the expected bytes.
 ///
 /// # Examples
 ///
@@ -280,11 +301,15 @@ macro_rules! assert_kv_pair {
     };
 }
 
-/// Assert that a slice of [`KeyValue`] pairs matches the expected key-value pairs.
+/// Asserts that a slice of [`KeyValue`] pairs matches the expected key-value pairs.
 ///
 /// Each expected pair is specified as `(key, value)` where both are convertible
-/// to [`Bytes`](bytes::Bytes). Asserts the length matches first, then checks
-/// each pair in order.
+/// to [`Bytes`](bytes::Bytes). Checks the length first, then verifies each pair
+/// in order.
+///
+/// # Panics
+///
+/// Panics if the result count differs or any key-value pair doesn't match.
 ///
 /// # Examples
 ///

@@ -527,7 +527,7 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
     ///
     /// # Errors
     ///
-    /// Returns the first error encountered during flush, just like
+    /// Returns the first error encountered during flush, matching the behavior of
     /// [`flush_all`](Self::flush_all).
     pub async fn shutdown(&mut self) -> StorageResult<BatchFlushStats> {
         self.flush_all().await

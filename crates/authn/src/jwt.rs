@@ -66,10 +66,15 @@ pub struct JwtClaims {
     pub exp: u64,
     /// Issued at (seconds since epoch).
     pub iat: u64,
-    /// Not before (optional, seconds since epoch).
+    /// Not-before time (optional, seconds since epoch).
+    ///
+    /// When present, the token is rejected if the current time precedes this timestamp.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nbf: Option<u64>,
-    /// JWT ID (optional).
+    /// Unique token identifier (optional).
+    ///
+    /// Required when replay detection is enabled via
+    /// [`verify_with_replay_detection`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jti: Option<String>,
     /// Space-separated scopes (e.g., "vault:read vault:write").
@@ -134,7 +139,7 @@ impl JwtClaims {
 ///
 /// # Errors
 ///
-/// Returns an error if the JWT header cannot be decoded.
+/// Returns [`AuthError::InvalidTokenFormat`] if the JWT header cannot be decoded.
 #[must_use = "JWT parsing may fail and errors must be handled"]
 #[tracing::instrument(skip(token))]
 pub fn decode_jwt_header(token: &str) -> Result<Header, AuthError> {
@@ -146,11 +151,12 @@ pub fn decode_jwt_header(token: &str) -> Result<Header, AuthError> {
 ///
 /// # Errors
 ///
-/// Returns an error if:
+/// Returns [`AuthError::InvalidTokenFormat`] if:
 /// - The JWT does not have exactly 3 parts
 /// - The payload cannot be base64-decoded
 /// - The payload cannot be parsed as JSON
-/// - Required claims (iss, sub, aud) are empty
+///
+/// Returns [`AuthError::MissingClaim`] if required claims (`iss`, `sub`, `aud`) are empty.
 #[must_use = "JWT parsing may fail and errors must be handled"]
 #[tracing::instrument(skip(token))]
 pub fn decode_jwt_claims(token: &str) -> Result<JwtClaims, AuthError> {
@@ -203,11 +209,11 @@ pub fn decode_jwt_claims(token: &str) -> Result<JwtClaims, AuthError> {
 /// # Errors
 ///
 /// Returns an error if:
-/// - Token has expired
-/// - Token is not yet valid (nbf in future)
-/// - Issued-at is in the future
-/// - Issued-at is too old (exceeds `max_iat_age`)
-/// - Audience doesn't match expected value (if provided)
+/// - Token has expired ([`AuthError::TokenExpired`])
+/// - Token is not yet valid, `nbf` in future ([`AuthError::TokenNotYetValid`])
+/// - Issued-at is in the future ([`AuthError::InvalidTokenFormat`])
+/// - Issued-at exceeds `max_iat_age` ([`AuthError::TokenTooOld`])
+/// - Audience doesn't match expected value ([`AuthError::InvalidAudience`])
 #[must_use = "claim validation may fail and errors must be handled"]
 #[tracing::instrument(skip(claims))]
 pub fn validate_claims(
@@ -310,10 +316,14 @@ pub fn verify_signature(
 /// # Errors
 ///
 /// Returns an error if:
-/// - The JWT is malformed or missing required fields (`kid`, `org_id`)
-/// - The algorithm is not in [`crate::validation::ACCEPTED_ALGORITHMS`] (only EdDSA)
-/// - The key cannot be found in Ledger or is inactive/revoked/expired
-/// - The signature is invalid
+/// - The JWT is malformed or missing required fields ([`AuthError::InvalidTokenFormat`])
+/// - The `kid` header fails validation ([`AuthError::InvalidKid`])
+/// - The algorithm is not in [`crate::validation::ACCEPTED_ALGORITHMS`]
+///   ([`AuthError::UnsupportedAlgorithm`])
+/// - The key cannot be found in Ledger ([`AuthError::KeyNotFound`])
+/// - The key is inactive, revoked, or expired ([`AuthError::KeyRevoked`],
+///   [`AuthError::KeyExpired`])
+/// - The signature is invalid ([`AuthError::InvalidSignature`])
 ///
 /// # Examples
 ///

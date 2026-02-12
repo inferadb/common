@@ -14,7 +14,7 @@ use crate::error::AuthError;
 
 /// Forbidden JWT algorithms that are never accepted for security reasons.
 ///
-/// These algorithms are blocked because:
+/// Per RFC 8725 Section 3.1, these algorithms are blocked because:
 /// - `none`: No signature verification (trivially bypassable)
 /// - `HS256`, `HS384`, `HS512`: Symmetric algorithms (shared secret vulnerability)
 ///

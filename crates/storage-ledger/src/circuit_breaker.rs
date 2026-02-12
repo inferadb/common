@@ -151,7 +151,7 @@ struct Inner {
 
 /// Thread-safe circuit breaker.
 ///
-/// All state is behind a `parking_lot::Mutex` with very short critical
+/// All state is behind a `parking_lot::Mutex` with brief critical
 /// sections (no I/O under the lock). The breaker is cheaply cloneable
 /// (backed by `Arc`).
 #[derive(Debug, Clone)]

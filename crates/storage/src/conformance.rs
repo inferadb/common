@@ -172,7 +172,7 @@ pub async fn range_clear_range_removes_keys<B: StorageBackend>(backend: &B) {
 // TTL — set_with_ttl expiration behavior (4 tests)
 // ============================================================================
 
-/// A key set with a very short TTL eventually expires.
+/// A key set with a short TTL eventually expires.
 pub async fn ttl_key_expires<B: StorageBackend>(backend: &B) {
     backend
         .set_with_ttl(b"ttl:a".to_vec(), b"ephemeral".to_vec(), Duration::from_millis(50))
