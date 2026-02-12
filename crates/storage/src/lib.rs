@@ -1,6 +1,6 @@
 //! Shared storage backend abstraction for InferaDB services.
 //!
-//! This crate provides the [`StorageBackend`] trait and related types that form
+//! Provides the [`StorageBackend`] trait and related types that form
 //! the foundation for all storage operations in InferaDB. Both the Engine and
 //! Control services use this abstraction, enabling a unified storage layer.
 //!

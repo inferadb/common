@@ -152,13 +152,16 @@ struct Inner {
 /// Thread-safe circuit breaker.
 ///
 /// All state is behind a `parking_lot::Mutex` with very short critical
-/// sections (no I/O under the lock). The breaker is `Clone` via `Arc`.
+/// sections (no I/O under the lock). The breaker is cheaply cloneable
+/// (backed by `Arc`).
 #[derive(Debug, Clone)]
 pub struct CircuitBreaker {
     inner: std::sync::Arc<Mutex<Inner>>,
 }
 
 /// Snapshot of circuit breaker metrics.
+///
+/// Obtained via [`CircuitBreaker::metrics`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CircuitBreakerMetrics {
     /// Current circuit state.
@@ -295,6 +298,9 @@ impl CircuitBreaker {
     }
 
     /// Returns the current state of the circuit breaker.
+    ///
+    /// Reports [`CircuitState::HalfOpen`] if the open circuit's recovery
+    /// timeout has elapsed, without performing the actual state transition.
     #[must_use]
     pub fn state(&self) -> CircuitState {
         let inner = self.inner.lock();

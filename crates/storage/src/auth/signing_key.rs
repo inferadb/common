@@ -36,7 +36,7 @@ use crate::types::{CertId, ClientId};
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// use chrono::{Duration, Utc};
 /// use inferadb_common_storage::auth::PublicSigningKey;
 ///

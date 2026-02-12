@@ -16,10 +16,12 @@ pub(crate) fn encode_key(key: &[u8]) -> String {
     hex::encode(key)
 }
 
-/// Decodes a hexadecimal key string back to bytes.
+/// Decodes a hexadecimal key string back to the original bytes.
 ///
-/// The decoding is the inverse of [`encode_key`] and preserves the
-/// original lexicographic ordering of the raw byte keys.
+/// # Errors
+///
+/// Returns [`LedgerStorageError::KeyEncoding`] if the input is not valid
+/// hexadecimal.
 pub(crate) fn decode_key(key: &str) -> std::result::Result<Vec<u8>, LedgerStorageError> {
     hex::decode(key).map_err(|e| LedgerStorageError::key_encoding(e.to_string()))
 }

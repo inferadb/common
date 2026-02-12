@@ -1,6 +1,6 @@
 //! Storage backend trait definition.
 //!
-//! This module defines the [`StorageBackend`] trait, which is the core abstraction
+//! Defines the [`StorageBackend`] trait, which is the core abstraction
 //! for key-value storage in InferaDB. All storage implementations (MemoryBackend,
 //! LedgerBackend, etc.) implement this trait.
 //!
@@ -51,7 +51,8 @@ use crate::{
 /// |--------|-------------|
 /// | [`get`](StorageBackend::get) | Retrieve a single value by key |
 /// | [`set`](StorageBackend::set) | Store a key-value pair |
-/// | [`compare_and_set`](StorageBackend::compare_and_set) | Atomic compare-and-swap |
+/// | [`compare_and_set`](StorageBackend::compare_and_set) | Atomic compare-and-set |
+/// | [`compare_and_set_json`](StorageBackend::compare_and_set_json) | Typed JSON compare-and-set |
 /// | [`delete`](StorageBackend::delete) | Remove a key |
 /// | [`get_range`](StorageBackend::get_range) | Retrieve multiple keys in a range |
 /// | [`clear_range`](StorageBackend::clear_range) | Delete multiple keys in a range |
@@ -252,7 +253,7 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// This is a typed convenience wrapper around
     /// [`compare_and_set`](StorageBackend::compare_and_set). It serializes `expected` and
-    /// `new_value` to canonical JSON bytes and delegates to the byte-level CAS. Because both
+    /// `new_value` to JSON bytes and delegates to the byte-level CAS. Because both
     /// sides use the same serializer, the comparison is deterministic regardless of the type's
     /// internal field ordering.
     ///

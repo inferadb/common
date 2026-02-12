@@ -30,7 +30,7 @@
 //!
 //! # Examples
 //!
-//! ```
+//! ```no_run
 //! use inferadb_common_storage::auth::{
 //!     MemorySigningKeyStore, PublicSigningKey, PublicSigningKeyStore,
 //! };

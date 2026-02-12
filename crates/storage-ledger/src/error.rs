@@ -28,9 +28,9 @@ fn current_span_id() -> Option<tracing::span::Id> {
 
 /// Errors specific to the Ledger storage backend.
 ///
-/// This error type wraps SDK errors and provides additional context
-/// for storage-layer failures. The error chain is preserved when
-/// converting to [`StorageError`].
+/// Covers SDK, configuration, key-encoding, and transaction-layer
+/// failures. The error chain is preserved when converting to
+/// [`StorageError`].
 ///
 /// Each variant carries an optional `span_id` captured from the active
 /// [`tracing::Span`] at error creation time. When present, the span ID
@@ -166,6 +166,7 @@ impl LedgerStorageError {
     }
 }
 
+/// Converts a ledger-specific error to a canonical [`StorageError`].
 impl From<LedgerStorageError> for StorageError {
     fn from(err: LedgerStorageError) -> Self {
         match err {
@@ -181,7 +182,8 @@ impl From<LedgerStorageError> for StorageError {
     }
 }
 
-/// Converts an SDK error to a storage error, preserving the error chain.
+/// Converts an SDK error to a storage error, preserving the error chain
+/// where applicable.
 ///
 /// This mapping is designed to preserve the semantic meaning of errors
 /// while using the canonical [`StorageError`] variants. The original

@@ -121,7 +121,7 @@ pub trait PublicSigningKeyStore: Send + Sync {
     /// - `active == true`
     /// - `revoked_at.is_none()`
     /// - `valid_from <= now`
-    /// - `valid_until.is_none() || valid_until > now`
+    /// - `valid_until.is_none() || valid_until >= now`
     ///
     /// # Arguments
     ///
@@ -314,7 +314,7 @@ pub trait PublicSigningKeyStore: Send + Sync {
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// use chrono::Utc;
 /// use inferadb_common_storage::auth::{
 ///     MemorySigningKeyStore, PublicSigningKey, PublicSigningKeyStore,

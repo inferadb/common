@@ -39,7 +39,7 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
 /// Ledger-backed implementation of [`StorageBackend`].
 ///
 /// This backend uses the InferaDB Ledger SDK to provide durable, cryptographically
-/// verifiable key-value storage. All operations are routed to a Ledger namespace
+/// verifiable key-value storage. All operations target a Ledger namespace
 /// and optionally a vault for data isolation.
 ///
 /// # Key Encoding
@@ -288,6 +288,8 @@ impl LedgerBackend {
     }
 
     /// Validates key and value sizes against configured limits, if any.
+    ///
+    /// Returns [`StorageError::SizeLimitExceeded`] if limits are exceeded.
     fn check_sizes(&self, key: &[u8], value: &[u8]) -> StorageResult<()> {
         if let Some(ref limits) = self.size_limits {
             validate_sizes(key, value, limits)?;
@@ -295,7 +297,7 @@ impl LedgerBackend {
         Ok(())
     }
 
-    /// Checks the circuit breaker and returns `CircuitOpen` if it's open.
+    /// Checks the circuit breaker and returns [`StorageError::CircuitOpen`] if it's open.
     fn check_circuit(&self) -> StorageResult<()> {
         if let Some(ref cb) = self.circuit_breaker
             && !cb.allow_request()
@@ -305,7 +307,7 @@ impl LedgerBackend {
         Ok(())
     }
 
-    /// Checks the cancellation token and returns `ShuttingDown` if cancelled.
+    /// Checks the cancellation token and returns [`StorageError::ShuttingDown`] if cancelled.
     fn check_cancelled(&self) -> StorageResult<()> {
         if let Some(ref token) = self.cancellation_token
             && token.is_cancelled()

@@ -320,8 +320,8 @@ impl<B: std::fmt::Debug> std::fmt::Debug for RateLimitedBackend<B> {
 impl<B: StorageBackend> RateLimitedBackend<B> {
     /// Wraps a backend with the given rate limiter.
     ///
-    /// The limiter is wrapped in an [`Arc`] internally, so the
-    /// `RateLimitedBackend` can be cloned cheaply.
+    /// The limiter is wrapped in an [`Arc`] internally, so multiple
+    /// backends can share a single limiter.
     pub fn new(inner: B, limiter: TokenBucketLimiter) -> Self {
         Self { inner, limiter: Arc::new(limiter) }
     }

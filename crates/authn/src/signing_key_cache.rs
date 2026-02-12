@@ -543,7 +543,7 @@ impl SigningKeyCache {
     ///
     /// # Panics
     ///
-    /// Must be called within a Tokio runtime context.
+    /// Panics if called outside a Tokio runtime context (required by `tokio::spawn`).
     #[must_use]
     pub fn with_refresh_interval(self: Arc<Self>, interval: Duration) -> Arc<Self> {
         let cache = Arc::clone(&self);
@@ -797,6 +797,13 @@ fn is_transient_error(error: &StorageError) -> bool {
 /// - `revoked_at.is_none()`
 /// - `now >= valid_from`
 /// - `valid_until.is_none() || now <= valid_until`
+///
+/// # Errors
+///
+/// - [`AuthError::KeyInactive`] if `active` is `false`
+/// - [`AuthError::KeyRevoked`] if `revoked_at` is set
+/// - [`AuthError::KeyNotYetValid`] if the current time is before `valid_from`
+/// - [`AuthError::KeyExpired`] if the current time is after `valid_until`
 fn validate_key_state(key: &PublicSigningKey) -> Result<(), AuthError> {
     let now = Utc::now();
 
@@ -824,6 +831,12 @@ fn validate_key_state(key: &PublicSigningKey) -> Result<(), AuthError> {
 /// Converts a [`PublicSigningKey`] to a jsonwebtoken [`DecodingKey`].
 ///
 /// The public key is expected to be base64url-encoded (no padding) Ed25519 key.
+///
+/// # Errors
+///
+/// - [`AuthError::InvalidPublicKey`] if the base64url decoding fails
+/// - [`AuthError::InvalidPublicKey`] if the decoded key is not exactly 32 bytes
+/// - [`AuthError::InvalidPublicKey`] if the bytes are not a valid Ed25519 public key
 fn to_decoding_key(key: &PublicSigningKey) -> Result<DecodingKey, AuthError> {
     // Decode base64url public key into a Zeroizing wrapper to ensure
     // the raw key bytes are scrubbed from memory when dropped.

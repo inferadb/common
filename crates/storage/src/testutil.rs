@@ -193,20 +193,17 @@ macro_rules! assert_timeout {
     };
 }
 
-/// Helper to verify that a result is an error of a specific variant.
-///
-/// This is a convenience for tests that need to match on error variants
-/// without importing the error type directly.
+/// Returns `true` if the result is `Err(StorageError::Conflict { .. })`.
 pub fn is_conflict<T>(result: &StorageResult<T>) -> bool {
     matches!(result, Err(StorageError::Conflict { .. }))
 }
 
-/// Helper to verify that a result is a `NotFound` error.
+/// Returns `true` if the result is `Err(StorageError::NotFound { .. })`.
 pub fn is_not_found<T>(result: &StorageResult<T>) -> bool {
     matches!(result, Err(StorageError::NotFound { .. }))
 }
 
-/// Helper to verify that a result is a `Timeout` error.
+/// Returns `true` if the result is `Err(StorageError::Timeout { .. })`.
 pub fn is_timeout<T>(result: &StorageResult<T>) -> bool {
     matches!(result, Err(StorageError::Timeout { .. }))
 }

@@ -1,6 +1,6 @@
 //! In-memory storage backend implementation.
 //!
-//! This module provides [`MemoryBackend`], an in-memory implementation of
+//! Provides [`MemoryBackend`], an in-memory implementation of
 //! [`StorageBackend`] suitable for testing and development.
 //!
 //! # Features

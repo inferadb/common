@@ -1,4 +1,4 @@
-//! JWT validation utilities.
+//! Algorithm and key-ID validation for JWT headers.
 //!
 //! This module provides security checks for JWT fields, ensuring only
 //! approved algorithms and well-formed identifiers are accepted.

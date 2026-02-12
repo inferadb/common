@@ -1,4 +1,4 @@
-//! JWT validation and claims.
+//! JWT decoding, claims parsing, and signature verification.
 //!
 //! This module provides types and functions for decoding and validating JWTs.
 //!
@@ -112,19 +112,17 @@ impl JwtClaims {
         self.scope.split_whitespace().map(|s| s.to_string()).collect()
     }
 
-    /// Returns the vault ID from claims, if present.
+    /// Returns the raw `vault_id` claim value, if present.
     ///
-    /// Returns the raw `vault_id` claim value. Use this when the vault ID
-    /// is optional for the operation.
+    /// Use this when the vault ID is optional for the operation.
     #[must_use]
     pub fn extract_vault_id(&self) -> Option<String> {
         self.vault_id.clone()
     }
 
-    /// Returns the organization ID from claims, if present.
+    /// Returns the raw `org_id` claim value without validation, if present.
     ///
-    /// Returns the raw `org_id` claim value without validation. Use
-    /// [`require_org_id`](Self::require_org_id) when the org ID is mandatory and you want an
+    /// Use [`require_org_id`](Self::require_org_id) when the org ID is mandatory and you want an
     /// error on absence.
     #[must_use]
     pub fn org_id(&self) -> Option<String> {
@@ -270,7 +268,8 @@ pub fn validate_claims(
 /// Returns [`AuthError::InvalidSignature`] if the signature does not match
 /// the token contents and key. Returns [`AuthError::TokenExpired`] if the
 /// `exp` claim indicates the token has expired (expiration validation is
-/// enabled).
+/// enabled). Returns [`AuthError::InvalidTokenFormat`] if the JWT structure
+/// is malformed (via the [`From<jsonwebtoken::errors::Error>`] conversion).
 #[must_use = "signature verification may fail and errors must be handled"]
 #[tracing::instrument(skip(token, key))]
 pub fn verify_signature(
@@ -296,7 +295,7 @@ pub fn verify_signature(
 /// 3. Fetches the corresponding public key from the signing key cache (backed by Ledger)
 /// 4. Verifies the JWT signature using the public key
 ///
-/// This approach eliminates the need for JWKS endpoints and Control connectivity,
+/// This approach eliminates the need for JWKS endpoints and Control Plane connectivity,
 /// as signing keys are stored directly in Ledger.
 ///
 /// # Arguments

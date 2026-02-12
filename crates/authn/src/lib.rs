@@ -20,7 +20,7 @@
 //!
 //! | Location | Material | Protection |
 //! |---|---|---|
-//! | [`PublicSigningKey::public_key`](inferadb_common_storage::auth::PublicSigningKey) | Base64url public key | `Zeroizing<String>` field |
+//! | [`PublicSigningKey`](inferadb_common_storage::auth::PublicSigningKey) | Base64url public key | `Zeroizing<String>` field |
 //! | `to_decoding_key()` decoded bytes | Raw 32-byte public key | `Zeroizing<Vec<u8>>` |
 //! | `to_decoding_key()` fixed-size copy | `[u8; 32]` stack array | `Zeroizing<[u8; 32]>` |
 //! | `decode_jwt_claims()` payload | Decoded JWT claims JSON | `Zeroizing<Vec<u8>>` |

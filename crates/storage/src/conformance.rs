@@ -469,7 +469,7 @@ pub async fn idempotent_delete<B: StorageBackend>(backend: &B) {
 
 /// Run the full conformance suite against the given backend.
 ///
-/// This function exercises every conformance test in sequence. It is a
+/// Exercises every conformance test in sequence. It is a
 /// convenience for backend authors who want a one-line invocation:
 ///
 /// ```no_run

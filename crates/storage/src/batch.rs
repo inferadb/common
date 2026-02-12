@@ -49,7 +49,7 @@ pub const TRANSACTION_SIZE_LIMIT: usize = 9 * 1024 * 1024;
 /// Default maximum batch size (number of operations).
 pub const DEFAULT_MAX_BATCH_SIZE: usize = 1000;
 
-/// Default maximum batch byte size (8MB to stay well under transaction limit).
+/// Default maximum batch byte size (8 MiB to stay well under transaction limit).
 pub const DEFAULT_MAX_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 /// Configuration for batch writes.
@@ -62,7 +62,7 @@ pub const DEFAULT_MAX_BATCH_BYTES: usize = 8 * 1024 * 1024;
 pub struct BatchConfig {
     /// Maximum number of operations per batch.
     pub(crate) max_batch_size: usize,
-    /// Maximum byte size per batch (should be under the 10MB transaction limit).
+    /// Maximum byte size per batch (should be under the 10 MiB transaction limit).
     pub(crate) max_batch_bytes: usize,
     /// Enable batching (can be disabled for testing).
     pub(crate) enabled: bool,

@@ -62,7 +62,7 @@ pub fn generate_test_keypair() -> (Zeroizing<Vec<u8>>, String) {
     (pkcs8_der, public_key_b64)
 }
 
-/// Creates a valid JWT signed with an Ed25519 key in PKCS#8 DER format.
+/// Signs a JWT with the given Ed25519 private key (PKCS#8 DER format).
 ///
 /// The JWT contains standard claims (`iss`, `sub`, `aud`, `exp`, `iat`,
 /// `scope`) and the given `org_id`. The `kid` header is set to the
@@ -92,7 +92,7 @@ pub fn create_signed_jwt(pkcs8_der: &[u8], kid: &str, org_id: &str) -> String {
     jsonwebtoken::encode(&header, &claims, &encoding_key).expect("Failed to encode test JWT")
 }
 
-/// Creates a valid JWT with a `jti` claim, signed with an Ed25519 key in PKCS#8 DER format.
+/// Signs a JWT with a `jti` claim using the given Ed25519 private key (PKCS#8 DER format).
 ///
 /// Identical to [`create_signed_jwt`] but also includes a `jti` (JWT ID) claim
 /// for replay detection testing.
@@ -138,14 +138,14 @@ pub fn craft_raw_jwt(header_json: &serde_json::Value, payload_json: &serde_json:
     format!("{header_b64}.{payload_b64}.")
 }
 
-/// Creates a [`PublicSigningKey`] suitable for testing.
+/// Creates a test Ed25519 key pair and a matching [`PublicSigningKey`].
 ///
 /// Generates a fresh Ed25519 key pair internally. The key is active,
 /// not revoked, and valid from 1 hour ago with no expiry.
 ///
-/// Returns `(pkcs8_der, signing_key)` where `pkcs8_der` can be used
-/// with [`create_signed_jwt`] and `signing_key` can be registered in
-/// a key store.
+/// Returns `(pkcs8_der, public_signing_key)` where `pkcs8_der` is the
+/// private key (for [`create_signed_jwt`]) and `public_signing_key` can
+/// be registered in a key store.
 pub fn create_test_signing_key(kid: &str) -> (Zeroizing<Vec<u8>>, PublicSigningKey) {
     let (pkcs8_der, public_key_b64) = generate_test_keypair();
     let key = PublicSigningKey {

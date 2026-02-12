@@ -124,6 +124,7 @@ where
         res
     }
 
+    /// Delegates to the inner store without emitting an audit event.
     async fn list_active_keys(
         &self,
         namespace_id: NamespaceId,

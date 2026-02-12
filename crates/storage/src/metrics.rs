@@ -324,7 +324,7 @@ fn percentile_index(len: usize, percentile: u32) -> usize {
 
 // ── MetricsSnapshot ─────────────────────────────────────────────────────
 
-/// Metrics snapshot for export.
+/// Point-in-time snapshot of all storage metrics for export and inspection.
 #[derive(Debug, Clone, Default, bon::Builder)]
 pub struct MetricsSnapshot {
     /// Total GET operations.
@@ -503,7 +503,7 @@ impl MetricsSnapshot {
         }
     }
 
-    /// Returns the total operations count.
+    /// Returns the total operation count.
     #[must_use]
     pub fn total_operations(&self) -> u64 {
         self.get_count
@@ -910,7 +910,8 @@ impl Metrics {
         self.inner.namespace_tracker.lock().reset();
     }
 
-    /// Logs current metrics at INFO level.
+    /// Logs current metrics at INFO level, with WARN-level alerts when the
+    /// error rate exceeds 5% or the conflict rate exceeds 10%.
     pub fn log_metrics(&self) {
         let snapshot = self.snapshot();
 

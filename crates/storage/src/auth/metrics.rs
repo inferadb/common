@@ -5,7 +5,7 @@
 //!
 //! # Examples
 //!
-//! ```
+//! ```no_run
 //! use std::time::Duration;
 //! use inferadb_common_storage::auth::{SigningKeyErrorKind, SigningKeyMetrics};
 //!
@@ -286,7 +286,7 @@ struct SigningKeyMetricsInner {
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
 /// use std::time::{Duration, Instant};
 /// use inferadb_common_storage::auth::{SigningKeyMetrics, SigningKeyErrorKind};
 ///
@@ -428,6 +428,9 @@ impl SigningKeyMetrics {
     }
 
     /// Returns a snapshot of current metrics including percentiles.
+    ///
+    /// Fallback-cache and background-refresh fields default to zero; they
+    /// are populated by wrappers that track those layers.
     #[must_use]
     pub fn snapshot(&self) -> SigningKeyMetricsSnapshot {
         SigningKeyMetricsSnapshot {

@@ -1,6 +1,6 @@
 //! Transaction trait for atomic storage operations.
 //!
-//! This module defines the [`Transaction`] trait that enables atomic
+//! Defines the [`Transaction`] trait that enables atomic
 //! multi-operation commits to storage backends.
 //!
 //! # Transaction Semantics
