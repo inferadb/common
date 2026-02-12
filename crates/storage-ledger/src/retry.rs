@@ -17,7 +17,7 @@ use std::{future::Future, sync::Arc, time::Duration};
 use fail::fail_point;
 use inferadb_common_storage::{Metrics, StorageError, StorageResult, TimeoutContext};
 use parking_lot::Mutex;
-use rand::Rng;
+use rand::RngExt;
 
 use crate::config::{CasRetryConfig, RetryConfig};
 
