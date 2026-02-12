@@ -375,6 +375,7 @@ impl LedgerSigningKeyStore {
 
 #[async_trait]
 impl PublicSigningKeyStore for LedgerSigningKeyStore {
+    /// Stores a signing key in the Ledger with CAS to prevent overwrites.
     #[tracing::instrument(skip(self, key), fields(kid = %key.kid))]
     async fn create_key(
         &self,
@@ -422,6 +423,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         result
     }
 
+    /// Retrieves a signing key by ID from the Ledger.
     #[tracing::instrument(skip(self))]
     async fn get_key(
         &self,
@@ -448,6 +450,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         result
     }
 
+    /// Lists all active signing keys, filtering by status with pagination.
     #[tracing::instrument(skip(self))]
     async fn list_active_keys(
         &self,
@@ -515,6 +518,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         list_result
     }
 
+    /// Deactivates a signing key using CAS for consistency.
     #[tracing::instrument(skip(self))]
     async fn deactivate_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
         let start = Instant::now();
@@ -547,6 +551,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         result
     }
 
+    /// Revokes a signing key with an optional reason, using CAS.
     #[tracing::instrument(skip(self))]
     async fn revoke_key(
         &self,
@@ -595,6 +600,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         result
     }
 
+    /// Reactivates a previously deactivated signing key using CAS.
     #[tracing::instrument(skip(self))]
     async fn activate_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
         let start = Instant::now();
@@ -635,6 +641,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         result
     }
 
+    /// Permanently removes a signing key from the Ledger using CAS.
     #[tracing::instrument(skip(self))]
     async fn delete_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
         let start = Instant::now();

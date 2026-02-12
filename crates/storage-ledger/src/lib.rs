@@ -125,7 +125,6 @@
 #![warn(missing_docs)]
 
 mod backend;
-/// Circuit breaker for fail-fast during backend outages.
 pub mod circuit_breaker;
 mod config;
 mod error;

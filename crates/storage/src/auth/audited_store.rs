@@ -129,8 +129,7 @@ where
         &self,
         namespace_id: NamespaceId,
     ) -> StorageResult<Vec<PublicSigningKey>> {
-        // list_active_keys is a read operation; not individually audited
-        // per the PRD's focus on mutations and access patterns.
+        // list_active_keys is a read-only operation; not individually audited.
         self.inner.list_active_keys(namespace_id).await
     }
 

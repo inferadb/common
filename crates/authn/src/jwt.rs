@@ -39,7 +39,7 @@ pub const DEFAULT_MAX_IAT_AGE: std::time::Duration = std::time::Duration::from_s
 
 /// Standard and custom claims extracted from InferaDB JWTs.
 ///
-/// Per the Management API specification, JWTs have the following structure:
+/// InferaDB JWTs have the following structure:
 ///
 /// ```json
 /// {
@@ -56,11 +56,11 @@ pub const DEFAULT_MAX_IAT_AGE: std::time::Duration = std::time::Duration::from_s
 /// ```
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JwtClaims {
-    /// Issuer - Should be the Management API URL (e.g., `https://api.inferadb.com`).
+    /// Issuer (e.g., `https://api.inferadb.com`).
     pub iss: String,
-    /// Subject - Client identifier (e.g., "client:<client_id>").
+    /// Subject identifier (e.g., `client:<client_id>`).
     pub sub: String,
-    /// Audience - Target service (e.g., `https://api.inferadb.com/evaluate`).
+    /// Audience (e.g., `https://api.inferadb.com/evaluate`).
     pub aud: String,
     /// Expiration time (seconds since epoch).
     pub exp: u64,
@@ -82,7 +82,7 @@ pub struct JwtClaims {
     /// Vault ID (Snowflake ID as string for multi-tenancy isolation).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vault_id: Option<String>,
-    /// Organization ID (Snowflake ID as string - primary identifier per Management API spec).
+    /// Organization ID (Snowflake ID as string).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub org_id: Option<String>,
 }
@@ -93,10 +93,6 @@ impl JwtClaims {
     /// Use this when the `org_id` claim is mandatory for the operation (e.g., JWT verification
     /// where the org ID is needed to look up the signing key). For optional access, use
     /// [`org_id`](Self::org_id) instead.
-    ///
-    /// # Returns
-    ///
-    /// The organization ID as a string.
     ///
     /// # Errors
     ///
@@ -147,7 +143,7 @@ pub fn decode_jwt_header(token: &str) -> Result<Header, AuthError> {
         .map_err(|e| AuthError::invalid_token_format(format!("Failed to decode JWT header: {}", e)))
 }
 
-/// Decodes JWT claims without verification (used to extract `org_id` for key lookup).
+/// Decodes JWT claims without signature verification.
 ///
 /// # Errors
 ///

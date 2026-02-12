@@ -427,6 +427,7 @@ impl inferadb_common_storage::MetricsCollector for LedgerBackend {
 
 #[async_trait]
 impl StorageBackend for LedgerBackend {
+    /// Reads a value by key, respecting the configured read consistency level.
     #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
         self.check_cancelled()?;
@@ -456,6 +457,7 @@ impl StorageBackend for LedgerBackend {
         result
     }
 
+    /// Writes a key-value pair with an optional namespace prefix.
     #[tracing::instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len()))]
     async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()> {
         self.check_cancelled()?;
@@ -490,6 +492,7 @@ impl StorageBackend for LedgerBackend {
         result
     }
 
+    /// Performs a compare-and-set operation with CAS retry support.
     #[tracing::instrument(skip(self, key, expected, new_value), fields(key_len = key.len()))]
     async fn compare_and_set(
         &self,
@@ -547,6 +550,7 @@ impl StorageBackend for LedgerBackend {
         result
     }
 
+    /// Deletes a key from the Ledger.
     #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {
         self.check_cancelled()?;
@@ -580,6 +584,7 @@ impl StorageBackend for LedgerBackend {
         result
     }
 
+    /// Scans a key range with server-side pagination and prefix optimization.
     #[tracing::instrument(skip(self, range))]
     async fn get_range<R>(&self, range: R) -> StorageResult<Vec<KeyValue>>
     where
@@ -717,6 +722,7 @@ impl StorageBackend for LedgerBackend {
         result
     }
 
+    /// Deletes all keys in a range using a two-phase get-then-delete approach.
     #[tracing::instrument(skip(self, range))]
     async fn clear_range<R>(&self, range: R) -> StorageResult<()>
     where
@@ -812,6 +818,7 @@ impl StorageBackend for LedgerBackend {
         result
     }
 
+    /// Creates a new [`LedgerTransaction`] for buffered atomic writes.
     #[tracing::instrument(skip(self))]
     async fn transaction(&self) -> StorageResult<Box<dyn Transaction>> {
         self.check_cancelled()?;
@@ -827,6 +834,7 @@ impl StorageBackend for LedgerBackend {
         Ok(Box::new(txn))
     }
 
+    /// Checks backend connectivity, bypassing the circuit breaker.
     #[tracing::instrument(skip(self))]
     async fn health_check(&self, probe: HealthProbe) -> StorageResult<HealthStatus> {
         let start = std::time::Instant::now();

@@ -44,7 +44,7 @@ fn current_span_id() -> Option<tracing::span::Id> {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum LedgerStorageError {
-    /// Error from the Ledger SDK, produced when an SDK call fails.
+    /// Ledger SDK call failure.
     Sdk {
         /// The underlying SDK error.
         #[source]

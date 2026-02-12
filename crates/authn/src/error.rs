@@ -718,6 +718,7 @@ impl AuthError {
     }
 }
 
+/// Converts a [`jsonwebtoken::errors::Error`] into the corresponding [`AuthError`] variant.
 impl From<jsonwebtoken::errors::Error> for AuthError {
     fn from(err: jsonwebtoken::errors::Error) -> Self {
         use jsonwebtoken::errors::ErrorKind;
@@ -737,6 +738,8 @@ impl From<jsonwebtoken::errors::Error> for AuthError {
     }
 }
 
+/// Converts a [`StorageError`](inferadb_common_storage::StorageError) into
+/// [`AuthError::KeyStorageError`].
 impl From<inferadb_common_storage::StorageError> for AuthError {
     fn from(err: inferadb_common_storage::StorageError) -> Self {
         AuthError::key_storage_error(err)

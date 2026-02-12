@@ -65,7 +65,7 @@ impl moka::Expiry<String, Instant> for JtiExpiry {
     }
 }
 
-/// In-memory replay detector backed by a [`moka::future::Cache`].
+/// In-memory replay detector with per-entry TTL and capacity-bounded eviction.
 ///
 /// Each JTI is stored with a per-entry TTL matching the token's remaining
 /// lifetime, ensuring automatic cleanup. The cache is also capacity-bounded

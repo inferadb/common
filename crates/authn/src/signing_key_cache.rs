@@ -98,10 +98,10 @@ pub const DEFAULT_FALLBACK_CAPACITY: u64 = 10_000;
 ///   during outages
 pub const DEFAULT_FALLBACK_TTL: Duration = Duration::from_secs(3_600);
 
-/// Default fill percentage at which a warning is emitted (80%).
+/// Default fill percentage (0.0--100.0) at which a warning is emitted.
 pub const DEFAULT_FALLBACK_WARN_THRESHOLD: f64 = 80.0;
 
-/// Default fill percentage at which a critical alert is emitted (95%).
+/// Default fill percentage (0.0--100.0) at which a critical alert is emitted.
 pub const DEFAULT_FALLBACK_CRITICAL_THRESHOLD: f64 = 95.0;
 
 /// Fallback (L3) cache entry carrying the decoding key and insertion
@@ -433,7 +433,7 @@ impl SigningKeyCache {
     ///
     /// Removes all entries from both the L1 TTL cache and the L3 fallback cache.
     /// An audit event is emitted at INFO level for compliance tracking.
-    /// Use sparingly - this causes a spike in Ledger fetches. Useful during
+    /// Use sparingly -- this causes a spike in L2 fetches. Useful during
     /// key rotation events where all cached keys should be refreshed.
     #[tracing::instrument(skip(self))]
     pub async fn clear_all(&self) {

@@ -1,5 +1,3 @@
-//! # InferaDB Common Authentication
-//!
 //! Shared JWT authentication types and utilities for InferaDB services.
 //!
 //! This crate provides:
@@ -77,7 +75,7 @@ pub mod testutil;
 /// Algorithm and key-ID validation for JWT headers.
 pub mod validation;
 
-// Re-export key types for convenience
+/// Re-exported key types for convenience.
 pub use error::{AuthError, Result};
 pub use jwt::{DEFAULT_MAX_IAT_AGE, JwtClaims};
 pub use replay::{InMemoryReplayDetector, ReplayDetector};

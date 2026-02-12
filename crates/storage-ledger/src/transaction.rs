@@ -172,6 +172,7 @@ impl LedgerTransaction {
 
 #[async_trait]
 impl Transaction for LedgerTransaction {
+    /// Returns the buffered value for a key, falling back to the backend if not buffered.
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
         let encoded_key = encode_key(key);
 
@@ -193,6 +194,7 @@ impl Transaction for LedgerTransaction {
         }
     }
 
+    /// Buffers a set operation for atomic commit.
     fn set(&mut self, key: Vec<u8>, value: Vec<u8>) {
         let encoded_key = encode_key(&key);
 
@@ -203,6 +205,7 @@ impl Transaction for LedgerTransaction {
         self.pending_sets.insert(encoded_key, value);
     }
 
+    /// Buffers a delete operation for atomic commit.
     fn delete(&mut self, key: Vec<u8>) {
         let encoded_key = encode_key(&key);
 
@@ -213,6 +216,7 @@ impl Transaction for LedgerTransaction {
         self.pending_deletes.insert(encoded_key);
     }
 
+    /// Buffers a compare-and-set operation for atomic commit.
     fn compare_and_set(
         &mut self,
         key: Vec<u8>,
@@ -226,6 +230,7 @@ impl Transaction for LedgerTransaction {
         Ok(())
     }
 
+    /// Commits all buffered operations as a single atomic Ledger write.
     async fn commit(self: Box<Self>) -> StorageResult<()> {
         // If there are no pending operations, this is a no-op
         if self.pending_sets.is_empty()

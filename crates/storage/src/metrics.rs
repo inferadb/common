@@ -1054,7 +1054,7 @@ mod tests {
 
     #[test]
     fn test_percentile_accuracy_within_1_percent() {
-        // PRD acceptance criterion: percentile accuracy within 1% for known distributions
+        // Percentile accuracy should be within 1% for known distributions
         let h = LatencyHistogram::new(1024);
         for v in 1..=1000 {
             h.record(v);
