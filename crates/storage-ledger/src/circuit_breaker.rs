@@ -189,7 +189,8 @@ impl CircuitBreaker {
         }
     }
 
-    /// Checks whether the circuit allows a request through.
+    /// Checks whether the circuit allows a request through, transitioning
+    /// Open to HalfOpen if the recovery timeout has elapsed.
     ///
     /// Returns `true` if the request should proceed. Returns `false` if
     /// the circuit is open and the request should be rejected immediately.

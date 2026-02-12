@@ -144,7 +144,7 @@ pub fn decode_jwt_header(token: &str) -> Result<Header, AuthError> {
         .map_err(|e| AuthError::invalid_token_format(format!("Failed to decode JWT header: {}", e)))
 }
 
-/// Decodes JWT claims without verification (used to extract issuer for key lookup).
+/// Decodes JWT claims without verification (used to extract `org_id` for key lookup).
 ///
 /// # Errors
 ///
@@ -192,7 +192,7 @@ pub fn decode_jwt_claims(token: &str) -> Result<JwtClaims, AuthError> {
     Ok(claims)
 }
 
-/// Validates JWT claims for expiration, issued-at age, and audience.
+/// Validates JWT claims for expiration, not-before, issued-at age, and audience.
 ///
 /// # Arguments
 ///

@@ -203,8 +203,9 @@ impl MemoryBackend {
     /// Explicitly signals the background TTL cleanup task to stop.
     ///
     /// This is optional — the task also stops automatically when all clones
-    /// of the backend are dropped. Use this when you need deterministic
-    /// shutdown timing (e.g., in tests).
+    /// of the backend are dropped. The backend remains fully operational for
+    /// data operations after shutdown; only the background TTL cleanup stops.
+    /// Use this when you need deterministic shutdown timing (e.g., in tests).
     pub fn shutdown(&self) {
         let _ = self.shutdown_guard.shutdown_tx.send(());
     }

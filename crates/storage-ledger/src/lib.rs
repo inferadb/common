@@ -21,13 +21,13 @@
 //! │                     Repository Layer                        │
 //! │  OrganizationRepository │ VaultRepository │ RelationshipRepo│
 //! ├─────────────────────────────────────────────────────────────┤
-//! │                   LedgerBackend                              │
-//! │         (implements StorageBackend trait)                    │
+//! │                   LedgerBackend                             │
+//! │         (implements StorageBackend trait)                   │
 //! ├─────────────────────────────────────────────────────────────┤
-//! │                   Ledger SDK                                 │
+//! │                   Ledger SDK                                │
 //! │   LedgerClient │ SequenceTracker │ ConnectionPool           │
 //! ├─────────────────────────────────────────────────────────────┤
-//! │                   Ledger Service                             │
+//! │                   Ledger Service                            │
 //! │   Blockchain consensus │ Merkle trees │ Replication         │
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
@@ -68,11 +68,11 @@
 //! The backend maps byte keys to Ledger's string-based entity keys using
 //! hex encoding to preserve ordering:
 //!
-//! | StorageBackend | Ledger |
-//! |----------------|--------|
-//! | `get(key)` | `client.read_consistent(ns, vault, hex(key))` |
-//! | `set(key, value)` | `client.write([SetEntity { key: hex(key), value }])` |
-//! | `get_range(start..end)` | `client.list_entities(prefix)` + filter |
+//! | StorageBackend          | Ledger                                                       |
+//! | ----------------------- | ------------------------------------------------------------ |
+//! | `get(key)`              | `read_consistent` or `read` depending on [`ReadConsistency`] |
+//! | `set(key, value)`       | `write([Operation::set_entity(hex(key), value)])`            |
+//! | `get_range(start..end)` | `list_entities(prefix)` + client-side filtering              |
 //!
 //! # Consistency Model
 //!
