@@ -7,13 +7,13 @@
 //! - **Signing key cache**: Ledger-backed cache with TTL and fallback
 //! - **Algorithm validation**: Security checks for JWT algorithms
 //!
-//! ## Features
+//! # Features
 //!
-//! - Only asymmetric algorithms (EdDSA, RS256) are supported
+//! - Only EdDSA (Ed25519) is currently supported for JWT signatures
 //! - Symmetric algorithms (HS256, etc.) are explicitly rejected
 //! - Graceful degradation during Ledger outages via fallback cache
 //!
-//! ## Key Material Zeroing
+//! # Key Material Zeroing
 //!
 //! This crate uses [`zeroize::Zeroizing`] wrappers to scrub sensitive data from
 //! memory when it is no longer needed. The following code paths are protected:
@@ -36,7 +36,7 @@
 //! - `ed25519_dalek::SigningKey` — used only in test code. The `SigningKey` type implements its own
 //!   [`Zeroize`](zeroize::Zeroize) on drop.
 //!
-//! ## Examples
+//! # Examples
 //!
 //! ```no_run
 //! // Requires a `PublicSigningKeyStore` implementation and a valid JWT token.

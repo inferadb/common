@@ -6,6 +6,8 @@
 //! Error chains are preserved through the conversion, enabling debugging tools
 //! to display the full error context from SDK through to storage layer.
 //!
+//! # Trace Context
+//!
 //! Each variant carries an optional `span_id` captured from the active
 //! [`tracing::Span`] at error creation time for end-to-end trace correlation.
 
