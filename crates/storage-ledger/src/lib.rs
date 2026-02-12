@@ -1,4 +1,5 @@
-//! Ledger-backed implementation of `StorageBackend` for InferaDB.
+//! Ledger-backed implementation of [`StorageBackend`](inferadb_common_storage::StorageBackend) for
+//! InferaDB.
 //!
 //! This crate provides [`LedgerBackend`], a production-grade storage backend that
 //! implements the [`StorageBackend`](inferadb_common_storage::StorageBackend) trait using

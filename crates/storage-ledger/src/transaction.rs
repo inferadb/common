@@ -40,12 +40,13 @@ struct CasOperation {
 /// **read-committed** isolation model:
 ///
 /// - **Read-your-writes**: Reads check pending sets and deletes before consulting the ledger. A
-///   `set` followed by `get` on the same key returns the buffered value without a network
-///   round-trip.
+///   [`set`](Transaction::set) followed by [`get`](Transaction::get) on the same key returns the
+///   buffered value without a network round-trip.
 ///
 /// - **Live reads**: Reads of unmodified keys go directly to the ledger with the configured
-///   [`ReadConsistency`] level. With `Linearizable` consistency, reads see the latest committed
-///   value. With `Eventual` consistency, reads may return stale data.
+///   [`ReadConsistency`] level. With [`Linearizable`](ReadConsistency::Linearizable) consistency,
+///   reads see the latest committed value. With [`Eventual`](ReadConsistency::Eventual)
+///   consistency, reads may return stale data.
 ///
 /// - **No snapshot isolation**: Two reads of the same unmodified key within one transaction may
 ///   return different values if another writer commits between them.
@@ -56,7 +57,7 @@ struct CasOperation {
 /// `client.write()` call, which provides **all-or-nothing** atomicity:
 ///
 /// - If any compare-and-set condition fails (the ledger returns `FailedPrecondition`), the entire
-///   write is rejected and `StorageError::Conflict` is returned. No operations are applied.
+///   write is rejected and [`StorageError::Conflict`] is returned. No operations are applied.
 ///
 /// - On backend errors, no operations are applied.
 ///
@@ -66,8 +67,10 @@ struct CasOperation {
 /// # Limitations
 ///
 /// - **No cross-transaction conflict detection for unconditional writes**: Two concurrent
-///   transactions writing to the same key with `set` (not `compare_and_set`) will both succeed. The
-///   last one to commit wins. Use `compare_and_set` to detect concurrent modifications.
+///   transactions writing to the same key with [`set`](Transaction::set) (not
+///   [`compare_and_set`](Transaction::compare_and_set)) will both succeed. The last one to commit
+///   wins. Use [`compare_and_set`](Transaction::compare_and_set) to detect concurrent
+///   modifications.
 ///
 /// - **CAS conditions checked server-side**: The expected value in a compare-and-set is evaluated
 ///   by the ledger at commit time, not locally. This means CAS detects conflicts even from other

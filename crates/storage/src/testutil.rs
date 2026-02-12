@@ -41,7 +41,7 @@ use crate::{
     types::KeyValue,
 };
 
-/// Create a deterministic test key from a prefix and index.
+/// Creates a deterministic test key from a prefix and index.
 ///
 /// Produces keys like `"prefix:000042"` (zero-padded to 6 digits) encoded
 /// as UTF-8 bytes. The zero-padding ensures lexicographic ordering matches
@@ -51,7 +51,7 @@ pub fn make_key(prefix: &str, idx: usize) -> Vec<u8> {
     format!("{prefix}:{idx:06}").into_bytes()
 }
 
-/// Create a test value of the given size filled with `0xAB` bytes.
+/// Creates a test value of the given size filled with `0xAB` bytes.
 ///
 /// Useful for benchmarks and tests that need values of specific sizes
 /// without caring about the content.
@@ -60,7 +60,7 @@ pub fn make_value(size: usize) -> Vec<u8> {
     vec![0xAB; size]
 }
 
-/// Create a test value tagged with a task ID and sequence number.
+/// Creates a test value tagged with a task ID and sequence number.
 ///
 /// Produces values like `"task3-val042"` encoded as UTF-8 bytes.
 /// Useful for concurrent tests where you need to identify which task
@@ -70,7 +70,7 @@ pub fn make_tagged_value(task: usize, seq: usize) -> Vec<u8> {
     format!("task{task}-val{seq}").into_bytes()
 }
 
-/// Create a [`MemoryBackend`] pre-populated with `count` keys.
+/// Creates a [`MemoryBackend`] pre-populated with `count` keys.
 ///
 /// Keys are formatted as `"{prefix}:{idx:06}"` with values of `value_size`
 /// bytes each. The backend is ready for immediate use in tests.

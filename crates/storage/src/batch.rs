@@ -287,10 +287,14 @@ impl BatchResult {
         self.results.iter().filter(|r| r.is_err()).count()
     }
 
-    /// Converts this result into a single `StorageResult<BatchFlushStats>`,
+    /// Converts this result into a single [`StorageResult`]`<`[`BatchFlushStats`]`>`,
     /// returning the first error if any operation failed.
     ///
     /// This is useful for callers that want the old all-or-nothing behavior.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`StorageError`] encountered across all operations.
     pub fn into_result(self) -> StorageResult<BatchFlushStats> {
         // Find the first error, then drop all remaining results to release Arc refs.
         let mut first_err: Option<Arc<StorageError>> = None;

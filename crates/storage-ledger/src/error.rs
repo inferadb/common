@@ -111,19 +111,19 @@ impl From<SdkError> for LedgerStorageError {
 }
 
 impl LedgerStorageError {
-    /// Creates a new `Config` error.
+    /// Creates a new [`Config`](Self::Config) error.
     #[must_use]
     pub fn config(message: impl Into<String>) -> Self {
         Self::Config { message: message.into(), span_id: current_span_id() }
     }
 
-    /// Creates a new `KeyEncoding` error.
+    /// Creates a new [`KeyEncoding`](Self::KeyEncoding) error.
     #[must_use]
     pub fn key_encoding(message: impl Into<String>) -> Self {
         Self::KeyEncoding { message: message.into(), span_id: current_span_id() }
     }
 
-    /// Creates a new `Transaction` error.
+    /// Creates a new [`Transaction`](Self::Transaction) error.
     #[must_use]
     pub fn transaction(message: impl Into<String>) -> Self {
         Self::Transaction { message: message.into(), span_id: current_span_id() }

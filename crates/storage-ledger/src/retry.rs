@@ -204,7 +204,7 @@ where
 /// total wall-clock time of the operation including all retry attempts
 /// and backoff sleeps.
 ///
-/// When the timeout fires, the resulting `StorageError::Timeout` includes
+/// When the timeout fires, the resulting [`StorageError::Timeout`] includes
 /// a [`TimeoutContext`] that captures the retry state at the moment of
 /// cancellation — how many attempts completed, whether the timeout hit
 /// during a backoff sleep or a backend call, and the last backend error.

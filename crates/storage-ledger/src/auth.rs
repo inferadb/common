@@ -102,22 +102,26 @@ use crate::{LedgerStorageError, config::CasRetryConfig};
 ///
 /// # Concurrency
 ///
-/// Write operations (`revoke_key`, `deactivate_key`, `activate_key`, `delete_key`)
+/// Write operations ([`revoke_key`](PublicSigningKeyStore::revoke_key),
+/// [`deactivate_key`](PublicSigningKeyStore::deactivate_key),
+/// [`activate_key`](PublicSigningKeyStore::activate_key),
+/// [`delete_key`](PublicSigningKeyStore::delete_key))
 /// use optimistic locking via compare-and-set (CAS). Each operation reads the
 /// current value, modifies it, and writes back conditioned on the value being
 /// unchanged. If a concurrent writer modified the key between the read and write,
 /// the operation returns [`StorageError::Conflict`].
 ///
-/// Callers should retry the full operation on `Conflict`. Since each operation
-/// re-reads the current value, the retry naturally picks up the latest state.
+/// Callers should retry the full operation on [`Conflict`](StorageError::Conflict).
+/// Since each operation re-reads the current value, the retry naturally picks up
+/// the latest state.
 ///
 /// # Error Handling
 ///
 /// Operations convert Ledger SDK errors to [`StorageError`] variants:
-/// - Connection failures → `StorageError::Connection`
-/// - Key not found → `StorageError::NotFound`
-/// - Duplicate key or CAS failure → `StorageError::Conflict`
-/// - Serialization issues → `StorageError::Serialization`
+/// - Connection failures → [`StorageError::Connection`]
+/// - Key not found → [`StorageError::NotFound`]
+/// - Duplicate key or CAS failure → [`StorageError::Conflict`]
+/// - Serialization issues → [`StorageError::Serialization`]
 #[derive(Clone)]
 pub struct LedgerSigningKeyStore {
     client: Arc<LedgerClient>,
