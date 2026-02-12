@@ -23,32 +23,25 @@ pub const FORBIDDEN_ALGORITHMS: &[&str] = &["none", "HS256", "HS384", "HS512"];
 
 /// Accepted JWT algorithms.
 ///
-/// Currently only EdDSA (Ed25519) is supported end-to-end. The verification
-/// pipeline in [`crate::jwt::verify_with_signing_key_cache`] only handles
-/// EdDSA keys from the Ledger-backed signing key store.
-///
-/// **To add RS256 support in the future:**
-/// 1. Add RS256 back to this list
-/// 2. Store RSA public keys in the signing key store (currently EdDSA only)
-/// 3. Extend [`crate::jwt::verify_with_signing_key_cache`] to select the correct `Algorithm`
-///    variant based on the key type
-/// 4. Add integration tests for RS256 end-to-end verification
+/// Only EdDSA (Ed25519) is supported. The verification pipeline in
+/// [`crate::jwt::verify_with_signing_key_cache`] handles EdDSA keys
+/// from the Ledger-backed signing key store.
 ///
 /// Per RFC 8725 Section 3.1, validators must reject algorithms they do not
-/// fully implement — listing RS256 here without verification support would
-/// produce confusing errors at the signature verification stage.
+/// fully implement — listing an algorithm here without verification support
+/// would produce confusing errors at the signature verification stage.
 pub const ACCEPTED_ALGORITHMS: &[&str] = &["EdDSA"];
 
 /// Validates the JWT algorithm against security policies.
 ///
-/// This function enforces strict algorithm security per RFC 8725:
-/// - ALWAYS rejects symmetric algorithms (HS256, HS384, HS512)
-/// - ALWAYS rejects "none" algorithm
-/// - Only accepts EdDSA (Ed25519)
+/// Enforces strict algorithm security per RFC 8725:
+/// - Rejects symmetric algorithms (HS256, HS384, HS512)
+/// - Rejects the "none" algorithm
+/// - Accepts only EdDSA (Ed25519)
 ///
 /// # Arguments
 ///
-/// * `alg` - The algorithm from the JWT header
+/// * `alg` — The algorithm from the JWT header
 ///
 /// # Errors
 ///

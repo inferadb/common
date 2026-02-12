@@ -125,6 +125,7 @@
 #![warn(missing_docs)]
 
 mod backend;
+/// Circuit breaker for Ledger connectivity with automatic recovery.
 pub mod circuit_breaker;
 mod config;
 mod error;
@@ -134,7 +135,7 @@ mod transaction;
 
 /// Authentication-related storage implementations.
 pub mod auth;
-/// Shared test utilities for Ledger backend testing.
+/// Test utilities for Ledger backend testing.
 #[cfg(any(test, feature = "testutil"))]
 #[allow(clippy::expect_used)]
 pub mod testutil;

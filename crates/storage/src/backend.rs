@@ -66,13 +66,14 @@ use crate::{
 /// use bytes::Bytes;
 /// use inferadb_common_storage::{StorageBackend, MemoryBackend};
 ///
-/// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let backend = MemoryBackend::new();
 ///
-/// backend.set(b"key".to_vec(), b"value".to_vec()).await.unwrap();
-/// let value = backend.get(b"key").await.unwrap();
+/// backend.set(b"key".to_vec(), b"value".to_vec()).await?;
+/// let value = backend.get(b"key").await?;
 /// assert_eq!(value, Some(Bytes::from("value")));
-/// # });
+/// # Ok(())
+/// # }
 /// ```
 #[async_trait]
 pub trait StorageBackend: Send + Sync {
@@ -80,12 +81,12 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `key` - The key to look up
+    /// * `key` — The key to look up
     ///
     /// # Returns
     ///
     /// - `Ok(Some(bytes))` if the key exists
-    /// - `Ok(None)` if the key doesn't exist
+    /// - `Ok(None)` if the key does not exist
     ///
     /// # Errors
     ///
@@ -100,8 +101,8 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `key` - The key to store
-    /// * `value` - The value to associate with the key
+    /// * `key` — The key to store
+    /// * `value` — The value to associate with the key
     ///
     /// # Errors
     ///
@@ -134,7 +135,7 @@ pub trait StorageBackend: Send + Sync {
     /// # Byte Comparison Rules
     ///
     /// The comparison is an exact, length-sensitive byte equality check. Two values
-    /// match if and only if they have the same length and identical bytes at every
+    /// match when they have the same length and identical bytes at every
     /// position. There is no normalization, canonicalization, or encoding-aware
     /// comparison — callers must ensure the expected value is byte-identical to the
     /// stored value.
@@ -266,10 +267,10 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `key` - The key to update.
-    /// * `expected` - The expected current value (deserialized form). Use `None` for
+    /// * `key` — The key to update.
+    /// * `expected` — The expected current value (deserialized form). Use `None` for
     ///   insert-if-absent.
-    /// * `new_value` - The new value to set.
+    /// * `new_value` — The new value to set.
     ///
     /// # Errors
     ///
@@ -328,11 +329,11 @@ pub trait StorageBackend: Send + Sync {
 
     /// Deletes a key.
     ///
-    /// If the key doesn't exist, this is a no-op (returns `Ok(())`).
+    /// If the key does not exist, this is a no-op (returns `Ok(())`).
     ///
     /// # Arguments
     ///
-    /// * `key` - The key to delete
+    /// * `key` — The key to delete
     ///
     /// # Errors
     ///
@@ -354,7 +355,7 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `range` - The key range to query
+    /// * `range` — The key range to query
     ///
     /// # Returns
     ///
@@ -374,7 +375,7 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `range` - The key range to clear
+    /// * `range` — The key range to clear
     ///
     /// # Errors
     ///
@@ -395,9 +396,9 @@ pub trait StorageBackend: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `key` - The key to store
-    /// * `value` - The value to associate with the key
-    /// * `ttl` - Time-to-live duration after which the key expires
+    /// * `key` — The key to store
+    /// * `value` — The value to associate with the key
+    /// * `ttl` — Time-to-live duration after which the key expires
     ///
     /// # Errors
     ///

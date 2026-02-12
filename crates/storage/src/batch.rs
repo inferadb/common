@@ -9,7 +9,7 @@
 //! ```no_run
 //! use inferadb_common_storage::{MemoryBackend, batch::{BatchWriter, BatchConfig}};
 //!
-//! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let backend = MemoryBackend::new();
 //! let mut writer = BatchWriter::new(backend, BatchConfig::default());
 //!
@@ -19,9 +19,10 @@
 //! writer.delete(b"old_key".to_vec());
 //!
 //! // Flush all at once
-//! let stats = writer.flush_all().await.unwrap();
+//! let stats = writer.flush_all().await?;
 //! assert_eq!(stats.operations_count, 3);
-//! # });
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! # Transaction Size Limits
@@ -112,7 +113,7 @@ impl BatchConfig {
     ///
     /// When disabled, [`should_flush`](BatchWriter::should_flush) returns `true` whenever
     /// there are pending operations.
-    #[must_use]
+    #[must_use = "constructing a config has no side effects"]
     pub fn disabled() -> Self {
         Self {
             max_batch_size: DEFAULT_MAX_BATCH_SIZE,
@@ -123,9 +124,9 @@ impl BatchConfig {
 
     /// Creates a batch config optimized for large transactions.
     ///
-    /// Uses [`TRANSACTION_SIZE_LIMIT`] (9 MB) as the maximum batch byte size,
+    /// Uses [`TRANSACTION_SIZE_LIMIT`] (9 MiB) as the maximum batch byte size,
     /// allowing sub-batches to fill up to the FoundationDB transaction limit.
-    #[must_use]
+    #[must_use = "constructing a config has no side effects"]
     pub fn for_large_transactions() -> Self {
         Self {
             max_batch_size: DEFAULT_MAX_BATCH_SIZE,
@@ -135,19 +136,19 @@ impl BatchConfig {
     }
 
     /// Returns the maximum number of operations per batch.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn max_batch_size(&self) -> usize {
         self.max_batch_size
     }
 
     /// Returns the maximum byte size per batch.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn max_batch_bytes(&self) -> usize {
         self.max_batch_bytes
     }
 
     /// Returns whether batching is enabled.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn enabled(&self) -> bool {
         self.enabled
     }
@@ -174,7 +175,7 @@ impl BatchOperation {
     /// Calculates the approximate size of this operation in bytes.
     ///
     /// Includes an estimated 50-byte overhead for transaction encoding.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn size_bytes(&self) -> usize {
         match self {
             BatchOperation::Set { key, value } => {
@@ -189,7 +190,7 @@ impl BatchOperation {
     }
 
     /// Returns the key associated with this operation.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn key(&self) -> &[u8] {
         match self {
             BatchOperation::Set { key, .. } | BatchOperation::Delete { key } => key,
@@ -248,25 +249,25 @@ impl BatchResult {
     }
 
     /// Returns the flush statistics.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn stats(&self) -> &BatchFlushStats {
         &self.stats
     }
 
     /// Returns `true` if any operation failed.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn has_failures(&self) -> bool {
         self.results.iter().any(|r| r.is_err())
     }
 
     /// Returns `true` if all operations succeeded.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn is_success(&self) -> bool {
         self.results.iter().all(|r| r.is_ok())
     }
 
     /// Returns the indices of failed operations.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn failed_indices(&self) -> Vec<usize> {
         self.results
             .iter()
@@ -276,13 +277,13 @@ impl BatchResult {
     }
 
     /// Returns the number of operations that succeeded.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn succeeded_count(&self) -> usize {
         self.results.iter().filter(|r| r.is_ok()).count()
     }
 
     /// Returns the number of operations that failed.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn failed_count(&self) -> usize {
         self.results.iter().filter(|r| r.is_err()).count()
     }
@@ -335,7 +336,7 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
     ///
     /// The writer accumulates operations until [`flush`](Self::flush) or
     /// [`flush_all`](Self::flush_all) is called.
-    #[must_use]
+    #[must_use = "constructing a batch writer has no side effects"]
     pub fn new(backend: B, config: BatchConfig) -> Self {
         Self { backend, operations: Vec::new(), current_size_bytes: 0, config }
     }
@@ -355,19 +356,19 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
     }
 
     /// Returns the number of pending operations.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn pending_count(&self) -> usize {
         self.operations.len()
     }
 
     /// Returns the estimated size of pending operations in bytes.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn pending_bytes(&self) -> usize {
         self.current_size_bytes
     }
 
     /// Returns whether the batch should be flushed based on configured size limits.
-    #[must_use]
+    #[must_use = "check the return value to decide whether to flush"]
     pub fn should_flush(&self) -> bool {
         if !self.config.enabled {
             return !self.operations.is_empty();
@@ -377,7 +378,7 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
     }
 
     /// Returns the pending operations.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn pending_operations(&self) -> &[BatchOperation] {
         &self.operations
     }
@@ -505,7 +506,7 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
         txn.commit().await
     }
 
-    /// Flush all pending operations, failing if any operation fails.
+    /// Flushes all pending operations, failing if any operation fails.
     ///
     /// This is a convenience wrapper around [`flush`](Self::flush) that returns
     /// the first error encountered, providing the simpler all-or-nothing API.
@@ -533,7 +534,7 @@ impl<B: StorageBackend + Clone> BatchWriter<B> {
         self.flush_all().await
     }
 
-    /// Flush all pending operations to the backend with per-operation error reporting.
+    /// Flushes all pending operations to the backend with per-operation error reporting.
     ///
     /// Operations are split into appropriately-sized sub-batches. Each sub-batch is
     /// committed in a separate transaction. If a sub-batch fails, the error is

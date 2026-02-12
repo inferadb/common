@@ -40,8 +40,8 @@ use std::{collections::HashMap, fmt, time::Duration};
 /// Different probe types have different failure semantics:
 ///
 /// - **`Liveness`** — checks that the process is alive and the async runtime is responsive. A
-///   failure triggers a container restart. This should almost always succeed; only deadlocks or
-///   fatal resource exhaustion should cause failure.
+///   failure triggers a container restart. Expected to succeed unless the process is deadlocked or
+///   critically resource-exhausted.
 ///
 /// - **`Readiness`** — checks that the backend can serve traffic. This is the original
 ///   `health_check` behavior: verifying connectivity to the underlying store, cache health, etc. A
@@ -103,43 +103,43 @@ pub enum HealthStatus {
 
 impl HealthStatus {
     /// Creates a `Healthy` status.
-    #[must_use]
+    #[must_use = "creating a status has no side effects"]
     pub fn healthy(metadata: HealthMetadata) -> Self {
         Self::Healthy(metadata)
     }
 
     /// Creates a `Degraded` status with a reason.
-    #[must_use]
+    #[must_use = "creating a status has no side effects"]
     pub fn degraded(metadata: HealthMetadata, reason: impl Into<String>) -> Self {
         Self::Degraded(metadata, reason.into())
     }
 
     /// Creates an `Unhealthy` status with a reason.
-    #[must_use]
+    #[must_use = "creating a status has no side effects"]
     pub fn unhealthy(metadata: HealthMetadata, reason: impl Into<String>) -> Self {
         Self::Unhealthy(metadata, reason.into())
     }
 
     /// Returns `true` if the backend is fully healthy.
-    #[must_use]
+    #[must_use = "health status predicates should be checked"]
     pub fn is_healthy(&self) -> bool {
         matches!(self, Self::Healthy(_))
     }
 
     /// Returns `true` if the backend is degraded.
-    #[must_use]
+    #[must_use = "health status predicates should be checked"]
     pub fn is_degraded(&self) -> bool {
         matches!(self, Self::Degraded(..))
     }
 
     /// Returns `true` if the backend is unhealthy.
-    #[must_use]
+    #[must_use = "health status predicates should be checked"]
     pub fn is_unhealthy(&self) -> bool {
         matches!(self, Self::Unhealthy(..))
     }
 
     /// Returns the metadata associated with this health status.
-    #[must_use]
+    #[must_use = "returns metadata by reference without side effects"]
     pub fn metadata(&self) -> &HealthMetadata {
         match self {
             Self::Healthy(m) | Self::Degraded(m, _) | Self::Unhealthy(m, _) => m,
@@ -147,7 +147,7 @@ impl HealthStatus {
     }
 
     /// Returns the degradation or failure reason, if any.
-    #[must_use]
+    #[must_use = "returns the reason without side effects"]
     pub fn reason(&self) -> Option<&str> {
         match self {
             Self::Healthy(_) => None,
@@ -192,13 +192,13 @@ pub struct HealthMetadata {
 
 impl HealthMetadata {
     /// Creates a new `HealthMetadata` with the given check duration and backend name.
-    #[must_use]
+    #[must_use = "constructing metadata has no side effects"]
     pub fn new(check_duration: Duration, backend: impl Into<String>) -> Self {
         Self { check_duration, backend: backend.into(), details: HashMap::new() }
     }
 
     /// Adds a detail entry, returning `self` for chaining.
-    #[must_use]
+    #[must_use = "returns the modified metadata for chaining"]
     pub fn with_detail(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.details.insert(key.into(), value.into());
         self

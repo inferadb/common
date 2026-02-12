@@ -21,7 +21,7 @@
 //! # Trace Context
 //!
 //! Each error variant carries an optional `span_id` captured from the active
-//! [`tracing::Span`] at construction time. This enables end-to-end correlation
+//! [`tracing::Span`] when the error is created. This enables end-to-end correlation
 //! of errors with the request that produced them, bridging the gap between
 //! error types and distributed tracing infrastructure.
 //!
@@ -372,7 +372,7 @@ impl StorageError {
     /// Creates a new `NotFound` error for the given key.
     ///
     /// Captures the current tracing span ID for log correlation.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn not_found(key: impl Into<String>) -> Self {
         Self::NotFound { key: key.into(), span_id: current_span_id() }
     }
@@ -380,7 +380,7 @@ impl StorageError {
     /// Creates a new `Conflict` error.
     ///
     /// Captures the current tracing span ID for log correlation.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn conflict() -> Self {
         Self::Conflict { span_id: current_span_id() }
     }
@@ -388,7 +388,7 @@ impl StorageError {
     /// Creates a new `Connection` error with the given message.
     ///
     /// Captures the current tracing span ID for log correlation.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn connection(message: impl Into<String>) -> Self {
         Self::Connection { message: message.into(), source: None, span_id: current_span_id() }
     }
@@ -396,7 +396,7 @@ impl StorageError {
     /// Creates a new `Connection` error with a message and source error.
     ///
     /// Captures the current tracing span ID for log correlation.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn connection_with_source(
         message: impl Into<String>,
         source: impl std::error::Error + Send + Sync + 'static,
@@ -411,7 +411,7 @@ impl StorageError {
     /// Creates a new `Serialization` error with the given message.
     ///
     /// Captures the current tracing span ID for log correlation.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn serialization(message: impl Into<String>) -> Self {
         Self::Serialization { message: message.into(), source: None, span_id: current_span_id() }
     }
@@ -419,7 +419,7 @@ impl StorageError {
     /// Creates a new `Serialization` error with a message and source error.
     ///
     /// Captures the current tracing span ID for log correlation.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn serialization_with_source(
         message: impl Into<String>,
         source: impl std::error::Error + Send + Sync + 'static,
@@ -434,7 +434,7 @@ impl StorageError {
     /// Creates a new `Internal` error with the given message.
     ///
     /// Captures the current tracing span ID for log correlation.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn internal(message: impl Into<String>) -> Self {
         Self::Internal { message: message.into(), source: None, span_id: current_span_id() }
     }
@@ -442,7 +442,7 @@ impl StorageError {
     /// Creates a new `Internal` error with a message and source error.
     ///
     /// Captures the current tracing span ID for log correlation.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn internal_with_source(
         message: impl Into<String>,
         source: impl std::error::Error + Send + Sync + 'static,
@@ -460,7 +460,7 @@ impl StorageError {
     /// timeout occurs during a retry loop and retry state is available.
     ///
     /// Captures the current tracing span ID for log correlation.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn timeout() -> Self {
         Self::Timeout { context: None, span_id: current_span_id() }
     }
@@ -472,7 +472,7 @@ impl StorageError {
     /// overall timeout fired.
     ///
     /// Captures the current tracing span ID for log correlation.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn timeout_with_context(context: TimeoutContext) -> Self {
         Self::Timeout { context: Some(context), span_id: current_span_id() }
     }
@@ -480,7 +480,7 @@ impl StorageError {
     /// Creates a new `CasRetriesExhausted` error.
     ///
     /// Captures the current tracing span ID for log correlation.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn cas_retries_exhausted(attempts: u32) -> Self {
         Self::CasRetriesExhausted { attempts, span_id: current_span_id() }
     }
@@ -488,7 +488,7 @@ impl StorageError {
     /// Creates a new `CircuitOpen` error.
     ///
     /// Captures the current tracing span ID for log correlation.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn circuit_open() -> Self {
         Self::CircuitOpen { span_id: current_span_id() }
     }
@@ -497,7 +497,7 @@ impl StorageError {
     ///
     /// `kind` should be `"key"` or `"value"`. Captures the current tracing
     /// span ID for log correlation.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn size_limit_exceeded(kind: &'static str, actual: usize, limit: usize) -> Self {
         Self::SizeLimitExceeded { kind, actual, limit, span_id: current_span_id() }
     }
@@ -506,7 +506,7 @@ impl StorageError {
     /// duration.
     ///
     /// Captures the current tracing span ID for log correlation.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn rate_limit_exceeded(retry_after: std::time::Duration) -> Self {
         Self::RateLimitExceeded { retry_after, span_id: current_span_id() }
     }
@@ -514,7 +514,7 @@ impl StorageError {
     /// Creates a new `ShuttingDown` error.
     ///
     /// Captures the current tracing span ID for log correlation.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn shutting_down() -> Self {
         Self::ShuttingDown { span_id: current_span_id() }
     }
@@ -524,7 +524,7 @@ impl StorageError {
     ///
     /// Use this to correlate errors with distributed traces in structured
     /// logging output.
-    #[must_use]
+    #[must_use = "discarding the span ID loses trace correlation context"]
     pub fn span_id(&self) -> Option<&tracing::span::Id> {
         match self {
             Self::NotFound { span_id, .. }
@@ -549,7 +549,7 @@ impl StorageError {
     /// recover. Non-transient errors (not found, conflict, serialization,
     /// internal logic errors) represent definitive failures that will not
     /// resolve by retrying the same operation.
-    #[must_use]
+    #[must_use = "use the return value to decide retry behavior"]
     pub fn is_transient(&self) -> bool {
         matches!(
             self,
@@ -563,7 +563,7 @@ impl StorageError {
     /// consumers, this method includes internal details such as connection
     /// error messages, key names, and backend-specific context. **Never
     /// expose this output to external callers.**
-    #[must_use]
+    #[must_use = "discarding the detail string loses diagnostic context"]
     pub fn detail(&self) -> String {
         match self {
             Self::NotFound { key, .. } => {

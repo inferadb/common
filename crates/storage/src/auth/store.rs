@@ -82,8 +82,8 @@ pub trait PublicSigningKeyStore: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `namespace_id` - Organization namespace ID (`namespace_id == org_id`)
-    /// * `key` - The public signing key to store
+    /// * `namespace_id` — Organization namespace ID (`namespace_id == org_id`)
+    /// * `key` — The public signing key to store
     ///
     /// # Errors
     ///
@@ -101,8 +101,8 @@ pub trait PublicSigningKeyStore: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `namespace_id` - Organization namespace ID
-    /// * `kid` - The key identifier to look up
+    /// * `namespace_id` — Organization namespace ID
+    /// * `kid` — The key identifier to look up
     ///
     /// # Returns
     ///
@@ -125,7 +125,7 @@ pub trait PublicSigningKeyStore: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `namespace_id` - Organization namespace ID
+    /// * `namespace_id` — Organization namespace ID
     ///
     /// # Returns
     ///
@@ -143,8 +143,8 @@ pub trait PublicSigningKeyStore: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `namespace_id` - Organization namespace ID
-    /// * `kid` - The key identifier to deactivate
+    /// * `namespace_id` — Organization namespace ID
+    /// * `kid` — The key identifier to deactivate
     ///
     /// # Errors
     ///
@@ -161,9 +161,9 @@ pub trait PublicSigningKeyStore: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `namespace_id` - Organization namespace ID
-    /// * `kid` - The key identifier to revoke
-    /// * `reason` - Optional reason for revocation (stored for audit)
+    /// * `namespace_id` — Organization namespace ID
+    /// * `kid` — The key identifier to revoke
+    /// * `reason` — Optional reason for revocation (stored for audit)
     ///
     /// # Errors
     ///
@@ -183,8 +183,8 @@ pub trait PublicSigningKeyStore: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `namespace_id` - Organization namespace ID
-    /// * `kid` - The key identifier to reactivate
+    /// * `namespace_id` — Organization namespace ID
+    /// * `kid` — The key identifier to reactivate
     ///
     /// # Errors
     ///
@@ -200,8 +200,8 @@ pub trait PublicSigningKeyStore: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `namespace_id` - Organization namespace ID
-    /// * `kid` - The key identifier to delete
+    /// * `namespace_id` — Organization namespace ID
+    /// * `kid` — The key identifier to delete
     ///
     /// # Errors
     ///
@@ -220,8 +220,8 @@ pub trait PublicSigningKeyStore: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `namespace_id` - Organization namespace ID
-    /// * `keys` - The keys to store
+    /// * `namespace_id` — Organization namespace ID
+    /// * `keys` — The keys to store
     async fn create_keys(
         &self,
         namespace_id: NamespaceId,
@@ -245,8 +245,8 @@ pub trait PublicSigningKeyStore: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `namespace_id` - Organization namespace ID
-    /// * `keys` - Pairs of `(kid, optional_reason)` to revoke
+    /// * `namespace_id` — Organization namespace ID
+    /// * `keys` — Pairs of `(kid, optional_reason)` to revoke
     async fn revoke_keys(
         &self,
         namespace_id: NamespaceId,
@@ -272,9 +272,9 @@ pub trait PublicSigningKeyStore: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `namespace_id` - Organization namespace ID
-    /// * `old_kid` - The key identifier to revoke
-    /// * `new_key` - The new key to store
+    /// * `namespace_id` — Organization namespace ID
+    /// * `old_kid` — The key identifier to revoke
+    /// * `new_key` — The new key to store
     ///
     /// # Errors
     ///
@@ -349,7 +349,7 @@ pub struct MemorySigningKeyStore {
 
 impl MemorySigningKeyStore {
     /// Creates a new empty in-memory store.
-    #[must_use]
+    #[must_use = "constructing a store has no side effects"]
     pub fn new() -> Self {
         Self::default()
     }

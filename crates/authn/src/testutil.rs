@@ -1,4 +1,4 @@
-//! Shared test utilities for authentication testing.
+//! Test utilities for authentication testing.
 //!
 //! This module provides common helpers for generating Ed25519 key pairs,
 //! creating signed JWTs, crafting raw JWT strings (for attack testing),
@@ -124,11 +124,13 @@ pub fn create_signed_jwt_with_jti(pkcs8_der: &[u8], kid: &str, org_id: &str, jti
     jsonwebtoken::encode(&header, &claims, &encoding_key).expect("Failed to encode test JWT")
 }
 
-/// Creates a raw JWT string from arbitrary header and payload JSON.
+/// Creates a raw, unsigned JWT string for security testing.
 ///
-/// The resulting JWT has the structure `{header_b64}.{payload_b64}.`
-/// with an empty signature. This is useful for testing rejection of
-/// malformed or attack JWTs (e.g., `alg: "none"`, algorithm confusion).
+/// Constructs a JWT with the structure `{header_b64}.{payload_b64}.`
+/// (empty signature). Useful for testing rejection of attacks such as:
+/// - Algorithm substitution (`alg: "none"`)
+/// - Algorithm confusion (symmetric vs. asymmetric)
+/// - Malformed or forged claims
 ///
 /// # Panics
 ///
@@ -167,9 +169,9 @@ pub fn create_test_signing_key(kid: &str) -> (Zeroizing<Vec<u8>>, PublicSigningK
 
 /// Creates a [`PublicSigningKey`] with a specific public key string.
 ///
-/// This is useful when you already have a key pair and want to create
-/// a `PublicSigningKey` that matches it. The key is active, not revoked,
-/// and valid from 1 hour ago with no expiry.
+/// Use this when you have a key pair and need a matching `PublicSigningKey`
+/// for a test key store. The key defaults to active, not revoked, valid
+/// from 1 hour ago with no expiry.
 pub fn create_test_signing_key_with_pubkey(kid: &str, public_key_b64: &str) -> PublicSigningKey {
     PublicSigningKey {
         kid: kid.to_string(),
@@ -185,14 +187,12 @@ pub fn create_test_signing_key_with_pubkey(kid: &str, public_key_b64: &str) -> P
     }
 }
 
-/// Asserts that a [`Result<T, AuthError>`] is an `Err` matching the given [`AuthError`] variant.
-///
-/// Works with any `AuthError` variant.
+/// Asserts that a result is an `Err` matching the given [`AuthError`] variant.
 ///
 /// # Panics
 ///
-/// Panics if the result is `Ok` or contains a different [`AuthError`] variant
-/// than expected. Prints the expected variant and actual result for debugging.
+/// Panics if the result is `Ok` or contains a different [`AuthError`] variant.
+/// The panic message includes the expected variant and actual result.
 ///
 /// # Examples
 ///

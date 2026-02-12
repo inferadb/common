@@ -1,4 +1,4 @@
-//! Shared test utilities for Ledger backend testing.
+//! Test utilities for Ledger backend testing.
 //!
 //! This module provides common helpers for creating mock Ledger servers,
 //! client configurations, and backend instances. It is feature-gated

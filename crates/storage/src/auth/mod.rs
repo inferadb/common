@@ -36,7 +36,7 @@
 //! };
 //! use inferadb_common_storage::NamespaceId;
 //!
-//! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let store = MemorySigningKeyStore::new();
 //! let ns = NamespaceId::from(100);
 //!
@@ -47,11 +47,12 @@
 //!     .cert_id(42)
 //!     .build();
 //!
-//! store.create_key(ns, &key).await.unwrap();
+//! store.create_key(ns, &key).await?;
 //!
-//! let retrieved = store.get_key(ns, "key-abc123").await.unwrap();
+//! let retrieved = store.get_key(ns, "key-abc123").await?;
 //! assert!(retrieved.is_some());
-//! # });
+//! # Ok(())
+//! # }
 //! ```
 
 pub mod audit;

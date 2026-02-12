@@ -1,4 +1,4 @@
-//! Circuit breaker for protecting against cascading failures.
+//! Circuit breaker for protecting against cascading failures during backend outages.
 //!
 //! When the ledger backend is unreachable, every operation goes through the full
 //! retry-with-timeout cycle before failing. The circuit breaker pattern detects
@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! ┌────────┐  failure_threshold  ┌──────┐  recovery_timeout  ┌──────────┐
-//! │ Closed │ ──────exceeded────→ │ Open │ ────elapsed─────→  │ HalfOpen │
+//! │ Closed │ ──────exceeded────→ │ Open │ ─────elapsed─────→ │ HalfOpen │
 //! └────────┘                     └──────┘ ←──probe fails──── └──────────┘
 //!      ↑                                                          │
 //!      └──────────────── success_threshold met ───────────────────┘
@@ -29,6 +29,8 @@ pub const DEFAULT_RECOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_HALF_OPEN_SUCCESS_THRESHOLD: u32 = 2;
 
 /// Circuit breaker state.
+///
+/// Controls request flow through the circuit breaker state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CircuitState {
     /// Normal operation — all requests pass through.
@@ -55,6 +57,8 @@ impl std::fmt::Display for CircuitState {
 }
 
 /// Configuration for the circuit breaker.
+///
+/// Validated at construction time — all fields must be positive.
 #[derive(Debug, Clone)]
 pub struct CircuitBreakerConfig {
     /// Number of consecutive failures before opening the circuit.
@@ -116,20 +120,20 @@ impl CircuitBreakerConfig {
         Ok(Self { failure_threshold, recovery_timeout, half_open_success_threshold })
     }
 
-    /// Returns the failure threshold.
-    #[must_use]
+    /// Returns the configured failure threshold.
+    #[must_use = "returns the configured value without side effects"]
     pub fn failure_threshold(&self) -> u32 {
         self.failure_threshold
     }
 
-    /// Returns the recovery timeout.
-    #[must_use]
+    /// Returns the configured recovery timeout.
+    #[must_use = "returns the configured value without side effects"]
     pub fn recovery_timeout(&self) -> Duration {
         self.recovery_timeout
     }
 
-    /// Returns the half-open success threshold.
-    #[must_use]
+    /// Returns the configured half-open success threshold.
+    #[must_use = "returns the configured value without side effects"]
     pub fn half_open_success_threshold(&self) -> u32 {
         self.half_open_success_threshold
     }
@@ -192,11 +196,11 @@ impl CircuitBreaker {
         }
     }
 
-    /// Checks whether the circuit allows a request through, transitioning
-    /// Open to HalfOpen if the recovery timeout has elapsed.
+    /// Checks whether the circuit allows a request through.
     ///
-    /// Returns `true` if the request should proceed. Returns `false` if
-    /// the circuit is open and the request should be rejected immediately.
+    /// Transitions Open to HalfOpen if the recovery timeout has elapsed.
+    /// Returns `true` if the request should proceed, `false` if the
+    /// circuit is open and the request should be rejected immediately.
     ///
     /// In the half-open state, requests are allowed through as probes.
     pub fn allow_request(&self) -> bool {
@@ -301,7 +305,7 @@ impl CircuitBreaker {
     ///
     /// Reports [`CircuitState::HalfOpen`] if the open circuit's recovery
     /// timeout has elapsed, without performing the actual state transition.
-    #[must_use]
+    #[must_use = "returns the current circuit state without side effects"]
     pub fn state(&self) -> CircuitState {
         let inner = self.inner.lock();
         // Check if open circuit has expired (read-only peek doesn't transition)
@@ -312,7 +316,7 @@ impl CircuitBreaker {
     }
 
     /// Returns a snapshot of circuit breaker metrics.
-    #[must_use]
+    #[must_use = "returns a point-in-time metrics snapshot without side effects"]
     pub fn metrics(&self) -> CircuitBreakerMetrics {
         let inner = self.inner.lock();
         CircuitBreakerMetrics {

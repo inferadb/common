@@ -108,30 +108,34 @@ impl JwtClaims {
     /// Parses scopes from the space-separated `scope` claim.
     ///
     /// Returns an empty `Vec` if the scope string is empty or contains only whitespace.
-    #[must_use]
+    #[must_use = "parsed scopes are returned without modifying the claims"]
     pub fn parse_scopes(&self) -> Vec<String> {
         self.scope.split_whitespace().map(|s| s.to_string()).collect()
     }
 
-    /// Returns the raw `vault_id` claim value, if present.
+    /// Returns the `vault_id` claim value, if present.
     ///
-    /// Use this when the vault ID is optional for the operation.
-    #[must_use]
-    pub fn extract_vault_id(&self) -> Option<String> {
+    /// Returns `None` if the claim is absent. No error is raised for missing vault IDs.
+    #[must_use = "returns the vault ID without modifying the claims"]
+    pub fn vault_id(&self) -> Option<String> {
         self.vault_id.clone()
     }
 
-    /// Returns the raw `org_id` claim value without validation, if present.
+    /// Returns the `org_id` claim value if present.
     ///
-    /// Use [`require_org_id`](Self::require_org_id) when the org ID is mandatory and you want an
-    /// error on absence.
-    #[must_use]
+    /// Use [`require_org_id`](Self::require_org_id) when the org ID is mandatory.
+    #[must_use = "returns the org ID without modifying the claims"]
     pub fn org_id(&self) -> Option<String> {
         self.org_id.clone()
     }
 }
 
 /// Decodes a JWT header without verification.
+///
+/// # Security
+///
+/// Performs no signature verification. Header values can be forged — use
+/// only for routing (e.g., `kid` lookup), never for trust decisions.
 ///
 /// # Errors
 ///
@@ -144,6 +148,12 @@ pub fn decode_jwt_header(token: &str) -> Result<Header, AuthError> {
 }
 
 /// Decodes JWT claims without signature verification.
+///
+/// # Security
+///
+/// Performs no signature verification. Claims are parsed from the
+/// base64-encoded payload without validation. Never trust returned
+/// values for authorization decisions.
 ///
 /// # Errors
 ///
@@ -192,13 +202,13 @@ pub fn decode_jwt_claims(token: &str) -> Result<JwtClaims, AuthError> {
     Ok(claims)
 }
 
-/// Validates JWT claims for expiration, not-before, issued-at age, and audience.
+/// Validates JWT claims for expiration, not-before, issued-at recency, and audience.
 ///
 /// # Arguments
 ///
-/// * `claims` - The JWT claims to validate
-/// * `expected_audience` - Optional expected audience value
-/// * `max_iat_age` - Maximum allowed age for the `iat` claim. Pass `Some(duration)` to enforce a
+/// * `claims` — The JWT claims to validate
+/// * `expected_audience` — Optional expected audience value
+/// * `max_iat_age` — Maximum allowed age for the `iat` claim. Pass `Some(duration)` to enforce a
 ///   maximum age (e.g., [`DEFAULT_MAX_IAT_AGE`] for 24 hours), or `None` to disable the check
 ///   entirely.
 ///
@@ -261,17 +271,16 @@ pub fn validate_claims(
 ///
 /// # Arguments
 ///
-/// * `token` - The raw JWT string (header.payload.signature)
-/// * `key` - The public [`DecodingKey`] used to verify the signature
-/// * `algorithm` - The expected [`Algorithm`] (must match the JWT header)
+/// * `token` — The raw JWT string (header.payload.signature)
+/// * `key` — The public [`DecodingKey`] used to verify the signature
+/// * `algorithm` — The expected [`Algorithm`] (must match the JWT header)
 ///
 /// # Errors
 ///
 /// Returns [`AuthError::InvalidSignature`] if the signature does not match
 /// the token contents and key. Returns [`AuthError::TokenExpired`] if the
-/// `exp` claim indicates the token has expired (expiration validation is
-/// enabled). Returns [`AuthError::InvalidTokenFormat`] if the JWT structure
-/// is malformed (via the [`From<jsonwebtoken::errors::Error>`] conversion).
+/// `exp` claim indicates the token has expired. Returns
+/// [`AuthError::InvalidTokenFormat`] if the JWT structure is malformed.
 #[must_use = "signature verification may fail and errors must be handled"]
 #[tracing::instrument(skip(token, key))]
 pub fn verify_signature(
@@ -302,12 +311,8 @@ pub fn verify_signature(
 ///
 /// # Arguments
 ///
-/// * `token` - The JWT token to verify (as a string)
-/// * `signing_key_cache` - The Ledger-backed signing key cache
-///
-/// # Returns
-///
-/// Returns the validated JWT claims if verification succeeds.
+/// * `token` — The JWT token to verify
+/// * `signing_key_cache` — The Ledger-backed signing key cache
 ///
 /// # Errors
 ///
@@ -317,8 +322,10 @@ pub fn verify_signature(
 /// - The algorithm is not in [`crate::validation::ACCEPTED_ALGORITHMS`]
 ///   ([`AuthError::UnsupportedAlgorithm`])
 /// - The key cannot be found in Ledger ([`AuthError::KeyNotFound`])
-/// - The key is inactive, revoked, or expired ([`AuthError::KeyRevoked`],
-///   [`AuthError::KeyExpired`])
+/// - The key is inactive ([`AuthError::KeyInactive`])
+/// - The key is not yet valid ([`AuthError::KeyNotYetValid`])
+/// - The key is revoked ([`AuthError::KeyRevoked`])
+/// - The key has expired ([`AuthError::KeyExpired`])
 /// - The signature is invalid ([`AuthError::InvalidSignature`])
 ///
 /// # Examples

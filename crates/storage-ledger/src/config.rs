@@ -14,8 +14,8 @@ use inferadb_ledger_sdk::{ClientConfig, ReadConsistency};
 /// Default number of entities fetched per page during range queries.
 pub const DEFAULT_PAGE_SIZE: u32 = 10_000;
 
-/// Default upper safety bound on the total number of results returned
-/// by a single `get_range` call across all pages.
+/// Default maximum total results returned by a single `get_range` call
+/// across all pages.
 pub const DEFAULT_MAX_RANGE_RESULTS: usize = 100_000;
 
 /// Default maximum number of retry attempts for transient failures.
@@ -36,7 +36,7 @@ pub const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Default timeout for list operations (get_range, clear_range).
 pub const DEFAULT_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Retry policy for transient Ledger failures.
+/// Retry policy for transient Ledger failures with exponential backoff.
 ///
 /// When a storage operation fails with a transient error (connection,
 /// timeout, rate limiting), the operation is retried with exponential
@@ -59,6 +59,7 @@ pub const DEFAULT_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 /// # Examples
 ///
 /// ```no_run
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use std::time::Duration;
 ///
 /// use inferadb_common_storage_ledger::RetryConfig;
@@ -67,10 +68,11 @@ pub const DEFAULT_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 ///     .max_retries(5)
 ///     .initial_backoff(Duration::from_millis(200))
 ///     .max_backoff(Duration::from_secs(10))
-///     .build()
-///     .expect("valid config");
+///     .build()?;
 ///
 /// assert_eq!(config.max_retries(), 5);
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
@@ -116,20 +118,20 @@ impl RetryConfig {
         Ok(Self { max_retries, initial_backoff, max_backoff })
     }
 
-    /// Returns the maximum number of retry attempts.
-    #[must_use]
+    /// Returns the configured maximum number of retry attempts.
+    #[must_use = "returns the configured value without side effects"]
     pub fn max_retries(&self) -> u32 {
         self.max_retries
     }
 
-    /// Returns the initial backoff duration.
-    #[must_use]
+    /// Returns the configured initial backoff duration.
+    #[must_use = "returns the configured value without side effects"]
     pub fn initial_backoff(&self) -> Duration {
         self.initial_backoff
     }
 
-    /// Returns the maximum backoff duration.
-    #[must_use]
+    /// Returns the configured maximum backoff duration.
+    #[must_use = "returns the configured value without side effects"]
     pub fn max_backoff(&self) -> Duration {
         self.max_backoff
     }
@@ -155,6 +157,9 @@ pub const DEFAULT_MAX_CAS_RETRIES: u32 = 5;
 pub const DEFAULT_CAS_RETRY_BASE_DELAY: Duration = Duration::from_millis(50);
 
 /// Retry policy for compare-and-set (CAS) conflicts.
+///
+/// Unlike [`RetryConfig`], which handles transient network errors, CAS
+/// retries handle semantic conflicts where concurrent writes race.
 ///
 /// CAS conflicts occur when a concurrent writer modifies the same key
 /// between a read and a conditional write. Unlike transient errors
@@ -204,14 +209,14 @@ impl CasRetryConfig {
         Self { max_retries, base_delay }
     }
 
-    /// Returns the maximum number of CAS retry attempts.
-    #[must_use]
+    /// Returns the configured maximum number of CAS retry attempts.
+    #[must_use = "returns the configured value without side effects"]
     pub fn max_retries(&self) -> u32 {
         self.max_retries
     }
 
-    /// Returns the base delay between CAS retry attempts.
-    #[must_use]
+    /// Returns the configured base delay between CAS retry attempts.
+    #[must_use = "returns the configured value without side effects"]
     pub fn base_delay(&self) -> Duration {
         self.base_delay
     }
@@ -237,6 +242,7 @@ impl Default for CasRetryConfig {
 /// # Examples
 ///
 /// ```no_run
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use std::time::Duration;
 ///
 /// use inferadb_common_storage_ledger::TimeoutConfig;
@@ -245,10 +251,11 @@ impl Default for CasRetryConfig {
 ///     .read_timeout(Duration::from_secs(3))
 ///     .write_timeout(Duration::from_secs(8))
 ///     .list_timeout(Duration::from_secs(20))
-///     .build()
-///     .expect("valid config");
+///     .build()?;
 ///
 /// assert_eq!(config.read_timeout(), Duration::from_secs(3));
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct TimeoutConfig {
@@ -297,20 +304,20 @@ impl TimeoutConfig {
         Ok(Self { read_timeout, write_timeout, list_timeout })
     }
 
-    /// Returns the read operation timeout.
-    #[must_use]
+    /// Returns the configured read operation timeout.
+    #[must_use = "returns the configured value without side effects"]
     pub fn read_timeout(&self) -> Duration {
         self.read_timeout
     }
 
-    /// Returns the write operation timeout.
-    #[must_use]
+    /// Returns the configured write operation timeout.
+    #[must_use = "returns the configured value without side effects"]
     pub fn write_timeout(&self) -> Duration {
         self.write_timeout
     }
 
-    /// Returns the list operation timeout.
-    #[must_use]
+    /// Returns the configured list operation timeout.
+    #[must_use = "returns the configured value without side effects"]
     pub fn list_timeout(&self) -> Duration {
         self.list_timeout
     }
@@ -336,7 +343,7 @@ impl Default for TimeoutConfig {
 /// Ledger uses a two-level hierarchy for data isolation:
 ///
 /// - **Namespace**: Organization-level container (required)
-/// - **Vault**: Optional blockchain chain within a namespace
+/// - **Vault**: Optional ledger within a namespace
 ///
 /// If `vault_id` is `None`, keys are stored at the namespace level.
 /// If `vault_id` is `Some(id)`, keys are scoped to that specific vault.
@@ -385,8 +392,8 @@ pub struct LedgerBackendConfig {
     /// `list_entities` call. Defaults to `10_000`.
     pub(crate) page_size: u32,
 
-    /// Upper safety bound on total results returned by a single `get_range`
-    /// call across all pages.
+    /// Maximum total results returned by a single `get_range` call across
+    /// all pages.
     ///
     /// If a range query accumulates more results than this limit, the
     /// operation returns [`StorageError::Internal`] rather than silently
@@ -436,20 +443,20 @@ impl LedgerBackendConfig {
     ///
     /// # Arguments
     ///
-    /// * `client` - SDK client configuration (servers, timeouts, TLS, etc.).
-    /// * `namespace_id` - Namespace ID for key scoping.
+    /// * `client` — SDK client configuration (servers, timeouts, TLS, etc.).
+    /// * `namespace_id` — Namespace ID for key scoping.
     ///
     /// # Optional Fields
     ///
-    /// * `vault_id` - Vault ID for finer-grained scoping within the namespace.
-    /// * `read_consistency` - Read consistency level (default: Linearizable).
-    /// * `page_size` - Number of entities per page for range queries (default: 10,000).
-    /// * `max_range_results` - Safety cap on total range results (default: 100,000).
-    /// * `retry_config` - Retry policy for transient failures (default: 3 retries, 100ms backoff).
-    /// * `timeout_config` - Per-operation timeouts (default: 5s read, 10s write, 30s list).
-    /// * `size_limits` - Key/value size validation (default: none).
-    /// * `circuit_breaker_config` - Circuit breaker for fail-fast during outages (default: none).
-    /// * `cancellation_token` - Token for graceful shutdown (default: none).
+    /// * `vault_id` — Vault ID for finer-grained scoping within the namespace.
+    /// * `read_consistency` — Read consistency level (default: Linearizable).
+    /// * `page_size` — Number of entities per page for range queries (default: 10,000).
+    /// * `max_range_results` — Safety cap on total range results (default: 100,000).
+    /// * `retry_config` — Retry policy for transient failures (default: 3 retries, 100ms backoff).
+    /// * `timeout_config` — Per-operation timeouts (default: 5s read, 10s write, 30s list).
+    /// * `size_limits` — Key/value size validation (default: none).
+    /// * `circuit_breaker_config` — Circuit breaker for fail-fast during outages (default: none).
+    /// * `cancellation_token` — Token for graceful shutdown (default: none).
     ///
     /// # Errors
     ///
@@ -497,68 +504,68 @@ impl LedgerBackendConfig {
         })
     }
 
-    /// Returns the SDK client configuration.
-    #[must_use]
+    /// Returns the configured SDK client configuration.
+    #[must_use = "returns the configured value without side effects"]
     pub fn client(&self) -> &ClientConfig {
         &self.client
     }
 
-    /// Returns the namespace ID.
-    #[must_use]
+    /// Returns the configured namespace ID.
+    #[must_use = "returns the configured value without side effects"]
     pub fn namespace_id(&self) -> NamespaceId {
         self.namespace_id
     }
 
-    /// Returns the vault ID if configured.
-    #[must_use]
+    /// Returns the configured vault ID, if any.
+    #[must_use = "returns the configured value without side effects"]
     pub fn vault_id(&self) -> Option<VaultId> {
         self.vault_id
     }
 
-    /// Returns the read consistency level.
-    #[must_use]
+    /// Returns the configured read consistency level.
+    #[must_use = "returns the configured value without side effects"]
     pub fn read_consistency(&self) -> ReadConsistency {
         self.read_consistency
     }
 
-    /// Returns the page size for range queries.
-    #[must_use]
+    /// Returns the configured page size for range queries.
+    #[must_use = "returns the configured value without side effects"]
     pub fn page_size(&self) -> u32 {
         self.page_size
     }
 
-    /// Returns the maximum number of results a single range query may return.
-    #[must_use]
+    /// Returns the configured maximum number of results a single range query may return.
+    #[must_use = "returns the configured value without side effects"]
     pub fn max_range_results(&self) -> usize {
         self.max_range_results
     }
 
-    /// Returns the retry configuration.
-    #[must_use]
+    /// Returns the configured retry policy.
+    #[must_use = "returns the configured value without side effects"]
     pub fn retry_config(&self) -> &RetryConfig {
         &self.retry_config
     }
 
-    /// Returns the timeout configuration.
-    #[must_use]
+    /// Returns the configured timeout policy.
+    #[must_use = "returns the configured value without side effects"]
     pub fn timeout_config(&self) -> &TimeoutConfig {
         &self.timeout_config
     }
 
     /// Returns the configured size limits, if any.
-    #[must_use]
+    #[must_use = "returns the configured value without side effects"]
     pub fn size_limits(&self) -> Option<SizeLimits> {
         self.size_limits
     }
 
-    /// Returns the configured circuit breaker config, if any.
-    #[must_use]
+    /// Returns the configured circuit breaker configuration, if any.
+    #[must_use = "returns the configured value without side effects"]
     pub fn circuit_breaker_config(&self) -> Option<&crate::circuit_breaker::CircuitBreakerConfig> {
         self.circuit_breaker_config.as_ref()
     }
 
     /// Returns the configured cancellation token, if any.
-    #[must_use]
+    #[must_use = "returns the configured value without side effects"]
     pub fn cancellation_token(&self) -> Option<&tokio_util::sync::CancellationToken> {
         self.cancellation_token.as_ref()
     }

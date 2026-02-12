@@ -85,12 +85,12 @@ pub const DEFAULT_CACHE_CAPACITY: u64 = 10_000;
 /// memory growth in long-running services.
 pub const DEFAULT_FALLBACK_CAPACITY: u64 = 10_000;
 
-/// Default maximum TTL for the fallback (L3) cache (1 hour).
+/// Default maximum TTL for the fallback (L3) cache: 1 hour.
 ///
 /// Entries older than this are evicted even if the Ledger remains unreachable.
 /// This bounds the window during which a revoked key could still be served
 /// from the fallback cache during an outage. Operators can tune this via
-/// [`SigningKeyCache::with_fallback_ttl`] based on their security posture:
+/// [`SigningKeyCache::with_fallback_ttl`] based on the trade-off between availability and security:
 ///
 /// - **Shorter TTL** (e.g., 15 minutes): tighter security, higher risk of total outage if Ledger is
 ///   down for longer
@@ -98,10 +98,10 @@ pub const DEFAULT_FALLBACK_CAPACITY: u64 = 10_000;
 ///   during outages
 pub const DEFAULT_FALLBACK_TTL: Duration = Duration::from_secs(3_600);
 
-/// Default fill percentage (0.0--100.0) at which a warning is emitted.
+/// Default fill percentage (0.0–100.0) at which a warning is emitted.
 pub const DEFAULT_FALLBACK_WARN_THRESHOLD: f64 = 80.0;
 
-/// Default fill percentage (0.0--100.0) at which a critical alert is emitted.
+/// Default fill percentage (0.0–100.0) at which a critical alert is emitted.
 pub const DEFAULT_FALLBACK_CRITICAL_THRESHOLD: f64 = 95.0;
 
 /// Fallback (L3) cache entry carrying the decoding key and insertion
@@ -109,7 +109,9 @@ pub const DEFAULT_FALLBACK_CRITICAL_THRESHOLD: f64 = 95.0;
 /// the fallback is used.
 #[derive(Clone)]
 struct FallbackEntry {
+    /// Decoding key for JWT signature verification.
     key: Arc<DecodingKey>,
+    /// Insertion time for age tracking during fallback usage.
     inserted_at: Instant,
 }
 
@@ -194,8 +196,8 @@ impl SigningKeyCache {
     ///
     /// # Arguments
     ///
-    /// * `key_store` - Backend store (typically Ledger-backed)
-    /// * `ttl` - Time-to-live for L1 cached keys
+    /// * `key_store` — Backend store (typically Ledger-backed)
+    /// * `ttl` — Time-to-live for L1 cached keys
     ///
     /// # Examples
     ///
@@ -210,7 +212,7 @@ impl SigningKeyCache {
     ///     let cache = SigningKeyCache::new(key_store, Duration::from_secs(300));
     /// }
     /// ```
-    #[must_use]
+    #[must_use = "returns a new cache without side effects"]
     pub fn new(key_store: Arc<dyn PublicSigningKeyStore>, ttl: Duration) -> Self {
         Self::with_capacity(key_store, ttl, DEFAULT_CACHE_CAPACITY)
     }
@@ -221,10 +223,10 @@ impl SigningKeyCache {
     ///
     /// # Arguments
     ///
-    /// * `key_store` - Backend store
-    /// * `ttl` - Time-to-live for L1 cached keys
-    /// * `max_capacity` - Maximum number of keys to cache in L1 and fallback
-    #[must_use]
+    /// * `key_store` — Backend store
+    /// * `ttl` — Time-to-live for L1 cached keys
+    /// * `max_capacity` — Maximum number of keys to cache in L1 and fallback
+    #[must_use = "returns a configured cache without side effects"]
     pub fn with_capacity(
         key_store: Arc<dyn PublicSigningKeyStore>,
         ttl: Duration,
@@ -242,10 +244,10 @@ impl SigningKeyCache {
     ///
     /// # Arguments
     ///
-    /// * `key_store` - Backend store
-    /// * `ttl` - Time-to-live for L1 cached keys
-    /// * `max_capacity` - Maximum number of keys to cache in L1 and fallback
-    /// * `fallback_ttl` - Maximum staleness for L3 fallback cache entries
+    /// * `key_store` — Backend store
+    /// * `ttl` — Time-to-live for L1 cached keys
+    /// * `max_capacity` — Maximum number of keys to cache in L1 and fallback
+    /// * `fallback_ttl` — Maximum staleness for L3 fallback cache entries
     ///
     /// # Security Trade-off
     ///
@@ -253,7 +255,7 @@ impl SigningKeyCache {
     ///   outage is more likely if Ledger is down for a prolonged period
     /// - **Longer `fallback_ttl`**: more availability during outages, but revoked keys remain
     ///   trusted longer
-    #[must_use]
+    #[must_use = "returns a configured cache without side effects"]
     pub fn with_fallback_ttl(
         key_store: Arc<dyn PublicSigningKeyStore>,
         ttl: Duration,
@@ -286,8 +288,8 @@ impl SigningKeyCache {
     /// Returns the decoding key for JWT validation.
     ///
     /// Checks the local cache first, then fetches from Ledger on miss.
-    /// The key is validated for state (active, not revoked, within validity window)
-    /// before being returned.
+    /// Validates key state (active, not revoked, within validity window) before
+    /// returning.
     ///
     /// # Graceful Degradation
     ///
@@ -297,8 +299,8 @@ impl SigningKeyCache {
     ///
     /// # Arguments
     ///
-    /// * `org_id` - Organization ID (maps to Ledger namespace_id)
-    /// * `kid` - Key ID from JWT header
+    /// * `org_id` — Organization ID (maps to Ledger namespace_id)
+    /// * `kid` — Key ID from JWT header
     ///
     /// # Errors
     ///
@@ -433,7 +435,7 @@ impl SigningKeyCache {
     ///
     /// Removes all entries from both the L1 TTL cache and the L3 fallback cache.
     /// An audit event is emitted at INFO level for compliance tracking.
-    /// Use sparingly -- this causes a spike in L2 fetches. Useful during
+    /// Use sparingly — this causes a spike in L2 fetches. Useful during
     /// key rotation events where all cached keys should be refreshed.
     #[tracing::instrument(skip(self))]
     pub async fn clear_all(&self) {
@@ -477,24 +479,24 @@ impl SigningKeyCache {
 
     /// Returns current L1 cache entry count.
     ///
-    /// Note: This count is eventually consistent. For accurate counts in tests,
-    /// call `sync` first.
-    #[must_use]
+    /// Note: this count is eventually consistent due to moka's async
+    /// bookkeeping. Counts may briefly lag behind inserts and invalidations.
+    #[must_use = "returns a count without side effects"]
     pub fn entry_count(&self) -> u64 {
         self.cache.entry_count()
     }
 
     /// Returns current fallback cache entry count.
     ///
-    /// Note: This count is eventually consistent. For accurate counts in tests,
-    /// call `sync` first.
-    #[must_use]
+    /// Note: this count is eventually consistent due to moka's async
+    /// bookkeeping. Counts may briefly lag behind inserts and invalidations.
+    #[must_use = "returns a count without side effects"]
     pub fn fallback_entry_count(&self) -> u64 {
         self.fallback.entry_count()
     }
 
     /// Returns the configured maximum capacity of the L3 fallback cache.
-    #[must_use]
+    #[must_use = "returns a capacity without side effects"]
     pub fn fallback_capacity(&self) -> u64 {
         self.fallback_capacity
     }
@@ -502,7 +504,7 @@ impl SigningKeyCache {
     /// Returns the current fill percentage of the L3 fallback cache (0.0–100.0).
     ///
     /// Returns 0.0 if capacity is zero to avoid division by zero.
-    #[must_use]
+    #[must_use = "returns a percentage without side effects"]
     pub fn fallback_fill_pct(&self) -> f64 {
         if self.fallback_capacity == 0 {
             return 0.0;
@@ -513,13 +515,15 @@ impl SigningKeyCache {
     /// Sets custom warning and critical thresholds for fallback cache fill alerts.
     ///
     /// Both thresholds are percentages (0.0–100.0). The warning threshold should
-    /// be lower than the critical threshold.
+    /// be lower than the critical threshold. Defaults are
+    /// [`DEFAULT_FALLBACK_WARN_THRESHOLD`] (80%) and
+    /// [`DEFAULT_FALLBACK_CRITICAL_THRESHOLD`] (95%).
     ///
     /// # Arguments
     ///
-    /// * `warn` - Fill percentage at which a warning is emitted
-    /// * `critical` - Fill percentage at which a critical alert is emitted
-    #[must_use]
+    /// * `warn` — Fill percentage at which a warning is emitted
+    /// * `critical` — Fill percentage at which a critical alert is emitted
+    #[must_use = "returns a configured cache without side effects"]
     pub fn with_thresholds(mut self, warn: f64, critical: f64) -> Self {
         self.warn_threshold = warn;
         self.critical_threshold = critical;
@@ -538,13 +542,13 @@ impl SigningKeyCache {
     ///
     /// # Arguments
     ///
-    /// * `interval` - How often to refresh active keys. Should be less than the L1 TTL to prevent
+    /// * `interval` — How often to refresh active keys. Should be less than the L1 TTL to prevent
     ///   any misses during normal operation.
     ///
     /// # Panics
     ///
     /// Panics if called outside a Tokio runtime context (required by `tokio::spawn`).
-    #[must_use]
+    #[must_use = "returns a configured cache without side effects"]
     pub fn with_refresh_interval(self: Arc<Self>, interval: Duration) -> Arc<Self> {
         let cache = Arc::clone(&self);
         let token = self.cancel_token.clone();
@@ -673,7 +677,7 @@ impl SigningKeyCache {
 
     /// Returns the number of keys currently tracked as "active" for
     /// background refresh.
-    #[must_use]
+    #[must_use = "returns a count without side effects"]
     pub fn active_key_count(&self) -> usize {
         self.active_keys.lock().len()
     }
@@ -681,31 +685,31 @@ impl SigningKeyCache {
     /// Returns the cancellation token for the background refresh task.
     ///
     /// Callers can use this to integrate with external shutdown signals.
-    #[must_use]
+    #[must_use = "returns a reference to the cancellation token"]
     pub fn cancel_token(&self) -> &CancellationToken {
         &self.cancel_token
     }
 
     /// Returns the number of completed background refresh cycles.
-    #[must_use]
+    #[must_use = "returns a count without side effects"]
     pub fn refresh_count(&self) -> u64 {
         self.refresh_count.load(Ordering::Relaxed)
     }
 
     /// Returns the total number of keys successfully refreshed across all cycles.
-    #[must_use]
+    #[must_use = "returns a count without side effects"]
     pub fn refresh_keys_total(&self) -> u64 {
         self.refresh_keys_total.load(Ordering::Relaxed)
     }
 
     /// Returns the total number of per-key refresh errors across all cycles.
-    #[must_use]
+    #[must_use = "returns a count without side effects"]
     pub fn refresh_errors_total(&self) -> u64 {
         self.refresh_errors_total.load(Ordering::Relaxed)
     }
 
     /// Returns the cumulative refresh latency in microseconds across all cycles.
-    #[must_use]
+    #[must_use = "returns a latency measurement without side effects"]
     pub fn refresh_latency_us(&self) -> u64 {
         self.refresh_latency_us.load(Ordering::Relaxed)
     }
@@ -786,6 +790,14 @@ impl SigningKeyCache {
 ///
 /// Non-transient errors (not found, serialization, internal) indicate a
 /// definitive response from Ledger and should not use fallback.
+///
+/// # Difference from [`StorageError::is_transient()`]
+///
+/// This function intentionally excludes [`StorageError::RateLimitExceeded`],
+/// which `StorageError::is_transient()` considers transient. Rate limiting
+/// indicates the backend is reachable but rejecting requests — falling back
+/// to a stale cache would mask the rate limit signal that callers should
+/// propagate and respect.
 fn is_transient_error(error: &StorageError) -> bool {
     matches!(error, StorageError::Connection { .. } | StorageError::Timeout { .. })
 }
@@ -830,7 +842,7 @@ fn validate_key_state(key: &PublicSigningKey) -> Result<(), AuthError> {
 
 /// Converts a [`PublicSigningKey`] to a jsonwebtoken [`DecodingKey`].
 ///
-/// The public key is expected to be base64url-encoded (no padding) Ed25519 key.
+/// The public key is expected to be a base64url-encoded (no padding) Ed25519 key.
 ///
 /// # Errors
 ///

@@ -34,8 +34,8 @@ impl KeyValue {
     ///
     /// # Arguments
     ///
-    /// * `key` - The key as a byte sequence
-    /// * `value` - The value as a byte sequence
+    /// * `key` — The key as a byte sequence
+    /// * `value` — The value as a byte sequence
     ///
     /// # Examples
     ///

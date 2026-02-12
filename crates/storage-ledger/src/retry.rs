@@ -1,4 +1,4 @@
-//! Retry logic for transient storage failures.
+//! Retry logic for transient storage failures with exponential backoff and jitter.
 //!
 //! This module provides [`with_retry`], a utility that wraps an async
 //! operation with automatic retry on transient errors (connection failures,
@@ -10,8 +10,7 @@
 //! Retries use exponential backoff with jitter:
 //! - Base delay doubles with each attempt: `initial_backoff * 2^attempt`
 //! - Delay is capped at `max_backoff`
-//! - Random jitter of 0–50% of the computed delay is added to prevent thundering-herd effects
-//!   across multiple clients
+//! - Random jitter of 0–50% of the computed delay prevents thundering-herd effects
 
 use std::{future::Future, sync::Arc, time::Duration};
 
@@ -38,7 +37,8 @@ struct RetryState {
     last_error_detail: Option<String>,
 }
 
-/// Executes `operation` with automatic retry on transient errors.
+/// Executes `operation` with automatic retry on transient errors using
+/// exponential backoff with jitter.
 ///
 /// Returns the result of the first successful call, any non-transient error
 /// immediately, or the last transient error if all retry attempts are exhausted.
@@ -198,7 +198,7 @@ where
         .unwrap_or_else(|| StorageError::internal("retry loop completed without result or error")))
 }
 
-/// Executes `operation` with retry **and** an overall timeout.
+/// Executes `operation` with retry bounded by an overall timeout.
 ///
 /// This wraps the retry loop with [`tokio::time::timeout`], bounding the
 /// total wall-clock time of the operation including all retry attempts

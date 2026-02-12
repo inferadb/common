@@ -30,8 +30,8 @@ use crate::{
 
 /// Returns the byte length of the longest common prefix of two strings.
 ///
-/// Since keys are hex-encoded (ASCII only), the byte length equals the character count,
-/// making it safe to slice with `&s[..len]`.
+/// Since keys are hex-encoded (single-byte UTF-8 characters), byte length equals
+/// character count, making string slicing at `&s[..len]` safe.
 fn common_prefix_len(a: &str, b: &str) -> usize {
     a.bytes().zip(b.bytes()).take_while(|(ca, cb)| ca == cb).count()
 }
@@ -102,7 +102,7 @@ pub struct LedgerBackend {
     /// Number of entities fetched per page during range queries.
     page_size: u32,
 
-    /// Upper safety bound on total results from a single range query.
+    /// Maximum total results from a single range query.
     max_range_results: usize,
 
     /// Retry configuration for transient failures.
@@ -214,7 +214,7 @@ impl LedgerBackend {
     ///
     /// [`DEFAULT_PAGE_SIZE`]: crate::config::DEFAULT_PAGE_SIZE
     /// [`DEFAULT_MAX_RANGE_RESULTS`]: crate::config::DEFAULT_MAX_RANGE_RESULTS
-    #[must_use]
+    #[must_use = "constructing a backend has no side effects"]
     pub fn from_client(
         client: Arc<LedgerClient>,
         namespace_id: NamespaceId,
@@ -239,19 +239,19 @@ impl LedgerBackend {
     }
 
     /// Returns the namespace ID.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn namespace_id(&self) -> NamespaceId {
         self.namespace_id
     }
 
     /// Returns the vault ID if configured.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn vault_id(&self) -> Option<VaultId> {
         self.vault_id
     }
 
     /// Returns the underlying SDK client.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn client(&self) -> &LedgerClient {
         &self.client
     }
@@ -260,19 +260,19 @@ impl LedgerBackend {
     ///
     /// Useful when passing the client to other components that require
     /// shared ownership, such as [`LedgerSigningKeyStore`](crate::auth::LedgerSigningKeyStore).
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn client_arc(&self) -> Arc<LedgerClient> {
         Arc::clone(&self.client)
     }
 
     /// Returns the configured page size for range queries.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn page_size(&self) -> u32 {
         self.page_size
     }
 
     /// Returns the configured maximum number of results for range queries.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn max_range_results(&self) -> usize {
         self.max_range_results
     }
@@ -287,7 +287,7 @@ impl LedgerBackend {
         self.vault_id.map(Into::into)
     }
 
-    /// Validates key and value sizes against configured limits, if any.
+    /// Returns `Ok(())` if no limits are configured or sizes are within bounds.
     ///
     /// Returns [`StorageError::SizeLimitExceeded`] if limits are exceeded.
     fn check_sizes(&self, key: &[u8], value: &[u8]) -> StorageResult<()> {
@@ -297,7 +297,7 @@ impl LedgerBackend {
         Ok(())
     }
 
-    /// Checks the circuit breaker and returns [`StorageError::CircuitOpen`] if it's open.
+    /// Returns [`StorageError::CircuitOpen`] if the circuit breaker is open, `Ok(())` otherwise.
     fn check_circuit(&self) -> StorageResult<()> {
         if let Some(ref cb) = self.circuit_breaker
             && !cb.allow_request()
@@ -307,7 +307,7 @@ impl LedgerBackend {
         Ok(())
     }
 
-    /// Checks the cancellation token and returns [`StorageError::ShuttingDown`] if cancelled.
+    /// Returns [`StorageError::ShuttingDown`] if shutdown has been signalled, `Ok(())` otherwise.
     fn check_cancelled(&self) -> StorageResult<()> {
         if let Some(ref token) = self.cancellation_token
             && token.is_cancelled()
@@ -337,7 +337,7 @@ impl LedgerBackend {
     }
 
     /// Returns `true` if the backend has been signalled to shut down.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn is_shutting_down(&self) -> bool {
         self.cancellation_token.as_ref().is_some_and(|t| t.is_cancelled())
     }
@@ -359,19 +359,19 @@ impl LedgerBackend {
     }
 
     /// Returns the circuit breaker metrics, if a circuit breaker is configured.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn circuit_breaker_metrics(&self) -> Option<crate::circuit_breaker::CircuitBreakerMetrics> {
         self.circuit_breaker.as_ref().map(crate::circuit_breaker::CircuitBreaker::metrics)
     }
 
     /// Returns the current circuit breaker state, if a circuit breaker is configured.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn circuit_breaker_state(&self) -> Option<crate::circuit_breaker::CircuitState> {
         self.circuit_breaker.as_ref().map(crate::circuit_breaker::CircuitBreaker::state)
     }
 
     /// Returns a reference to the metrics collector.
-    #[must_use]
+    #[must_use = "returns a value without side effects"]
     pub fn storage_metrics(&self) -> &Metrics {
         &self.metrics
     }
@@ -395,8 +395,8 @@ impl LedgerBackend {
         result.map_err(LedgerStorageError::from)
     }
 
-    /// Computes an absolute expiration timestamp by adding `ttl` to the
-    /// current system time.
+    /// Computes the expiration timestamp by adding `ttl` to the current
+    /// system time.
     ///
     /// Returns the number of seconds since the Unix epoch at which the key
     /// should expire. The `Duration` is converted to whole seconds at this
@@ -457,7 +457,7 @@ impl StorageBackend for LedgerBackend {
         result
     }
 
-    /// Writes a key-value pair with an optional namespace prefix.
+    /// Stores a key-value pair in the Ledger.
     #[tracing::instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len()))]
     async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()> {
         self.check_cancelled()?;
@@ -492,7 +492,10 @@ impl StorageBackend for LedgerBackend {
         result
     }
 
-    /// Performs a compare-and-set operation with CAS retry support.
+    /// Performs a compare-and-set operation, retrying on transient errors.
+    ///
+    /// Conflict errors (`FailedPrecondition`) are **not** retried — they propagate
+    /// immediately as [`StorageError::Conflict`].
     #[tracing::instrument(skip(self, key, expected, new_value), fields(key_len = key.len()))]
     async fn compare_and_set(
         &self,
@@ -550,7 +553,7 @@ impl StorageBackend for LedgerBackend {
         result
     }
 
-    /// Deletes a key from the Ledger.
+    /// Removes a key and its value from the Ledger.
     #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {
         self.check_cancelled()?;

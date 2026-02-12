@@ -783,7 +783,7 @@ Re-exports: `AuthError`, `Result`, `JwtClaims`, `DEFAULT_MAX_IAT_AGE`, `ReplayDe
 | -------------------- | ----------------------------------------- |
 | `require_org_id()`   | Returns org_id or `MissingTenantId` error |
 | `parse_scopes()`     | Splits scope string into `Vec<String>`    |
-| `extract_vault_id()` | Returns vault_id if present               |
+| `vault_id()`         | Returns vault_id if present               |
 | `org_id()`           | Returns org_id clone                      |
 
 #### Functions

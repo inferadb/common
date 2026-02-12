@@ -17,13 +17,14 @@
 //! use inferadb_common_storage::{MemoryBackend, StorageBackend};
 //!
 //! #[tokio::main]
-//! async fn main() {
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let backend = MemoryBackend::new();
-//!     
-//!     backend.set(b"greeting".to_vec(), b"hello".to_vec()).await.unwrap();
-//!     let value = backend.get(b"greeting").await.unwrap();
-//!     
-//!     assert_eq!(value.unwrap().as_ref(), b"hello");
+//!
+//!     backend.set(b"greeting".to_vec(), b"hello".to_vec()).await?;
+//!     let value = backend.get(b"greeting").await?;
+//!
+//!     assert_eq!(value.as_deref(), Some(b"hello".as_slice()));
+//!     Ok(())
 //! }
 //! ```
 //!
@@ -137,7 +138,11 @@ impl MemoryBackend {
     /// ```no_run
     /// use inferadb_common_storage::{MemoryBackend, SizeLimits};
     ///
-    /// let backend = MemoryBackend::with_size_limits(SizeLimits::new(256, 1024).unwrap());
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let limits = SizeLimits::new(256, 1024)?;
+    /// let backend = MemoryBackend::with_size_limits(limits);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn with_size_limits(limits: SizeLimits) -> Self {
         Self::build(Some(limits))
@@ -152,7 +157,6 @@ impl MemoryBackend {
             size_limits,
         };
 
-        // Start background TTL cleanup task
         let backend_clone = backend.clone();
         tokio::spawn(async move {
             backend_clone.cleanup_expired_keys(shutdown_rx).await;
@@ -238,7 +242,6 @@ impl Default for MemoryBackend {
 impl StorageBackend for MemoryBackend {
     #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
-        // Check if key is expired
         if self.is_expired(key) {
             return Ok(None);
         }
@@ -298,7 +301,6 @@ impl StorageBackend for MemoryBackend {
         let mut data = self.data.write();
         data.remove(key);
 
-        // Remove TTL if exists
         {
             let mut ttl_guard = self.ttl_data.write();
             ttl_guard.remove(key);
@@ -455,12 +457,11 @@ impl MemoryTransaction {
 #[async_trait]
 impl Transaction for MemoryTransaction {
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
-        // Check pending writes first (read-your-writes)
+        // Read-your-writes: return buffered value if present
         if let Some(value) = self.pending_writes.get(key) {
             return Ok(value.as_ref().map(|v| Bytes::copy_from_slice(v)));
         }
 
-        // Otherwise, read from backend
         self.backend.get(key).await
     }
 

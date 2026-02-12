@@ -68,14 +68,14 @@ pub mod jwt;
 pub mod replay;
 /// Ledger-backed signing key cache with TTL and fallback tiers.
 pub mod signing_key_cache;
-/// Shared test utilities for authentication testing (requires the `testutil` feature).
+/// Test utilities for authentication testing (requires the `testutil` feature).
 #[cfg(any(test, feature = "testutil"))]
 #[allow(clippy::expect_used)]
 pub mod testutil;
 /// Algorithm and key-ID validation for JWT headers.
 pub mod validation;
 
-/// Re-exported key types for convenience.
+/// Re-exported types, traits, constants, and functions for convenience.
 pub use error::{AuthError, Result};
 pub use jwt::{DEFAULT_MAX_IAT_AGE, JwtClaims};
 pub use replay::{InMemoryReplayDetector, ReplayDetector};

@@ -20,7 +20,7 @@
 //!     AuditAction, AuditEvent, AuditResult, TracingAuditLogger, AuditLogger,
 //! };
 //!
-//! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+//! # async fn example() {
 //! let logger = TracingAuditLogger;
 //! let event = AuditEvent::builder()
 //!     .actor("admin@example.com")
@@ -29,7 +29,7 @@
 //!     .result(AuditResult::Success)
 //!     .build();
 //! logger.log(&event).await;
-//! # });
+//! # }
 //! ```
 
 use std::{collections::HashMap, fmt};
@@ -124,12 +124,12 @@ pub struct AuditEvent {
     pub metadata: HashMap<String, String>,
 }
 
-/// Audit log backend.
+/// Backend for persisting audit events.
 ///
 /// Implementations should be durable and tamper-evident where possible.
-/// The trait is intentionally simple — a single `log` method — to
-/// accommodate backends ranging from structured logging to external
-/// audit services.
+/// The trait is intentionally simple — a single [`log`](Self::log)
+/// method — to accommodate backends ranging from structured logging to
+/// external audit services.
 #[async_trait]
 pub trait AuditLogger: Send + Sync {
     /// Records an audit event.
@@ -195,6 +195,7 @@ impl AuditLogger for NoopAuditLogger {
 /// Constructs a resource identifier string from namespace and kid.
 ///
 /// Returns a string in the format `"ns:{namespace_id}/kid:{kid}"`.
+#[must_use = "returns a formatted resource identifier"]
 pub fn key_resource(namespace_id: impl fmt::Display, kid: &str) -> String {
     format!("ns:{namespace_id}/kid:{kid}")
 }

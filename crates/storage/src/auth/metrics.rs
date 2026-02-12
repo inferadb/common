@@ -57,25 +57,25 @@ pub enum SigningKeyErrorKind {
 #[derive(Debug, Clone, Default, bon::Builder)]
 pub struct SigningKeyMetricsSnapshot {
     // Operation counts
-    /// Total create_key operations.
+    /// Total `create_key` operations.
     #[builder(default)]
     pub create_count: u64,
-    /// Total get_key operations.
+    /// Total `get_key` operations.
     #[builder(default)]
     pub get_count: u64,
-    /// Total list_active_keys operations.
+    /// Total `list_active_keys` operations.
     #[builder(default)]
     pub list_count: u64,
-    /// Total deactivate_key operations.
+    /// Total `deactivate_key` operations.
     #[builder(default)]
     pub deactivate_count: u64,
-    /// Total revoke_key operations.
+    /// Total `revoke_key` operations.
     #[builder(default)]
     pub revoke_count: u64,
-    /// Total activate_key operations.
+    /// Total `activate_key` operations.
     #[builder(default)]
     pub activate_count: u64,
-    /// Total delete_key operations.
+    /// Total `delete_key` operations.
     #[builder(default)]
     pub delete_count: u64,
 
@@ -173,7 +173,7 @@ pub struct SigningKeyMetricsSnapshot {
 
 impl SigningKeyMetricsSnapshot {
     /// Returns the total number of operations.
-    #[must_use]
+    #[must_use = "returns a computed total without side effects"]
     pub fn total_operations(&self) -> u64 {
         self.create_count
             + self.get_count
@@ -185,7 +185,7 @@ impl SigningKeyMetricsSnapshot {
     }
 
     /// Returns the total number of errors.
-    #[must_use]
+    #[must_use = "returns a computed total without side effects"]
     pub fn total_errors(&self) -> u64 {
         self.error_not_found
             + self.error_conflict
@@ -196,20 +196,20 @@ impl SigningKeyMetricsSnapshot {
     }
 
     /// Returns the error rate as a fraction (0.0 to 1.0).
-    #[must_use]
+    #[must_use = "returns a computed rate without side effects"]
     pub fn error_rate(&self) -> f64 {
         let total = self.total_operations();
         if total == 0 { 0.0 } else { self.total_errors() as f64 / total as f64 }
     }
 
     /// Returns the average get latency in microseconds.
-    #[must_use]
+    #[must_use = "returns a computed average without side effects"]
     pub fn avg_get_latency_us(&self) -> f64 {
         if self.get_count == 0 { 0.0 } else { self.get_latency_us as f64 / self.get_count as f64 }
     }
 
     /// Returns the average create latency in microseconds.
-    #[must_use]
+    #[must_use = "returns a computed average without side effects"]
     pub fn avg_create_latency_us(&self) -> f64 {
         if self.create_count == 0 {
             0.0
@@ -219,7 +219,7 @@ impl SigningKeyMetricsSnapshot {
     }
 
     /// Returns the average list latency in microseconds.
-    #[must_use]
+    #[must_use = "returns a computed average without side effects"]
     pub fn avg_list_latency_us(&self) -> f64 {
         if self.list_count == 0 {
             0.0
@@ -235,7 +235,7 @@ impl SigningKeyMetricsSnapshot {
     /// alert on this counter and investigate the affected keys.
     ///
     /// This is a convenience alias for `error_serialization`.
-    #[must_use]
+    #[must_use = "returns a count without side effects"]
     pub fn deserialization_errors(&self) -> u64 {
         self.error_serialization
     }
@@ -312,7 +312,7 @@ pub struct SigningKeyMetrics {
 
 impl SigningKeyMetrics {
     /// Creates a new metrics collector.
-    #[must_use]
+    #[must_use = "constructing a metrics collector has no side effects"]
     pub fn new() -> Self {
         Self {
             inner: Arc::new(SigningKeyMetricsInner {
@@ -347,7 +347,7 @@ impl SigningKeyMetrics {
         }
     }
 
-    /// Records a create_key operation.
+    /// Records a `create_key` operation.
     pub fn record_create(&self, duration: Duration) {
         let us = duration.as_micros() as u64;
         self.inner.create_count.fetch_add(1, Ordering::Relaxed);
@@ -355,7 +355,7 @@ impl SigningKeyMetrics {
         self.inner.create_histogram.record(us);
     }
 
-    /// Records a get_key operation.
+    /// Records a `get_key` operation.
     pub fn record_get(&self, duration: Duration) {
         let us = duration.as_micros() as u64;
         self.inner.get_count.fetch_add(1, Ordering::Relaxed);
@@ -363,7 +363,7 @@ impl SigningKeyMetrics {
         self.inner.get_histogram.record(us);
     }
 
-    /// Records a list_active_keys operation.
+    /// Records a `list_active_keys` operation.
     pub fn record_list(&self, duration: Duration) {
         let us = duration.as_micros() as u64;
         self.inner.list_count.fetch_add(1, Ordering::Relaxed);
@@ -371,7 +371,7 @@ impl SigningKeyMetrics {
         self.inner.list_histogram.record(us);
     }
 
-    /// Records a deactivate_key operation.
+    /// Records a `deactivate_key` operation.
     pub fn record_deactivate(&self, duration: Duration) {
         let us = duration.as_micros() as u64;
         self.inner.deactivate_count.fetch_add(1, Ordering::Relaxed);
@@ -379,7 +379,7 @@ impl SigningKeyMetrics {
         self.inner.deactivate_histogram.record(us);
     }
 
-    /// Records a revoke_key operation.
+    /// Records a `revoke_key` operation.
     pub fn record_revoke(&self, duration: Duration) {
         let us = duration.as_micros() as u64;
         self.inner.revoke_count.fetch_add(1, Ordering::Relaxed);
@@ -387,7 +387,7 @@ impl SigningKeyMetrics {
         self.inner.revoke_histogram.record(us);
     }
 
-    /// Records an activate_key operation.
+    /// Records an `activate_key` operation.
     pub fn record_activate(&self, duration: Duration) {
         let us = duration.as_micros() as u64;
         self.inner.activate_count.fetch_add(1, Ordering::Relaxed);
@@ -395,7 +395,7 @@ impl SigningKeyMetrics {
         self.inner.activate_histogram.record(us);
     }
 
-    /// Records a delete_key operation.
+    /// Records a `delete_key` operation.
     pub fn record_delete(&self, duration: Duration) {
         let us = duration.as_micros() as u64;
         self.inner.delete_count.fetch_add(1, Ordering::Relaxed);
@@ -431,7 +431,7 @@ impl SigningKeyMetrics {
     ///
     /// Fallback-cache and background-refresh fields default to zero; they
     /// are populated by wrappers that track those layers.
-    #[must_use]
+    #[must_use = "returns a point-in-time snapshot without side effects"]
     pub fn snapshot(&self) -> SigningKeyMetricsSnapshot {
         SigningKeyMetricsSnapshot {
             create_count: self.inner.create_count.load(Ordering::Relaxed),
@@ -496,7 +496,7 @@ impl SigningKeyMetrics {
         self.inner.error_other.store(0, Ordering::Relaxed);
     }
 
-    /// Logs current metrics at INFO level.
+    /// Logs current metrics at `INFO` level via `tracing`.
     pub fn log_metrics(&self) {
         let snapshot = self.snapshot();
         tracing::info!(

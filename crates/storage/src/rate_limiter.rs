@@ -19,15 +19,16 @@
 //!     RateLimitConfig, RateLimitedBackend, TokenBucketLimiter,
 //! };
 //!
-//! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let backend = MemoryBackend::new();
-//! let config = RateLimitConfig::new(100, 20).unwrap();
+//! let config = RateLimitConfig::new(100, 20)?;
 //! let limiter = TokenBucketLimiter::new(config);
 //! let limited = RateLimitedBackend::new(backend, limiter);
 //!
 //! // Operations are rate-limited transparently
-//! limited.set(b"key".to_vec(), b"value".to_vec()).await.unwrap();
-//! # });
+//! limited.set(b"key".to_vec(), b"value".to_vec()).await?;
+//! # Ok(())
+//! # }
 //! ```
 
 use std::{
@@ -69,8 +70,8 @@ impl RateLimitConfig {
     ///
     /// # Arguments
     ///
-    /// * `rate` - Sustained tokens per second (must be >= 1)
-    /// * `burst` - Maximum burst capacity (must be >= 1)
+    /// * `rate` — Sustained tokens per second (must be >= 1)
+    /// * `burst` — Maximum burst capacity (must be >= 1)
     ///
     /// # Errors
     ///
@@ -95,13 +96,13 @@ impl RateLimitConfig {
     }
 
     /// Returns the sustained rate in tokens per second.
-    #[must_use]
+    #[must_use = "returns the configured rate without side effects"]
     pub fn rate(&self) -> u64 {
         self.rate
     }
 
     /// Returns the maximum burst capacity.
-    #[must_use]
+    #[must_use = "returns the configured burst without side effects"]
     pub fn burst(&self) -> u64 {
         self.burst
     }
@@ -201,7 +202,7 @@ pub struct RateLimitMetricsSnapshot {
 
 impl TokenBucketLimiter {
     /// Creates a new limiter with the given global configuration.
-    #[must_use]
+    #[must_use = "constructing a limiter has no side effects"]
     pub fn new(config: RateLimitConfig) -> Self {
         Self {
             global: Mutex::new(BucketState::new(config)),
@@ -217,7 +218,7 @@ impl TokenBucketLimiter {
     ///
     /// When set, each namespace gets its own token bucket. Operations
     /// on unrecognized namespaces use the global bucket.
-    #[must_use]
+    #[must_use = "returns the modified limiter for chaining"]
     pub fn with_namespace_extractor(mut self, extractor: Arc<dyn NamespaceExtractor>) -> Self {
         self.extractor = Some(extractor);
         self
@@ -226,7 +227,7 @@ impl TokenBucketLimiter {
     /// Sets per-namespace rate limit overrides.
     ///
     /// Namespaces not in this map use `default_config`.
-    #[must_use]
+    #[must_use = "returns the modified limiter for chaining"]
     pub fn with_namespace_configs(mut self, configs: HashMap<String, RateLimitConfig>) -> Self {
         self.namespace_config = Some(configs);
         self
@@ -287,7 +288,7 @@ impl TokenBucketLimiter {
     }
 
     /// Returns a snapshot of the rate limiter metrics.
-    #[must_use]
+    #[must_use = "returns a point-in-time snapshot without side effects"]
     pub fn metrics_snapshot(&self) -> RateLimitMetricsSnapshot {
         RateLimitMetricsSnapshot {
             allowed: self.metrics.allowed.load(std::sync::atomic::Ordering::Relaxed),
@@ -322,18 +323,19 @@ impl<B: StorageBackend> RateLimitedBackend<B> {
     ///
     /// The limiter is wrapped in an [`Arc`] internally, so multiple
     /// backends can share a single limiter.
+    #[must_use = "constructing a rate-limited backend has no side effects"]
     pub fn new(inner: B, limiter: TokenBucketLimiter) -> Self {
         Self { inner, limiter: Arc::new(limiter) }
     }
 
     /// Returns a reference to the inner backend.
-    #[must_use]
+    #[must_use = "returns a reference without side effects"]
     pub fn inner(&self) -> &B {
         &self.inner
     }
 
     /// Returns the rate limiter.
-    #[must_use]
+    #[must_use = "returns a reference without side effects"]
     pub fn limiter(&self) -> &TokenBucketLimiter {
         &self.limiter
     }

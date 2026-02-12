@@ -46,13 +46,13 @@ pub enum AuthError {
         span_id: Option<tracing::span::Id>,
     },
 
-    /// Token has expired.
+    /// Token has expired (`exp` claim in the past).
     TokenExpired {
         /// Span ID captured at error creation for trace correlation.
         span_id: Option<tracing::span::Id>,
     },
 
-    /// Token not yet valid (nbf claim in future).
+    /// Token is not yet valid (`nbf` claim is in the future).
     TokenNotYetValid {
         /// Span ID captured at error creation for trace correlation.
         span_id: Option<tracing::span::Id>,
@@ -72,7 +72,7 @@ pub enum AuthError {
         span_id: Option<tracing::span::Id>,
     },
 
-    /// Audience doesn't match expected value.
+    /// Audience does not match expected value.
     InvalidAudience {
         /// Description of the audience error.
         message: String,
@@ -104,7 +104,7 @@ pub enum AuthError {
         span_id: Option<tracing::span::Id>,
     },
 
-    /// JWKS-related errors.
+    /// JWKS fetch or parsing failed.
     JwksError {
         /// Description of the JWKS error.
         message: String,
@@ -142,13 +142,13 @@ pub enum AuthError {
         span_id: Option<tracing::span::Id>,
     },
 
-    /// Required tenant_id claim missing from OAuth token.
+    /// Required tenant identifier (`org_id` claim) missing from JWT.
     MissingTenantId {
         /// Span ID captured at error creation for trace correlation.
         span_id: Option<tracing::span::Id>,
     },
 
-    /// Token too old (issued at exceeds max age).
+    /// Token too old (`iat` claim exceeds maximum allowed age).
     TokenTooOld {
         /// The `iat` timestamp from the token (seconds since epoch).
         iat_timestamp: u64,
@@ -193,7 +193,7 @@ pub enum AuthError {
 
     /// Signing key has expired (valid_until in past).
     KeyExpired {
-        /// Key ID that expired.
+        /// Key ID that has expired.
         kid: String,
         /// Span ID captured at error creation for trace correlation.
         span_id: Option<tracing::span::Id>,
@@ -378,25 +378,25 @@ impl fmt::Display for AuthError {
 
 impl AuthError {
     /// Creates a new `InvalidTokenFormat` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn invalid_token_format(message: impl Into<String>) -> Self {
         Self::InvalidTokenFormat { message: message.into(), span_id: current_span_id() }
     }
 
     /// Creates a new `TokenExpired` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn token_expired() -> Self {
         Self::TokenExpired { span_id: current_span_id() }
     }
 
     /// Creates a new `TokenNotYetValid` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn token_not_yet_valid() -> Self {
         Self::TokenNotYetValid { span_id: current_span_id() }
     }
 
     /// Creates a new `InvalidSignature` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn invalid_signature() -> Self {
         Self::InvalidSignature { span_id: current_span_id() }
     }
@@ -405,7 +405,7 @@ impl AuthError {
     ///
     /// The `message` is preserved for [`detail()`](Self::detail) but redacted
     /// from [`Display`](std::fmt::Display) to avoid leaking server configuration.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn invalid_issuer(message: impl Into<String>) -> Self {
         let message = message.into();
         tracing::debug!(detail = %message, "Invalid issuer");
@@ -416,7 +416,7 @@ impl AuthError {
     ///
     /// The `message` is preserved for [`detail()`](Self::detail) but redacted
     /// from [`Display`](std::fmt::Display) to avoid leaking expected audience configuration.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn invalid_audience(message: impl Into<String>) -> Self {
         let message = message.into();
         tracing::debug!(detail = %message, "Invalid audience");
@@ -424,55 +424,55 @@ impl AuthError {
     }
 
     /// Creates a new `MissingClaim` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn missing_claim(claim: impl Into<String>) -> Self {
         Self::MissingClaim { claim: claim.into(), span_id: current_span_id() }
     }
 
     /// Creates a new `InvalidScope` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn invalid_scope(message: impl Into<String>) -> Self {
         Self::InvalidScope { message: message.into(), span_id: current_span_id() }
     }
 
     /// Creates a new `UnsupportedAlgorithm` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn unsupported_algorithm(message: impl Into<String>) -> Self {
         Self::UnsupportedAlgorithm { message: message.into(), span_id: current_span_id() }
     }
 
     /// Creates a new `JwksError` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn jwks_error(message: impl Into<String>) -> Self {
         Self::JwksError { message: message.into(), span_id: current_span_id() }
     }
 
     /// Creates a new `OidcDiscoveryFailed` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn oidc_discovery_failed(message: impl Into<String>) -> Self {
         Self::OidcDiscoveryFailed { message: message.into(), span_id: current_span_id() }
     }
 
     /// Creates a new `IntrospectionFailed` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn introspection_failed(message: impl Into<String>) -> Self {
         Self::IntrospectionFailed { message: message.into(), span_id: current_span_id() }
     }
 
     /// Creates a new `InvalidIntrospectionResponse` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn invalid_introspection_response(message: impl Into<String>) -> Self {
         Self::InvalidIntrospectionResponse { message: message.into(), span_id: current_span_id() }
     }
 
     /// Creates a new `TokenInactive` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn token_inactive() -> Self {
         Self::TokenInactive { span_id: current_span_id() }
     }
 
     /// Creates a new `MissingTenantId` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn missing_tenant_id() -> Self {
         Self::MissingTenantId { span_id: current_span_id() }
     }
@@ -483,74 +483,74 @@ impl AuthError {
     ///
     /// * `iat_timestamp` — The `iat` value from the token (seconds since epoch)
     /// * `max_age_secs` — The maximum allowed age in seconds
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn token_too_old(iat_timestamp: u64, max_age_secs: u64) -> Self {
         Self::TokenTooOld { iat_timestamp, max_age_secs, span_id: current_span_id() }
     }
 
     /// Creates a new `KeyNotFound` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn key_not_found(kid: impl Into<String>) -> Self {
         Self::KeyNotFound { kid: kid.into(), span_id: current_span_id() }
     }
 
     /// Creates a new `KeyInactive` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn key_inactive(kid: impl Into<String>) -> Self {
         Self::KeyInactive { kid: kid.into(), span_id: current_span_id() }
     }
 
     /// Creates a new `KeyRevoked` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn key_revoked(kid: impl Into<String>) -> Self {
         Self::KeyRevoked { kid: kid.into(), span_id: current_span_id() }
     }
 
     /// Creates a new `KeyNotYetValid` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn key_not_yet_valid(kid: impl Into<String>) -> Self {
         Self::KeyNotYetValid { kid: kid.into(), span_id: current_span_id() }
     }
 
     /// Creates a new `KeyExpired` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn key_expired(kid: impl Into<String>) -> Self {
         Self::KeyExpired { kid: kid.into(), span_id: current_span_id() }
     }
 
     /// Creates a new `InvalidPublicKey` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn invalid_public_key(message: impl Into<String>) -> Self {
         Self::InvalidPublicKey { message: message.into(), span_id: current_span_id() }
     }
 
-    /// Creates a new `KeyStorageError`.
-    #[must_use]
+    /// Creates a new `KeyStorageError` error.
+    #[must_use = "error values must be used or propagated"]
     pub fn key_storage_error(source: inferadb_common_storage::StorageError) -> Self {
         Self::KeyStorageError { source, span_id: current_span_id() }
     }
 
     /// Creates a new `TokenReplayed` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn token_replayed(jti: impl Into<String>) -> Self {
         Self::TokenReplayed { jti: jti.into(), span_id: current_span_id() }
     }
 
     /// Creates a new `MissingJti` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn missing_jti() -> Self {
         Self::MissingJti { span_id: current_span_id() }
     }
 
     /// Creates a new `InvalidKid` error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn invalid_kid(message: impl Into<String>) -> Self {
         Self::InvalidKid { message: message.into(), span_id: current_span_id() }
     }
 
     /// Returns the tracing span ID captured when this error was created,
     /// if a tracing subscriber was active at that time.
-    #[must_use]
+    #[must_use = "discarding the span ID loses trace correlation context"]
     pub fn span_id(&self) -> Option<&tracing::span::Id> {
         match self {
             Self::InvalidTokenFormat { span_id, .. }
@@ -599,7 +599,7 @@ impl AuthError {
     /// // detail (server-side only): "Invalid audience: expected 'api.example.com', got 'evil.com'"
     /// tracing::debug!(detail = err.detail(), "auth error");
     /// ```
-    #[must_use]
+    #[must_use = "discarding the detail string loses diagnostic context"]
     pub fn detail(&self) -> String {
         match self {
             Self::InvalidTokenFormat { message, .. } => {
@@ -709,7 +709,7 @@ impl AuthError {
     /// let permanent_err = AuthError::token_expired();
     /// assert!(!permanent_err.is_transient());
     /// ```
-    #[must_use]
+    #[must_use = "use the return value to decide retry behavior"]
     pub fn is_transient(&self) -> bool {
         match self {
             Self::KeyStorageError { source, .. } => source.is_transient(),

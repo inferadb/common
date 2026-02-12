@@ -29,8 +29,8 @@ fn current_span_id() -> Option<tracing::span::Id> {
 /// Errors specific to the Ledger storage backend.
 ///
 /// Covers SDK, configuration, key-encoding, and transaction-layer
-/// failures. The error chain is preserved when converting to
-/// [`StorageError`].
+/// failures. Each variant converts to [`StorageError`] with the error
+/// chain preserved.
 ///
 /// Each variant carries an optional `span_id` captured from the active
 /// [`tracing::Span`] at error creation time. When present, the span ID
@@ -114,25 +114,25 @@ impl From<SdkError> for LedgerStorageError {
 
 impl LedgerStorageError {
     /// Creates a new [`Config`](Self::Config) error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn config(message: impl Into<String>) -> Self {
         Self::Config { message: message.into(), span_id: current_span_id() }
     }
 
     /// Creates a new [`KeyEncoding`](Self::KeyEncoding) error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn key_encoding(message: impl Into<String>) -> Self {
         Self::KeyEncoding { message: message.into(), span_id: current_span_id() }
     }
 
     /// Creates a new [`Transaction`](Self::Transaction) error.
-    #[must_use]
+    #[must_use = "error values must be used or propagated"]
     pub fn transaction(message: impl Into<String>) -> Self {
         Self::Transaction { message: message.into(), span_id: current_span_id() }
     }
 
     /// Returns the tracing span ID captured when this error was created.
-    #[must_use]
+    #[must_use = "discarding the span ID loses trace correlation context"]
     pub fn span_id(&self) -> Option<&tracing::span::Id> {
         match self {
             Self::Sdk { span_id, .. }
@@ -144,10 +144,10 @@ impl LedgerStorageError {
 
     /// Returns a detailed diagnostic string for server-side logging.
     ///
-    /// Unlike [`Display`](std::fmt::Display), which produces generic messages safe for external
-    /// consumers, this method includes the full SDK error message and other
-    /// internal context. **Never expose this output to external callers.**
-    #[must_use]
+    /// **Do not expose this output to external callers** — it includes
+    /// internal SDK error details that [`Display`](std::fmt::Display)
+    /// intentionally omits for safety.
+    #[must_use = "discarding the detail string loses diagnostic context"]
     pub fn detail(&self) -> String {
         match self {
             Self::Sdk { source, .. } => {
@@ -182,12 +182,10 @@ impl From<LedgerStorageError> for StorageError {
     }
 }
 
-/// Converts an SDK error to a storage error, preserving the error chain
-/// where applicable.
+/// Converts an SDK error to the canonical [`StorageError`].
 ///
-/// This mapping is designed to preserve the semantic meaning of errors
-/// while using the canonical [`StorageError`] variants. The original
-/// SDK error is preserved as the source for debugging.
+/// Maps each SDK error variant to the semantically appropriate
+/// `StorageError` variant, preserving the original error as the source.
 fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
     match &err {
         // Connection and transport errors - preserve source chain

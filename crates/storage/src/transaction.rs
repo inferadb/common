@@ -15,23 +15,24 @@
 //! ```no_run
 //! use inferadb_common_storage::{MemoryBackend, StorageBackend};
 //!
-//! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let backend = MemoryBackend::new();
 //!
 //! // Seed initial data
-//! backend.set(b"account:alice".to_vec(), b"100".to_vec()).await.unwrap();
-//! backend.set(b"account:bob".to_vec(), b"50".to_vec()).await.unwrap();
+//! backend.set(b"account:alice".to_vec(), b"100".to_vec()).await?;
+//! backend.set(b"account:bob".to_vec(), b"50".to_vec()).await?;
 //!
 //! // Atomic transfer via transaction
-//! let mut txn = backend.transaction().await.unwrap();
+//! let mut txn = backend.transaction().await?;
 //! txn.set(b"account:alice".to_vec(), b"80".to_vec());
 //! txn.set(b"account:bob".to_vec(), b"70".to_vec());
-//! txn.commit().await.unwrap();
+//! txn.commit().await?;
 //!
 //! // Verify both writes applied atomically
-//! let alice = backend.get(b"account:alice").await.unwrap().unwrap();
-//! assert_eq!(&alice[..], b"80");
-//! # });
+//! let alice = backend.get(b"account:alice").await?;
+//! assert_eq!(alice.as_deref(), Some(b"80".as_slice()));
+//! # Ok(())
+//! # }
 //! ```
 
 use async_trait::async_trait;
@@ -104,7 +105,7 @@ pub trait Transaction: Send {
     ///
     /// # Arguments
     ///
-    /// * `key` - The key to look up
+    /// * `key` — The key to look up
     ///
     /// # Returns
     ///
@@ -124,8 +125,8 @@ pub trait Transaction: Send {
     ///
     /// # Arguments
     ///
-    /// * `key` - The key to set
-    /// * `value` - The value to store
+    /// * `key` — The key to set
+    /// * `value` — The value to store
     fn set(&mut self, key: Vec<u8>, value: Vec<u8>);
 
     /// Buffers a delete operation within the transaction.
@@ -138,7 +139,7 @@ pub trait Transaction: Send {
     ///
     /// # Arguments
     ///
-    /// * `key` - The key to delete
+    /// * `key` — The key to delete
     fn delete(&mut self, key: Vec<u8>);
 
     /// Buffers a compare-and-set operation within the transaction.
@@ -167,10 +168,10 @@ pub trait Transaction: Send {
     ///
     /// # Arguments
     ///
-    /// * `key` - The key to update.
-    /// * `expected` - The expected current value. Use `None` to require the key does not exist
+    /// * `key` — The key to update.
+    /// * `expected` — The expected current value. Use `None` to require the key does not exist
     ///   (insert-if-absent).
-    /// * `new_value` - The new value to set if the comparison succeeds.
+    /// * `new_value` — The new value to set if the comparison succeeds.
     ///
     /// # Errors
     ///

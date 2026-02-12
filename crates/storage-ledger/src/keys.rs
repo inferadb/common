@@ -8,7 +8,7 @@
 
 use crate::error::LedgerStorageError;
 
-/// Encodes a key as a hexadecimal string.
+/// Encodes a key as a lowercase hex string.
 ///
 /// This encoding preserves lexicographic byte ordering, which is critical
 /// for correct range query behavior over Ledger's string-based key space.
@@ -16,7 +16,7 @@ pub(crate) fn encode_key(key: &[u8]) -> String {
     hex::encode(key)
 }
 
-/// Decodes a hexadecimal key string back to the original bytes.
+/// Decodes a hex-encoded key string (case-insensitive) back to the original bytes.
 ///
 /// # Errors
 ///

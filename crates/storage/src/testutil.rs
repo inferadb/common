@@ -1,4 +1,4 @@
-//! Shared test utilities for storage backend testing.
+//! Test utilities for storage backend testing.
 //!
 //! This module provides common helpers for creating test backends, generating
 //! test data, and asserting on [`StorageResult`] values. It is feature-gated
@@ -46,7 +46,7 @@ use crate::{
 /// Produces keys like `"prefix:000042"` (zero-padded to 6 digits) encoded
 /// as UTF-8 bytes. The zero-padding ensures lexicographic ordering matches
 /// numeric ordering, which is important for range query tests.
-#[must_use]
+#[must_use = "returns generated test data without side effects"]
 pub fn make_key(prefix: &str, idx: usize) -> Vec<u8> {
     format!("{prefix}:{idx:06}").into_bytes()
 }
@@ -55,7 +55,7 @@ pub fn make_key(prefix: &str, idx: usize) -> Vec<u8> {
 ///
 /// Useful for benchmarks and tests that need values of specific sizes
 /// without caring about the content.
-#[must_use]
+#[must_use = "returns generated test data without side effects"]
 pub fn make_value(size: usize) -> Vec<u8> {
     vec![0xAB; size]
 }
@@ -65,7 +65,7 @@ pub fn make_value(size: usize) -> Vec<u8> {
 /// Produces values like `"task3-val042"` encoded as UTF-8 bytes.
 /// Useful for concurrent tests where you need to identify which task
 /// wrote which value.
-#[must_use]
+#[must_use = "returns generated test data without side effects"]
 pub fn make_tagged_value(task: usize, seq: usize) -> Vec<u8> {
     format!("task{task}-val{seq}").into_bytes()
 }
@@ -390,20 +390,20 @@ pub enum Operation {
 pub type ErrorFactory = Arc<dyn Fn() -> StorageError + Send + Sync>;
 
 /// Returns a factory that produces [`StorageError::Connection`] errors.
-#[must_use]
+#[must_use = "returns an error factory without side effects"]
 pub fn error_factory_connection(detail: &str) -> ErrorFactory {
     let detail = detail.to_owned();
     Arc::new(move || StorageError::connection(&detail))
 }
 
 /// Returns a factory that produces [`StorageError::Timeout`] errors.
-#[must_use]
+#[must_use = "returns an error factory without side effects"]
 pub fn error_factory_timeout() -> ErrorFactory {
     Arc::new(StorageError::timeout)
 }
 
 /// Returns a factory that produces [`StorageError::Internal`] errors.
-#[must_use]
+#[must_use = "returns an error factory without side effects"]
 pub fn error_factory_internal(detail: &str) -> ErrorFactory {
     let detail = detail.to_owned();
     Arc::new(move || StorageError::internal(detail.clone()))
@@ -449,23 +449,23 @@ pub struct FailureConfig {
 }
 
 impl FailureConfig {
-    /// Create a config that fails all operations immediately with the given
+    /// Creates a config that fails all operations immediately with the given
     /// error factory.
-    #[must_use]
+    #[must_use = "constructing a failure config has no side effects"]
     pub fn new(error_factory: ErrorFactory) -> Self {
         Self { error_factory, operations: Vec::new(), fail_after: 0 }
     }
 
-    /// Restrict failures to the listed operations. Unlisted operations always
+    /// Restricts failures to the listed operations. Unlisted operations always
     /// delegate to the inner backend.
-    #[must_use]
+    #[must_use = "returns a modified config without side effects"]
     pub fn with_operations(mut self, operations: Vec<Operation>) -> Self {
         self.operations = operations;
         self
     }
 
-    /// Allow `n` targeted operations to succeed before failures begin.
-    #[must_use]
+    /// Allows `n` targeted operations to succeed before failures begin.
+    #[must_use = "returns a modified config without side effects"]
     pub fn with_fail_after(mut self, n: usize) -> Self {
         self.fail_after = n;
         self
@@ -523,7 +523,8 @@ impl<B: Clone> Clone for FailingBackend<B> {
 }
 
 impl<B> FailingBackend<B> {
-    /// Wrap the given backend with the provided failure configuration.
+    /// Wraps the given backend with the provided failure configuration.
+    #[must_use = "constructing a failing backend has no side effects"]
     pub fn wrap(inner: B, config: FailureConfig) -> Self {
         Self {
             inner,
@@ -535,7 +536,7 @@ impl<B> FailingBackend<B> {
     }
 
     /// Returns the number of targeted operations that have succeeded.
-    #[must_use]
+    #[must_use = "returns a count without side effects"]
     pub fn succeeded_count(&self) -> usize {
         self.counter.load(Ordering::Relaxed)
     }

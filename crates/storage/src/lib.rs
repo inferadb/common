@@ -114,7 +114,7 @@ pub mod metrics;
 pub mod rate_limiter;
 /// Key and value size limit validation.
 pub mod size_limits;
-/// Shared test utilities: key/value generators, backend factories, and assertion macros.
+/// Test utilities: key/value generators, backend factories, and assertion macros.
 #[cfg(any(test, feature = "testutil"))]
 #[allow(clippy::expect_used)]
 pub mod testutil;

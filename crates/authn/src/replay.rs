@@ -32,16 +32,19 @@ use crate::error::AuthError;
 
 /// Detects and rejects replayed JWTs via JTI tracking.
 ///
-/// Implementations track seen JTI values and reject duplicates.
-/// The detector is responsible for automatically cleaning up expired entries.
+/// Implementations track seen JTI values and reject duplicates,
+/// automatically cleaning up expired entries.
 #[async_trait]
 pub trait ReplayDetector: Send + Sync {
     /// Checks whether a JTI has been seen before and marks it as seen.
     ///
+    /// Implementations must ensure this check-and-mark operation is atomic.
+    ///
     /// # Arguments
     ///
     /// * `jti` — The JWT ID claim value
-    /// * `expires_in` — Duration until the token expires (used for entry TTL)
+    /// * `expires_in` — Duration until the token expires. Used to set entry TTL; entries may be
+    ///   evicted before this duration if capacity limits are reached.
     ///
     /// # Errors
     ///
@@ -65,7 +68,7 @@ impl moka::Expiry<String, Instant> for JtiExpiry {
     }
 }
 
-/// In-memory replay detector with per-entry TTL and capacity-bounded eviction.
+/// In-memory replay detector with per-entry TTL and LRU eviction.
 ///
 /// Each JTI is stored with a per-entry TTL matching the token's remaining
 /// lifetime, ensuring automatic cleanup. The cache is also capacity-bounded
@@ -87,6 +90,7 @@ impl InMemoryReplayDetector {
     ///
     /// * `max_capacity` — Maximum number of JTI entries tracked simultaneously. When capacity is
     ///   exceeded, the least-recently-used entry is evicted.
+    #[must_use = "constructing a replay detector has no side effects"]
     pub fn new(max_capacity: u64) -> Self {
         let seen = Cache::builder()
             .max_capacity(max_capacity)

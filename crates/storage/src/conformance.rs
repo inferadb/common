@@ -280,7 +280,7 @@ pub async fn tx_drop_without_commit_is_noop<B: StorageBackend>(backend: &B) {
     assert_eq!(val, None, "uncommitted transaction writes must not be visible");
 }
 
-/// Transaction delete within a transaction makes the key invisible to subsequent reads.
+/// Delete within a transaction makes the key invisible to subsequent reads.
 pub async fn tx_delete_then_get_returns_none<B: StorageBackend>(backend: &B) {
     backend.set(b"tx:dg".to_vec(), b"exists".to_vec()).await.expect("set");
     let mut tx = backend.transaction().await.expect("transaction");
@@ -469,8 +469,8 @@ pub async fn idempotent_delete<B: StorageBackend>(backend: &B) {
 
 /// Run the full conformance suite against the given backend.
 ///
-/// Exercises every conformance test in sequence. It is a
-/// convenience for backend authors who want a one-line invocation:
+/// Exercises all conformance tests in sequence. Provides a
+/// one-line invocation for backend authors:
 ///
 /// ```no_run
 /// use std::sync::Arc;

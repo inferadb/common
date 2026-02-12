@@ -96,7 +96,7 @@ use crate::{LedgerStorageError, config::CasRetryConfig};
 ///
 /// # Metrics
 ///
-/// Optionally collects operation metrics when configured via
+/// Collects operation metrics when configured via
 /// [`LedgerSigningKeyStore::with_metrics`]. Metrics include operation counts,
 /// latencies, and error rates.
 ///
@@ -108,12 +108,13 @@ use crate::{LedgerStorageError, config::CasRetryConfig};
 /// [`delete_key`](PublicSigningKeyStore::delete_key))
 /// use optimistic locking via compare-and-set (CAS). Each operation reads the
 /// current value, modifies it, and writes back conditioned on the value being
-/// unchanged. If a concurrent writer modified the key between the read and write,
-/// the operation returns [`StorageError::Conflict`].
+/// unchanged. CAS conflicts are retried internally (see
+/// [`with_cas_retry_config`](Self::with_cas_retry_config) for tuning).
 ///
-/// Callers should retry the full operation on [`Conflict`](StorageError::Conflict).
-/// Since each operation re-reads the current value, the retry naturally picks up
-/// the latest state.
+/// If all internal retries are exhausted, the operation returns
+/// [`StorageError::CasRetriesExhausted`]. This typically indicates sustained
+/// write contention that callers should handle (e.g., back off and retry at
+/// a higher level).
 ///
 /// # Error Handling
 ///
@@ -124,9 +125,13 @@ use crate::{LedgerStorageError, config::CasRetryConfig};
 /// - Serialization issues → [`StorageError::Serialization`]
 #[derive(Clone)]
 pub struct LedgerSigningKeyStore {
+    /// SDK client for Ledger operations.
     client: Arc<LedgerClient>,
+    /// Consistency level for key lookups.
     read_consistency: ReadConsistency,
+    /// Optional metrics collector for key store operations.
     metrics: Option<SigningKeyMetrics>,
+    /// CAS retry configuration for optimistic locking.
     cas_retry_config: CasRetryConfig,
 }
 
@@ -144,7 +149,7 @@ impl LedgerSigningKeyStore {
     ///
     /// The store uses linearizable consistency by default to ensure
     /// Engine always sees the latest key state.
-    #[must_use]
+    #[must_use = "constructing a store has no side effects"]
     pub fn new(client: Arc<LedgerClient>) -> Self {
         Self {
             client,
@@ -163,7 +168,7 @@ impl LedgerSigningKeyStore {
     /// **Note:** This creates a new store instance with default CAS retry configuration.
     /// To customize both read consistency and CAS retries, call
     /// [`with_cas_retry_config`](Self::with_cas_retry_config) on the returned instance.
-    #[must_use]
+    #[must_use = "constructing a store has no side effects"]
     pub fn with_read_consistency(client: Arc<LedgerClient>, consistency: ReadConsistency) -> Self {
         Self {
             client,
@@ -197,7 +202,7 @@ impl LedgerSigningKeyStore {
     /// # Ok(())
     /// # }
     /// ```
-    #[must_use]
+    #[must_use = "returns a modified store builder without side effects"]
     pub fn with_metrics(mut self, metrics: SigningKeyMetrics) -> Self {
         self.metrics = Some(metrics);
         self
@@ -205,23 +210,24 @@ impl LedgerSigningKeyStore {
 
     /// Configures the CAS retry policy for write operations.
     ///
-    /// By default, CAS operations are retried up to 5 times on conflict.
+    /// By default, CAS operations are retried up to
+    /// [`DEFAULT_MAX_CAS_RETRIES`](crate::DEFAULT_MAX_CAS_RETRIES) times on conflict.
     /// Use this to tune retry behavior for workloads with high or low
     /// write contention.
-    #[must_use]
+    #[must_use = "returns a modified store builder without side effects"]
     pub fn with_cas_retry_config(mut self, config: CasRetryConfig) -> Self {
         self.cas_retry_config = config;
         self
     }
 
     /// Returns the metrics collector if configured.
-    #[must_use]
+    #[must_use = "returns a reference without side effects"]
     pub fn metrics(&self) -> Option<&SigningKeyMetrics> {
         self.metrics.as_ref()
     }
 
     /// Returns the underlying Ledger client.
-    #[must_use]
+    #[must_use = "returns a reference without side effects"]
     pub fn client(&self) -> &LedgerClient {
         &self.client
     }
@@ -376,6 +382,8 @@ impl LedgerSigningKeyStore {
 #[async_trait]
 impl PublicSigningKeyStore for LedgerSigningKeyStore {
     /// Stores a signing key in the Ledger with CAS to prevent overwrites.
+    ///
+    /// Returns [`StorageError::Conflict`] if a key with the same `kid` already exists.
     #[tracing::instrument(skip(self, key), fields(kid = %key.kid))]
     async fn create_key(
         &self,
@@ -424,6 +432,8 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
     }
 
     /// Retrieves a signing key by ID from the Ledger.
+    ///
+    /// Returns `Ok(None)` if no key with the given `kid` exists.
     #[tracing::instrument(skip(self))]
     async fn get_key(
         &self,
@@ -450,7 +460,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         result
     }
 
-    /// Lists all active signing keys, filtering by status with pagination.
+    /// Lists all active signing keys in the namespace.
     #[tracing::instrument(skip(self))]
     async fn list_active_keys(
         &self,
@@ -672,10 +682,11 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
     /// Optimized bulk create: batches all key writes into a single SDK `write()` call.
     ///
     /// Unlike the default sequential implementation, this issues one network
-    /// round-trip regardless of how many keys are being stored. Individual
-    /// serialization failures are reported per-key; the remaining keys are
-    /// still submitted in the batch. If the batch write itself fails, all
-    /// successfully-serialized keys are reported as [`StorageError::Internal`].
+    /// round-trip regardless of how many keys are being stored. Returns one
+    /// result per input key, positionally aligned with the input slice.
+    /// Individual serialization failures are reported per-key; the remaining
+    /// keys are still submitted in the batch. If the batch write itself fails,
+    /// all successfully-serialized keys are reported as [`StorageError::Internal`].
     #[tracing::instrument(skip(self, keys), fields(count = keys.len()))]
     async fn create_keys(
         &self,

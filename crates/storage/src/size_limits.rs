@@ -30,7 +30,7 @@ pub const DEFAULT_MAX_VALUE_SIZE: usize = 512 * 1024;
 /// ```no_run
 /// use inferadb_common_storage::SizeLimits;
 ///
-/// let limits = SizeLimits::new(256, 1024 * 1024).unwrap();
+/// let limits = SizeLimits::new(256, 1024 * 1024).expect("valid limits");
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SizeLimits {
@@ -66,13 +66,13 @@ impl SizeLimits {
     }
 
     /// Returns the maximum allowed key size in bytes.
-    #[must_use]
+    #[must_use = "returns the configured limit without side effects"]
     pub fn max_key_size(&self) -> usize {
         self.max_key_size
     }
 
     /// Returns the maximum allowed value size in bytes.
-    #[must_use]
+    #[must_use = "returns the configured limit without side effects"]
     pub fn max_value_size(&self) -> usize {
         self.max_value_size
     }

@@ -212,7 +212,7 @@ async fn idempotent_delete() {
 // Full suite convenience runner
 // ============================================================================
 
-/// Runs every conformance test in sequence to verify completeness.
+/// Runs all conformance tests in sequence to verify completeness.
 /// This catches the case where a new conformance test is added to the module
 /// but not wired into the individual test functions above.
 #[tokio::test]

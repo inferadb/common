@@ -156,8 +156,8 @@ pub struct NamespaceOperationSnapshot {
 }
 
 impl NamespaceOperationSnapshot {
-    /// Total operations across all types for this namespace.
-    #[must_use]
+    /// Returns the total operations across all types for this namespace.
+    #[must_use = "returns a computed total without side effects"]
     pub fn total_operations(&self) -> u64 {
         self.get_count
             + self.set_count
@@ -167,8 +167,8 @@ impl NamespaceOperationSnapshot {
             + self.transaction_count
     }
 
-    /// Error rate for this namespace (errors / total operations).
-    #[must_use]
+    /// Returns the error rate for this namespace (errors / total operations).
+    #[must_use = "returns a computed rate without side effects"]
     pub fn error_rate(&self) -> f64 {
         let total = self.total_operations();
         if total == 0 {
@@ -428,19 +428,19 @@ pub struct MetricsSnapshot {
 
 impl MetricsSnapshot {
     /// Returns the average GET latency in microseconds.
-    #[must_use]
+    #[must_use = "returns a computed average without side effects"]
     pub fn avg_get_latency_us(&self) -> f64 {
         if self.get_count == 0 { 0.0 } else { self.get_latency_us as f64 / self.get_count as f64 }
     }
 
     /// Returns the average SET latency in microseconds.
-    #[must_use]
+    #[must_use = "returns a computed average without side effects"]
     pub fn avg_set_latency_us(&self) -> f64 {
         if self.set_count == 0 { 0.0 } else { self.set_latency_us as f64 / self.set_count as f64 }
     }
 
     /// Returns the average DELETE latency in microseconds.
-    #[must_use]
+    #[must_use = "returns a computed average without side effects"]
     pub fn avg_delete_latency_us(&self) -> f64 {
         if self.delete_count == 0 {
             0.0
@@ -450,7 +450,7 @@ impl MetricsSnapshot {
     }
 
     /// Returns the average GET_RANGE latency in microseconds.
-    #[must_use]
+    #[must_use = "returns a computed average without side effects"]
     pub fn avg_get_range_latency_us(&self) -> f64 {
         if self.get_range_count == 0 {
             0.0
@@ -460,7 +460,7 @@ impl MetricsSnapshot {
     }
 
     /// Returns the average CLEAR_RANGE latency in microseconds.
-    #[must_use]
+    #[must_use = "returns a computed average without side effects"]
     pub fn avg_clear_range_latency_us(&self) -> f64 {
         if self.clear_range_count == 0 {
             0.0
@@ -470,7 +470,7 @@ impl MetricsSnapshot {
     }
 
     /// Returns the average TRANSACTION latency in microseconds.
-    #[must_use]
+    #[must_use = "returns a computed average without side effects"]
     pub fn avg_transaction_latency_us(&self) -> f64 {
         if self.transaction_count == 0 {
             0.0
@@ -480,21 +480,21 @@ impl MetricsSnapshot {
     }
 
     /// Returns the cache hit rate (0.0 - 1.0).
-    #[must_use]
+    #[must_use = "returns a computed rate without side effects"]
     pub fn cache_hit_rate(&self) -> f64 {
         let total = self.cache_hits + self.cache_misses;
         if total == 0 { 0.0 } else { self.cache_hits as f64 / total as f64 }
     }
 
     /// Returns the error rate (0.0 - 1.0).
-    #[must_use]
+    #[must_use = "returns a computed rate without side effects"]
     pub fn error_rate(&self) -> f64 {
         let total_ops = self.total_operations();
         if total_ops == 0 { 0.0 } else { self.error_count as f64 / total_ops as f64 }
     }
 
     /// Returns the conflict rate (0.0 - 1.0).
-    #[must_use]
+    #[must_use = "returns a computed rate without side effects"]
     pub fn conflict_rate(&self) -> f64 {
         if self.transaction_count == 0 {
             0.0
@@ -504,7 +504,7 @@ impl MetricsSnapshot {
     }
 
     /// Returns the total operation count.
-    #[must_use]
+    #[must_use = "returns a computed total without side effects"]
     pub fn total_operations(&self) -> u64 {
         self.get_count
             + self.set_count
@@ -573,7 +573,7 @@ struct MetricsInner {
 
 impl Metrics {
     /// Creates a new metrics collector.
-    #[must_use]
+    #[must_use = "constructing a metrics collector has no side effects"]
     pub fn new() -> Self {
         Self {
             inner: Arc::new(MetricsInner {
@@ -617,7 +617,7 @@ impl Metrics {
     /// `max_tracked_namespaces` controls how many distinct namespaces are tracked
     /// individually. Operations for namespaces beyond this limit are aggregated
     /// into the `"_other"` overflow bucket.
-    #[must_use]
+    #[must_use = "constructing a metrics collector has no side effects"]
     pub fn with_max_namespaces(max_tracked_namespaces: usize) -> Self {
         Self {
             inner: Arc::new(MetricsInner {
@@ -708,7 +708,7 @@ impl Metrics {
         self.inner.transaction_histogram.record(us);
     }
 
-    /// Increments the general error counter.
+    /// Records a general error.
     pub fn record_error(&self) {
         self.inner.error_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -842,7 +842,7 @@ impl Metrics {
     ///
     /// Percentiles are computed from the sliding window of recent latency samples
     /// for each operation type.
-    #[must_use]
+    #[must_use = "returns a point-in-time snapshot without side effects"]
     pub fn snapshot(&self) -> MetricsSnapshot {
         MetricsSnapshot {
             get_count: self.inner.get_count.load(Ordering::Relaxed),
