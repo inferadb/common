@@ -63,7 +63,7 @@ moka = { version = "0.12", features = ["future"] }
 fail = "0.5"
 
 # Testing
-rand = "0.9"
+rand = "0.10"
 proptest = "1"
 rstest = "0.25"
 tracing-subscriber = { version = "0.3", features = ["registry"] }

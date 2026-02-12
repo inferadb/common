@@ -1706,7 +1706,7 @@ dependencies = [
  "fail",
  "parking_lot",
  "proptest",
- "rand 0.9.2",
+ "rand 0.10.0",
  "rstest",
  "serde",
  "serde_json",
@@ -1731,7 +1731,7 @@ dependencies = [
  "inferadb-ledger-sdk",
  "parking_lot",
  "proptest",
- "rand 0.9.2",
+ "rand 0.10.0",
  "rstest",
  "serde",
  "serde_json",
@@ -4880,7 +4880,3 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
-
-[[patch.unused]]
-name = "inferadb-ledger-sdk"
-version = "0.1.0"
