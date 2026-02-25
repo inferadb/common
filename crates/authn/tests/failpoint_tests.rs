@@ -10,14 +10,14 @@ use std::sync::Arc;
 
 use inferadb_common_authn::{SigningKeyCache, testutil::generate_test_keypair};
 use inferadb_common_storage::{
-    CertId, ClientId, NamespaceId,
+    CertId, ClientId, OrganizationSlug,
     auth::{MemorySigningKeyStore, PublicSigningKey, PublicSigningKeyStore},
 };
 
-async fn setup_cache_with_key() -> (Arc<SigningKeyCache>, NamespaceId, String) {
+async fn setup_cache_with_key() -> (Arc<SigningKeyCache>, OrganizationSlug, String) {
     let store = Arc::new(MemorySigningKeyStore::new());
     let (_, public_key_b64) = generate_test_keypair();
-    let ns = NamespaceId::from(1);
+    let org = OrganizationSlug::from(1);
     let kid = "fp-test-key";
 
     let key = PublicSigningKey::builder()
@@ -29,7 +29,7 @@ async fn setup_cache_with_key() -> (Arc<SigningKeyCache>, NamespaceId, String) {
         .valid_from(chrono::Utc::now())
         .build();
 
-    store.create_key(ns, &key).await.expect("failed to create key");
+    store.create_key(org, &key).await.expect("failed to create key");
 
     let cache = SigningKeyCache::with_fallback_ttl(
         store,
@@ -38,18 +38,18 @@ async fn setup_cache_with_key() -> (Arc<SigningKeyCache>, NamespaceId, String) {
         std::time::Duration::from_secs(600),
     );
 
-    (Arc::new(cache), ns, kid.to_owned())
+    (Arc::new(cache), org, kid.to_owned())
 }
 
 #[tokio::test]
 async fn cache_l2_fetch_failpoint_returns_error() {
     let scenario = fail::FailScenario::setup();
-    let (cache, ns, kid) = setup_cache_with_key().await;
+    let (cache, org, kid) = setup_cache_with_key().await;
 
     // Enable fail point — L2 fetch should fail
     fail::cfg("cache-before-l2-fetch", "return").expect("failed to configure fail point");
 
-    let result = cache.get_decoding_key(ns, &kid).await;
+    let result = cache.get_decoding_key(org, &kid).await;
     assert!(result.is_err(), "L2 fetch should fail when fail point is active");
 
     scenario.teardown();
@@ -58,10 +58,10 @@ async fn cache_l2_fetch_failpoint_returns_error() {
 #[tokio::test]
 async fn cache_l2_fetch_without_failpoint_succeeds() {
     let scenario = fail::FailScenario::setup();
-    let (cache, ns, kid) = setup_cache_with_key().await;
+    let (cache, org, kid) = setup_cache_with_key().await;
 
     // No fail point configured — L2 fetch should succeed
-    let result = cache.get_decoding_key(ns, &kid).await;
+    let result = cache.get_decoding_key(org, &kid).await;
     assert!(result.is_ok(), "L2 fetch should succeed without fail point");
 
     scenario.teardown();

@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn test_validate_kid_colon_rejected() {
-        let result = validate_kid("ns:kid");
+        let result = validate_kid("org:kid");
         assert_auth_error!(result, InvalidKid);
     }
 

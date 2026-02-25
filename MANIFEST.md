@@ -105,7 +105,7 @@ inferadb-common-storage          (core abstractions, no external DB deps)
 
 **Purpose:** Module organization and public API re-exports.
 
-**Key Re-exports:** `StorageBackend`, `StorageError`, `ConfigError`, `StorageResult`, `MemoryBackend`, `Metrics`, `LatencyPercentiles`, `RateLimitConfig`, `RateLimitedBackend`, `TokenBucketLimiter`, `NamespaceExtractor`, `SizeLimits`, `Transaction`, `BatchConfig`, `BatchWriter`, `BatchResult`, `BatchFlushStats`, `BatchOperation`, `BoxError`, `TimeoutContext`, `HealthProbe`, `HealthStatus`, `HealthMetadata`, `MetricsCollector`, `MetricsSnapshot`, `NamespaceOperationSnapshot`, `RateLimitMetricsSnapshot`, `validate_key_size`, `validate_sizes`, `DEFAULT_MAX_KEY_SIZE`, `DEFAULT_MAX_VALUE_SIZE`, `Zeroizing`
+**Key Re-exports:** `StorageBackend`, `StorageError`, `ConfigError`, `StorageResult`, `MemoryBackend`, `Metrics`, `LatencyPercentiles`, `RateLimitConfig`, `RateLimitedBackend`, `TokenBucketLimiter`, `OrganizationExtractor`, `SizeLimits`, `Transaction`, `BatchConfig`, `BatchWriter`, `BatchResult`, `BatchFlushStats`, `BatchOperation`, `BoxError`, `TimeoutContext`, `HealthProbe`, `HealthStatus`, `HealthMetadata`, `MetricsCollector`, `MetricsSnapshot`, `OrganizationOperationSnapshot`, `RateLimitMetricsSnapshot`, `validate_key_size`, `validate_sizes`, `DEFAULT_MAX_KEY_SIZE`, `DEFAULT_MAX_VALUE_SIZE`, `Zeroizing`
 
 **Insights:**
 
@@ -306,7 +306,7 @@ inferadb-common-storage          (core abstractions, no external DB deps)
 
 ### `src/metrics.rs` — Metrics Collection
 
-**Purpose:** Operation counters, latency histograms, error tracking, per-namespace breakdowns.
+**Purpose:** Operation counters, latency histograms, error tracking, per-organization breakdowns.
 
 #### Struct: `Metrics`
 
@@ -314,9 +314,9 @@ inferadb-common-storage          (core abstractions, no external DB deps)
 
 | Method                                                                                                       | Description                   |
 | ------------------------------------------------------------------------------------------------------------ | ----------------------------- |
-| `record_get(latency, namespace)`                                                                             | Records get operation         |
-| `record_set(latency, namespace)`                                                                             | Records set operation         |
-| `record_delete(latency, namespace)`                                                                          | Records delete operation      |
+| `record_get(latency, organization)`                                                                             | Records get operation         |
+| `record_set(latency, organization)`                                                                             | Records set operation         |
+| `record_delete(latency, organization)`                                                                          | Records delete operation      |
 | `record_error(error)`                                                                                        | Records error by variant name |
 | `record_transaction`, `record_get_range`, `record_clear_range`, `record_health_check`, `record_set_with_ttl` | Other operation types         |
 
@@ -327,7 +327,7 @@ inferadb-common-storage          (core abstractions, no external DB deps)
 | `get_count() -> u64`                                | Total get operations        |
 | `get_latency_percentiles() -> LatencyPercentiles`   | p50/p95/p99 in microseconds |
 | `error_counts() -> HashMap<String, u64>`            | Error counts by variant     |
-| `namespace_metrics(ns) -> Option<NamespaceMetrics>` | Per-namespace breakdown     |
+| `organization_metrics(ns) -> Option<OrganizationMetrics>` | Per-organization breakdown     |
 | (plus matching getters for all operation types)     |                             |
 
 #### Struct: `LatencyPercentiles`
@@ -342,13 +342,13 @@ inferadb-common-storage          (core abstractions, no external DB deps)
 
 - `Ordering::Relaxed` for all counters — justified by approximate nature of metrics
 - Circular latency buffers (1024 samples) — bounded memory, trades accuracy
-- Max namespaces limit (default 100) prevents cardinality explosion; overflow to `_other`
+- Max organizations limit (default 100) prevents cardinality explosion; overflow to `_other`
 
 ---
 
 ### `src/rate_limiter.rs` — Token Bucket Rate Limiting
 
-**Purpose:** Per-namespace rate limiting via token bucket algorithm.
+**Purpose:** Per-organization rate limiting via token bucket algorithm.
 
 #### Struct: `RateLimitConfig`
 
@@ -362,25 +362,25 @@ inferadb-common-storage          (core abstractions, no external DB deps)
 | Method                                           | Description                                              |
 | ------------------------------------------------ | -------------------------------------------------------- |
 | `new(config) -> Self`                            | Creates limiter                                          |
-| `check(namespace, cost) -> Result<(), Duration>` | Checks if request allowed; returns retry-after on denial |
+| `check(organization, cost) -> Result<(), Duration>` | Checks if request allowed; returns retry-after on denial |
 | `set_enabled(enabled)`                           | Enables/disables globally                                |
 
 #### Struct: `RateLimitedBackend<B>`
 
 Wraps any `StorageBackend` and checks rate limit before each operation. **Transactions and health checks are exempt.**
 
-#### Trait: `NamespaceExtractor`
+#### Trait: `OrganizationExtractor`
 
 | Method                                     | Description                                         |
 | ------------------------------------------ | --------------------------------------------------- |
-| `extract_namespace(key) -> Option<String>` | Extracts namespace from key for per-tenant limiting |
+| `extract_organization(key) -> Option<String>` | Extracts organization from key for per-tenant limiting |
 
 **Insights:**
 
 - `f64` tokens enable sub-second precision for fractional refills
 - `parking_lot::Mutex` for very short critical sections
 - Exempting transactions and health checks from rate limiting is correct
-- `NoopNamespaceExtractor` default enables simple global limiting
+- `NoopOrganizationExtractor` default enables simple global limiting
 
 ---
 
@@ -452,16 +452,18 @@ Wraps any `StorageBackend` and checks rate limit before each operation. **Transa
 | `key`   | `Bytes` |
 | `value` | `Bytes` |
 
-#### ID Newtypes (via macro)
+#### Identifier Newtypes
 
-`NamespaceId(i64)` | `VaultId(i64)` | `ClientId(i64)` | `CertId(i64)`
+`OrganizationSlug(u64)` | `VaultSlug(u64)` — re-exported from `inferadb-ledger-types`
+`ClientId(i64)` | `CertId(i64)` — defined via `define_id!` macro
 
 All derive: `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `Hash`, `Serialize`, `Deserialize`
 
 **Insights:**
 
-- `#[serde(transparent)]` — IDs serialize as bare integers
-- Macro reduces duplication and ensures consistency across ID types
+- `OrganizationSlug` and `VaultSlug` are re-exports from the Ledger types crate, aligning with the SDK's public API terminology
+- `#[serde(transparent)]` — identifiers serialize as bare integers
+- `ClientId`/`CertId` use `define_id!` macro for consistency
 
 ---
 
@@ -572,7 +574,7 @@ Re-exports all auth types. Defines `SIGNING_KEY_PREFIX = "signing-keys/"`.
 
 #### Struct: `MemorySigningKeyStore`
 
-Composite key `(NamespaceId, String)` for multi-tenancy. Overrides bulk methods for single-lock atomicity.
+Composite key `(OrganizationSlug, String)` for multi-tenancy. Overrides bulk methods for single-lock atomicity.
 
 #### `src/auth/audit.rs` — Audit Logging
 
@@ -681,7 +683,7 @@ Fail-point injection for `batch-before-commit` and `health-check` failpoints.
 ## Crate: `inferadb-common-authn`
 
 **Path:** `crates/authn/`
-**Purpose:** JWT authentication library with Ledger-backed key storage, three-tier caching, replay detection, and defense against common JWT attacks (algorithm confusion, "none" bypass, namespace isolation).
+**Purpose:** JWT authentication library with Ledger-backed key storage, three-tier caching, replay detection, and defense against common JWT attacks (algorithm confusion, "none" bypass, organization isolation).
 
 ### Key Dependencies
 
@@ -776,22 +778,22 @@ Re-exports: `AuthError`, `Result`, `JwtClaims`, `DEFAULT_MAX_IAT_AGE`, `ReplayDe
 | `nbf`      | `Option<u64>`    | Not-before                              |
 | `jti`      | `Option<String>` | JWT ID (for replay detection)           |
 | `scope`    | `String`         | Space-delimited scopes                  |
-| `vault_id` | `Option<String>` | Vault ID                                |
-| `org_id`   | `Option<String>` | Organization ID (maps to `NamespaceId`) |
+| `vault`    | `Option<String>` | Vault slug                              |
+| `org`      | `Option<String>` | Organization slug                       |
 
 | Method               | Description                               |
 | -------------------- | ----------------------------------------- |
-| `require_org_id()`   | Returns org_id or `MissingTenantId` error |
+| `require_org()`      | Returns org or `MissingTenantId` error    |
 | `parse_scopes()`     | Splits scope string into `Vec<String>`    |
-| `vault_id()`         | Returns vault_id if present               |
-| `org_id()`           | Returns org_id clone                      |
+| `vault()`            | Returns vault if present                  |
+| `org()`              | Returns org clone                         |
 
 #### Functions
 
 | Function                                               | Description                                              |
 | ------------------------------------------------------ | -------------------------------------------------------- |
 | `decode_jwt_header(token)`                             | Extracts header without verification                     |
-| `decode_jwt_claims(token)`                             | Extracts claims without verification (for org_id lookup) |
+| `decode_jwt_claims(token)`                             | Extracts claims without verification (for org lookup)    |
 | `validate_claims(claims, audience, max_iat_age)`       | Validates exp, nbf, aud, iat age                         |
 | `verify_signature(token, key, algorithm)`              | Cryptographic signature verification                     |
 | `verify_with_signing_key_cache(token, cache)`          | Full pipeline: header -> claims -> key lookup -> verify  |
@@ -800,8 +802,8 @@ Re-exports: `AuthError`, `Result`, `JwtClaims`, `DEFAULT_MAX_IAT_AGE`, `ReplayDe
 **Verification Flow:**
 
 1. Extract `kid` + `alg` from header; validate kid format + validate algorithm
-2. Decode claims (unverified); extract `org_id` for namespace-scoped key lookup
-3. Fetch decoding key from cache (`org_id` + `kid` -> Ledger)
+2. Decode claims (unverified); extract `org` for organization-scoped key lookup
+3. Fetch decoding key from cache (`org` + `kid` -> Ledger)
 4. Verify signature with `jsonwebtoken`
 5. (Optional) Check JTI against replay detector
 
@@ -810,7 +812,7 @@ Re-exports: `AuthError`, `Result`, `JwtClaims`, `DEFAULT_MAX_IAT_AGE`, `ReplayDe
 - JWT payload bytes wrapped in `Zeroizing<Vec<u8>>` for memory scrubbing
 - Algorithm validation happens before key lookup (prevents "none" attack)
 - Kid validation before cache access (prevents path traversal)
-- Claims decoded before verification — necessary for org_id lookup, but not trusted until post-verification
+- Claims decoded before verification — necessary for org lookup, but not trusted until post-verification
 
 ---
 
@@ -864,8 +866,8 @@ L3: Fallback cache (moka, default 1 hour TTL, 10K capacity)
 | `with_fallback_ttl(key_store, ttl, max_capacity, fallback_ttl)` | Custom L3 TTL                             |
 | `with_thresholds(self, warn, critical)`                         | L3 capacity alert thresholds              |
 | `with_refresh_interval(self: Arc<Self>, interval)`              | Starts background key refresh             |
-| `get_decoding_key(org_id, kid)`                                 | Main API: L1 -> L2 -> L3 fallback            |
-| `invalidate(org_id, kid)`                                       | Removes from L1, bumps generation counter    |
+| `get_decoding_key(org_slug, kid)`                               | Main API: L1 -> L2 -> L3 fallback            |
+| `invalidate(org_slug, kid)`                                     | Removes from L1, bumps generation counter    |
 | `clear_all()`                                                   | Clears all caches                            |
 | `shutdown()`                                                    | Cancels background tasks                     |
 | `entry_count()`                                                 | Returns L1 cache entry count                 |
@@ -920,8 +922,8 @@ Uses `moka::future::Cache` with per-entry TTL matching token expiration. LRU evi
 | Function                                              | Description                                                         |
 | ----------------------------------------------------- | ------------------------------------------------------------------- |
 | `generate_test_keypair()`                             | Generates Ed25519 keypair; returns `(pkcs8_der, public_key_b64url)` |
-| `create_signed_jwt(pkcs8, kid, org_id)`               | Creates valid signed JWT                                            |
-| `create_signed_jwt_with_jti(pkcs8, kid, org_id, jti)` | Signed JWT with JTI                                                 |
+| `create_signed_jwt(pkcs8, kid, org)`                  | Creates valid signed JWT                                            |
+| `create_signed_jwt_with_jti(pkcs8, kid, org, jti)`    | Signed JWT with JTI                                                 |
 | `craft_raw_jwt(header, payload)`                      | Crafts raw JWT for attack testing                                   |
 | `create_test_signing_key(kid)`                        | Creates keypair + `PublicSigningKey`                                |
 | `create_test_signing_key_with_pubkey(kid, pubkey)`    | Custom public key                                                   |
@@ -940,7 +942,7 @@ Uses `moka::future::Cache` with per-entry TTL matching token expiration. LRU evi
 | Algorithm confusion    | HS256/384/512 with EdDSA pubkey as HMAC secret |
 | Token expiration       | 1-second boundary precision                    |
 | Future `nbf`           | Rejected when in future                        |
-| Namespace isolation    | Cross-namespace key reuse prevented            |
+| Organization isolation    | Cross-organization key reuse prevented            |
 | Key rotation           | Revoked key rejects in-flight tokens           |
 | Malformed JWT          | Missing segments, bad base64, not JSON, empty  |
 | RS256 boundary         | Rejected as not accepted                       |
@@ -1000,11 +1002,11 @@ Comprehensive crate-level docs with architecture diagram, quick start, key mappi
 | Method                                              | Description                          |
 | --------------------------------------------------- | ------------------------------------ |
 | `new(config) -> Result<Self>`                       | Creates from `LedgerBackendConfig`   |
-| `from_client(client, ns_id, vault_id, consistency)` | Creates from existing `LedgerClient` |
+| `from_client(client, organization, vault, consistency)` | Creates from existing `LedgerClient` |
 | `shutdown()`                                        | Signals graceful shutdown            |
 | `is_shutting_down() -> bool`                        | Checks shutdown state                |
-| `namespace_id()`                                    | Returns the configured namespace ID  |
-| `vault_id()`                                        | Returns the configured vault ID      |
+| `organization()`                                       | Returns the configured organization slug |
+| `vault()`                                           | Returns the configured vault slug    |
 | `client()`                                          | Returns reference to `LedgerClient`  |
 | `client_arc()`                                      | Returns `Arc<LedgerClient>` clone    |
 | `page_size()`                                       | Returns pagination page size         |
@@ -1152,14 +1154,14 @@ Closed --[threshold failures]--> Open --[recovery timeout]--> HalfOpen
 
 #### Struct: `LedgerBackendConfig`
 
-Required: `client: ClientConfig`, `namespace_id: NamespaceId`
-Optional: `vault_id`, `read_consistency`, `page_size`, `max_range_results`, `retry_config`, `timeout_config`, `size_limits`, `circuit_breaker_config`, `cancellation_token`
+Required: `client: ClientConfig`, `organization: OrganizationSlug`
+Optional: `vault`, `read_consistency`, `page_size`, `max_range_results`, `retry_config`, `timeout_config`, `size_limits`, `circuit_breaker_config`, `cancellation_token`
 
 **Insights:**
 
 - Fallible builders validate all constraints at construction time
 - Defaults always pass validation
-- `#[builder(into)]` enables ergonomic `NamespaceId` conversion
+- `#[builder(into)]` enables ergonomic `OrganizationSlug` conversion
 
 ---
 
@@ -1266,7 +1268,7 @@ Real Ledger cluster tests (gated by `RUN_LEDGER_INTEGRATION_TESTS=1`). Tests act
 
 1. **Well-designed trait abstraction** — `StorageBackend` is comprehensive yet focused; enables testing with `MemoryBackend` and production with `LedgerBackend`
 2. **Layered decorator pattern** — `RateLimitedBackend<B>`, `AuditedKeyStore<S, L>` add cross-cutting concerns without modifying core logic
-3. **Security-first authentication** — Algorithm validation before key lookup, kid validation before cache access, namespace isolation, zeroized key material
+3. **Security-first authentication** — Algorithm validation before key lookup, kid validation before cache access, organization isolation, zeroized key material
 4. **Production resilience** — Three-tier cache with bounded staleness, circuit breaker, retry with backoff, per-operation timeouts, graceful shutdown
 5. **Exceptional testing** — Conformance suite, stress tests, property tests, fuzz tests, security tests, failpoint injection
 6. **Observability** — Tracing span IDs on all errors, structured metrics, audit logging, health probes
@@ -1291,7 +1293,7 @@ Real Ledger cluster tests (gated by `RUN_LEDGER_INTEGRATION_TESTS=1`). Tests act
 | `alg: "none"` bypass                | Algorithm validation before key lookup | Mitigated |
 | HS256 algorithm confusion           | Symmetric algorithms always rejected   | Mitigated |
 | Token replay                        | JTI tracking with per-token TTL        | Mitigated |
-| Cross-namespace key reuse           | org_id to NamespaceId scoping          | Mitigated |
+| Cross-organization key reuse           | `org` claim to `OrganizationSlug` scoping | Mitigated |
 | Kid path traversal                  | Allowlist validation `[a-zA-Z0-9._-]`  | Mitigated |
 | Cache poisoning during invalidation | Generation counter (AtomicU64)         | Mitigated |
 | Stale keys during outage            | L3 fallback with bounded TTL           | Bounded   |

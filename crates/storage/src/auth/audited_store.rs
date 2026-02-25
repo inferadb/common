@@ -12,7 +12,7 @@ use super::{
     signing_key::PublicSigningKey,
     store::PublicSigningKeyStore,
 };
-use crate::{error::StorageResult, types::NamespaceId};
+use crate::{error::StorageResult, types::OrganizationSlug};
 
 /// Decorator that adds audit logging to any [`PublicSigningKeyStore`].
 ///
@@ -91,14 +91,14 @@ where
 {
     async fn create_key(
         &self,
-        namespace_id: NamespaceId,
+        organization: OrganizationSlug,
         key: &PublicSigningKey,
     ) -> StorageResult<()> {
-        let res = self.inner.create_key(namespace_id, key).await;
+        let res = self.inner.create_key(organization, key).await;
         let audit_result = Self::result_from(&res);
         self.emit(
             AuditAction::StoreKey,
-            key_resource(namespace_id, &key.kid),
+            key_resource(organization, &key.kid),
             &audit_result,
             HashMap::new(),
         )
@@ -108,10 +108,10 @@ where
 
     async fn get_key(
         &self,
-        namespace_id: NamespaceId,
+        organization: OrganizationSlug,
         kid: &str,
     ) -> StorageResult<Option<PublicSigningKey>> {
-        let res = self.inner.get_key(namespace_id, kid).await;
+        let res = self.inner.get_key(organization, kid).await;
         let audit_result = Self::result_from(&res);
         let mut metadata = HashMap::new();
         if let Ok(ref opt) = res {
@@ -120,7 +120,7 @@ where
                 if opt.is_some() { "true" } else { "false" }.to_owned(),
             );
         }
-        self.emit(AuditAction::AccessKey, key_resource(namespace_id, kid), &audit_result, metadata)
+        self.emit(AuditAction::AccessKey, key_resource(organization, kid), &audit_result, metadata)
             .await;
         res
     }
@@ -128,18 +128,18 @@ where
     /// Delegates to the inner store without emitting an audit event.
     async fn list_active_keys(
         &self,
-        namespace_id: NamespaceId,
+        organization: OrganizationSlug,
     ) -> StorageResult<Vec<PublicSigningKey>> {
         // list_active_keys is a read-only operation; not individually audited.
-        self.inner.list_active_keys(namespace_id).await
+        self.inner.list_active_keys(organization).await
     }
 
-    async fn deactivate_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
-        let res = self.inner.deactivate_key(namespace_id, kid).await;
+    async fn deactivate_key(&self, organization: OrganizationSlug, kid: &str) -> StorageResult<()> {
+        let res = self.inner.deactivate_key(organization, kid).await;
         let audit_result = Self::result_from(&res);
         self.emit(
             AuditAction::DeactivateKey,
-            key_resource(namespace_id, kid),
+            key_resource(organization, kid),
             &audit_result,
             HashMap::new(),
         )
@@ -149,27 +149,27 @@ where
 
     async fn revoke_key(
         &self,
-        namespace_id: NamespaceId,
+        organization: OrganizationSlug,
         kid: &str,
         reason: Option<&str>,
     ) -> StorageResult<()> {
-        let res = self.inner.revoke_key(namespace_id, kid, reason).await;
+        let res = self.inner.revoke_key(organization, kid, reason).await;
         let audit_result = Self::result_from(&res);
         let mut metadata = HashMap::new();
         if let Some(r) = reason {
             metadata.insert("reason".to_owned(), r.to_owned());
         }
-        self.emit(AuditAction::RevokeKey, key_resource(namespace_id, kid), &audit_result, metadata)
+        self.emit(AuditAction::RevokeKey, key_resource(organization, kid), &audit_result, metadata)
             .await;
         res
     }
 
-    async fn activate_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
-        let res = self.inner.activate_key(namespace_id, kid).await;
+    async fn activate_key(&self, organization: OrganizationSlug, kid: &str) -> StorageResult<()> {
+        let res = self.inner.activate_key(organization, kid).await;
         let audit_result = Self::result_from(&res);
         self.emit(
             AuditAction::ActivateKey,
-            key_resource(namespace_id, kid),
+            key_resource(organization, kid),
             &audit_result,
             HashMap::new(),
         )
@@ -177,12 +177,12 @@ where
         res
     }
 
-    async fn delete_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
-        let res = self.inner.delete_key(namespace_id, kid).await;
+    async fn delete_key(&self, organization: OrganizationSlug, kid: &str) -> StorageResult<()> {
+        let res = self.inner.delete_key(organization, kid).await;
         let audit_result = Self::result_from(&res);
         self.emit(
             AuditAction::DeleteKey,
-            key_resource(namespace_id, kid),
+            key_resource(organization, kid),
             &audit_result,
             HashMap::new(),
         )
@@ -192,10 +192,10 @@ where
 
     async fn create_keys(
         &self,
-        namespace_id: NamespaceId,
+        organization: OrganizationSlug,
         keys: &[PublicSigningKey],
     ) -> Vec<StorageResult<()>> {
-        let results = self.inner.create_keys(namespace_id, keys).await;
+        let results = self.inner.create_keys(organization, keys).await;
         let succeeded = results.iter().filter(|r| r.is_ok()).count();
         let failed = results.len() - succeeded;
         let audit_result = if failed == 0 {
@@ -209,7 +209,7 @@ where
         metadata.insert("failed".to_owned(), failed.to_string());
         self.emit(
             AuditAction::BulkStoreKeys,
-            format!("ns:{namespace_id}"),
+            format!("org:{organization}"),
             &audit_result,
             metadata,
         )
@@ -219,10 +219,10 @@ where
 
     async fn revoke_keys(
         &self,
-        namespace_id: NamespaceId,
+        organization: OrganizationSlug,
         keys: &[(&str, Option<&str>)],
     ) -> Vec<StorageResult<()>> {
-        let results = self.inner.revoke_keys(namespace_id, keys).await;
+        let results = self.inner.revoke_keys(organization, keys).await;
         let succeeded = results.iter().filter(|r| r.is_ok()).count();
         let failed = results.len() - succeeded;
         let audit_result = if failed == 0 {
@@ -236,7 +236,7 @@ where
         metadata.insert("failed".to_owned(), failed.to_string());
         self.emit(
             AuditAction::BulkRevokeKeys,
-            format!("ns:{namespace_id}"),
+            format!("org:{organization}"),
             &audit_result,
             metadata,
         )
@@ -246,18 +246,18 @@ where
 
     async fn rotate_key(
         &self,
-        namespace_id: NamespaceId,
+        organization: OrganizationSlug,
         old_kid: &str,
         new_key: &PublicSigningKey,
     ) -> StorageResult<()> {
-        let res = self.inner.rotate_key(namespace_id, old_kid, new_key).await;
+        let res = self.inner.rotate_key(organization, old_kid, new_key).await;
         let audit_result = Self::result_from(&res);
         let mut metadata = HashMap::new();
         metadata.insert("old_kid".to_owned(), old_kid.to_owned());
         metadata.insert("new_kid".to_owned(), new_key.kid.clone());
         self.emit(
             AuditAction::RotateKey,
-            key_resource(namespace_id, old_kid),
+            key_resource(organization, old_kid),
             &audit_result,
             metadata,
         )
@@ -317,15 +317,15 @@ mod tests {
     async fn test_create_key_emits_audit() {
         let logger = Arc::new(RecordingLogger::new());
         let store = AuditedKeyStore::new(MemorySigningKeyStore::new(), logger.clone(), "admin");
-        let ns = NamespaceId::from(1);
+        let org = OrganizationSlug::from(1);
         let key = make_test_key("k1");
 
-        let res = store.create_key(ns, &key).await;
+        let res = store.create_key(org, &key).await;
         assert!(res.is_ok());
 
         let event = logger.last_event();
         assert_eq!(event.action, AuditAction::StoreKey);
-        assert_eq!(event.resource, "ns:1/kid:k1");
+        assert_eq!(event.resource, "org:1/kid:k1");
         assert_eq!(event.actor, "admin");
         assert_eq!(event.result, AuditResult::Success);
     }
@@ -334,11 +334,11 @@ mod tests {
     async fn test_get_key_emits_audit() {
         let logger = Arc::new(RecordingLogger::new());
         let inner = MemorySigningKeyStore::new();
-        let ns = NamespaceId::from(1);
-        inner.create_key(ns, &make_test_key("k1")).await.expect("create");
+        let org = OrganizationSlug::from(1);
+        inner.create_key(org, &make_test_key("k1")).await.expect("create");
 
         let store = AuditedKeyStore::new(inner, logger.clone(), "reader");
-        let res = store.get_key(ns, "k1").await;
+        let res = store.get_key(org, "k1").await;
         assert!(res.is_ok());
 
         let event = logger.last_event();
@@ -350,9 +350,9 @@ mod tests {
     async fn test_get_missing_key_emits_audit_with_found_false() {
         let logger = Arc::new(RecordingLogger::new());
         let store = AuditedKeyStore::new(MemorySigningKeyStore::new(), logger.clone(), "reader");
-        let ns = NamespaceId::from(1);
+        let org = OrganizationSlug::from(1);
 
-        let res = store.get_key(ns, "missing").await;
+        let res = store.get_key(org, "missing").await;
         assert!(res.is_ok());
 
         let event = logger.last_event();
@@ -364,11 +364,11 @@ mod tests {
     async fn test_revoke_key_emits_audit_with_reason() {
         let logger = Arc::new(RecordingLogger::new());
         let inner = MemorySigningKeyStore::new();
-        let ns = NamespaceId::from(1);
-        inner.create_key(ns, &make_test_key("k1")).await.expect("create");
+        let org = OrganizationSlug::from(1);
+        inner.create_key(org, &make_test_key("k1")).await.expect("create");
 
         let store = AuditedKeyStore::new(inner, logger.clone(), "admin");
-        let res = store.revoke_key(ns, "k1", Some("key compromise")).await;
+        let res = store.revoke_key(org, "k1", Some("key compromise")).await;
         assert!(res.is_ok());
 
         let event = logger.last_event();
@@ -380,11 +380,11 @@ mod tests {
     async fn test_deactivate_key_emits_audit() {
         let logger = Arc::new(RecordingLogger::new());
         let inner = MemorySigningKeyStore::new();
-        let ns = NamespaceId::from(1);
-        inner.create_key(ns, &make_test_key("k1")).await.expect("create");
+        let org = OrganizationSlug::from(1);
+        inner.create_key(org, &make_test_key("k1")).await.expect("create");
 
         let store = AuditedKeyStore::new(inner, logger.clone(), "admin");
-        let res = store.deactivate_key(ns, "k1").await;
+        let res = store.deactivate_key(org, "k1").await;
         assert!(res.is_ok());
 
         let event = logger.last_event();
@@ -396,12 +396,12 @@ mod tests {
     async fn test_activate_key_emits_audit() {
         let logger = Arc::new(RecordingLogger::new());
         let inner = MemorySigningKeyStore::new();
-        let ns = NamespaceId::from(1);
-        inner.create_key(ns, &make_test_key("k1")).await.expect("create");
-        inner.deactivate_key(ns, "k1").await.expect("deactivate");
+        let org = OrganizationSlug::from(1);
+        inner.create_key(org, &make_test_key("k1")).await.expect("create");
+        inner.deactivate_key(org, "k1").await.expect("deactivate");
 
         let store = AuditedKeyStore::new(inner, logger.clone(), "admin");
-        let res = store.activate_key(ns, "k1").await;
+        let res = store.activate_key(org, "k1").await;
         assert!(res.is_ok());
 
         let event = logger.last_event();
@@ -412,28 +412,28 @@ mod tests {
     async fn test_delete_key_emits_audit() {
         let logger = Arc::new(RecordingLogger::new());
         let inner = MemorySigningKeyStore::new();
-        let ns = NamespaceId::from(1);
-        inner.create_key(ns, &make_test_key("k1")).await.expect("create");
+        let org = OrganizationSlug::from(1);
+        inner.create_key(org, &make_test_key("k1")).await.expect("create");
 
         let store = AuditedKeyStore::new(inner, logger.clone(), "admin");
-        let res = store.delete_key(ns, "k1").await;
+        let res = store.delete_key(org, "k1").await;
         assert!(res.is_ok());
 
         let event = logger.last_event();
         assert_eq!(event.action, AuditAction::DeleteKey);
-        assert_eq!(event.resource, "ns:1/kid:k1");
+        assert_eq!(event.resource, "org:1/kid:k1");
     }
 
     #[tokio::test]
     async fn test_rotate_key_emits_audit() {
         let logger = Arc::new(RecordingLogger::new());
         let inner = MemorySigningKeyStore::new();
-        let ns = NamespaceId::from(1);
-        inner.create_key(ns, &make_test_key("old")).await.expect("create");
+        let org = OrganizationSlug::from(1);
+        inner.create_key(org, &make_test_key("old")).await.expect("create");
 
         let store = AuditedKeyStore::new(inner, logger.clone(), "admin");
         let new_key = make_test_key("new");
-        let res = store.rotate_key(ns, "old", &new_key).await;
+        let res = store.rotate_key(org, "old", &new_key).await;
         assert!(res.is_ok());
 
         let event = logger.last_event();
@@ -446,10 +446,10 @@ mod tests {
     async fn test_bulk_create_emits_audit() {
         let logger = Arc::new(RecordingLogger::new());
         let store = AuditedKeyStore::new(MemorySigningKeyStore::new(), logger.clone(), "admin");
-        let ns = NamespaceId::from(1);
+        let org = OrganizationSlug::from(1);
         let keys = vec![make_test_key("k1"), make_test_key("k2"), make_test_key("k3")];
 
-        let results = store.create_keys(ns, &keys).await;
+        let results = store.create_keys(org, &keys).await;
         assert!(results.iter().all(|r| r.is_ok()));
 
         let event = logger.last_event();
@@ -463,13 +463,13 @@ mod tests {
     async fn test_bulk_revoke_emits_audit() {
         let logger = Arc::new(RecordingLogger::new());
         let inner = MemorySigningKeyStore::new();
-        let ns = NamespaceId::from(1);
-        inner.create_key(ns, &make_test_key("k1")).await.expect("create");
-        inner.create_key(ns, &make_test_key("k2")).await.expect("create");
+        let org = OrganizationSlug::from(1);
+        inner.create_key(org, &make_test_key("k1")).await.expect("create");
+        inner.create_key(org, &make_test_key("k2")).await.expect("create");
 
         let store = AuditedKeyStore::new(inner, logger.clone(), "admin");
         let keys = vec![("k1", None), ("k2", Some("expired"))];
-        let results = store.revoke_keys(ns, &keys).await;
+        let results = store.revoke_keys(org, &keys).await;
         assert!(results.iter().all(|r| r.is_ok()));
 
         let event = logger.last_event();
@@ -481,10 +481,10 @@ mod tests {
     async fn test_failed_operation_emits_failure_audit() {
         let logger = Arc::new(RecordingLogger::new());
         let store = AuditedKeyStore::new(MemorySigningKeyStore::new(), logger.clone(), "admin");
-        let ns = NamespaceId::from(1);
+        let org = OrganizationSlug::from(1);
 
         // Try to delete a key that doesn't exist
-        let res = store.delete_key(ns, "nonexistent").await;
+        let res = store.delete_key(org, "nonexistent").await;
         assert!(res.is_err());
 
         let event = logger.last_event();
@@ -497,20 +497,20 @@ mod tests {
     async fn test_all_operations_emit_correct_action_types() {
         let logger = Arc::new(RecordingLogger::new());
         let inner = MemorySigningKeyStore::new();
-        let ns = NamespaceId::from(1);
+        let org = OrganizationSlug::from(1);
 
         // Set up state
-        inner.create_key(ns, &make_test_key("k1")).await.expect("create");
-        inner.create_key(ns, &make_test_key("k2")).await.expect("create");
+        inner.create_key(org, &make_test_key("k1")).await.expect("create");
+        inner.create_key(org, &make_test_key("k2")).await.expect("create");
 
         let store = AuditedKeyStore::new(inner, logger.clone(), "admin");
 
         // Perform each operation
-        let _ = store.get_key(ns, "k1").await;
-        let _ = store.deactivate_key(ns, "k1").await;
-        let _ = store.activate_key(ns, "k1").await;
-        let _ = store.revoke_key(ns, "k2", None).await;
-        let _ = store.delete_key(ns, "k2").await;
+        let _ = store.get_key(org, "k1").await;
+        let _ = store.deactivate_key(org, "k1").await;
+        let _ = store.activate_key(org, "k1").await;
+        let _ = store.revoke_key(org, "k2", None).await;
+        let _ = store.delete_key(org, "k2").await;
 
         let events = logger.events();
         assert_eq!(events.len(), 5);

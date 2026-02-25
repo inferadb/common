@@ -142,7 +142,7 @@ pub enum AuthError {
         span_id: Option<tracing::span::Id>,
     },
 
-    /// Required tenant identifier (`org_id` claim) missing from JWT.
+    /// Required tenant identifier (`org` claim) missing from JWT.
     MissingTenantId {
         /// Span ID captured at error creation for trace correlation.
         span_id: Option<tracing::span::Id>,

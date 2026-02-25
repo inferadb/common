@@ -85,25 +85,25 @@ pub struct LatencyPercentiles {
     pub p99: u64,
 }
 
-// ── Namespace Metrics ───────────────────────────────────────────────────
+// ── Organization Metrics ───────────────────────────────────────────────────
 
-/// Default maximum number of tracked namespaces before overflow goes to the `"_other"` bucket.
+/// Default maximum number of tracked organizations before overflow goes to the `"_other"` bucket.
 ///
 /// 100 is chosen to cover typical multi-tenant deployments without excessive memory overhead
-/// (each namespace adds ~104 bytes of counter state).
-pub const DEFAULT_MAX_TRACKED_NAMESPACES: usize = 100;
+/// (each organization adds ~104 bytes of counter state).
+pub const DEFAULT_MAX_TRACKED_ORGANIZATIONS: usize = 100;
 
-/// Sentinel namespace name for operations that exceed the cardinality bound.
+/// Sentinel organization name for operations that exceed the cardinality bound.
 ///
-/// The leading underscore prevents collisions with user-defined namespaces.
+/// The leading underscore prevents collisions with user-defined organizations.
 const OTHER_BUCKET: &str = "_other";
 
-/// Per-namespace operation counters.
+/// Per-organization operation counters.
 ///
 /// Tracks the same operation types as the global metrics but without histograms
-/// to keep per-namespace memory footprint low.
+/// to keep per-organization memory footprint low.
 #[derive(Debug, Clone, Default)]
-struct NamespaceCounters {
+struct OrganizationCounters {
     get_count: u64,
     set_count: u64,
     delete_count: u64,
@@ -119,44 +119,44 @@ struct NamespaceCounters {
     error_count: u64,
 }
 
-// Note: NamespaceCounters is a pure data holder — snapshot() converts
-// it to NamespaceOperationSnapshot which provides the public API.
+// Note: OrganizationCounters is a pure data holder — snapshot() converts
+// it to OrganizationOperationSnapshot which provides the public API.
 
-/// Per-namespace metrics snapshot, suitable for serialization and dashboard display.
+/// Per-organization metrics snapshot, suitable for serialization and dashboard display.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct NamespaceOperationSnapshot {
-    /// The namespace identifier.
-    pub namespace: String,
-    /// Total GET operations for this namespace.
+pub struct OrganizationOperationSnapshot {
+    /// The organization identifier.
+    pub organization: String,
+    /// Total GET operations for this organization.
     pub get_count: u64,
-    /// Total SET operations for this namespace.
+    /// Total SET operations for this organization.
     pub set_count: u64,
-    /// Total DELETE operations for this namespace.
+    /// Total DELETE operations for this organization.
     pub delete_count: u64,
-    /// Total GET_RANGE operations for this namespace.
+    /// Total GET_RANGE operations for this organization.
     pub get_range_count: u64,
-    /// Total CLEAR_RANGE operations for this namespace.
+    /// Total CLEAR_RANGE operations for this organization.
     pub clear_range_count: u64,
-    /// Total TRANSACTION operations for this namespace.
+    /// Total TRANSACTION operations for this organization.
     pub transaction_count: u64,
-    /// Total GET latency in microseconds for this namespace.
+    /// Total GET latency in microseconds for this organization.
     pub get_latency_us: u64,
-    /// Total SET latency in microseconds for this namespace.
+    /// Total SET latency in microseconds for this organization.
     pub set_latency_us: u64,
-    /// Total DELETE latency in microseconds for this namespace.
+    /// Total DELETE latency in microseconds for this organization.
     pub delete_latency_us: u64,
-    /// Total GET_RANGE latency in microseconds for this namespace.
+    /// Total GET_RANGE latency in microseconds for this organization.
     pub get_range_latency_us: u64,
-    /// Total CLEAR_RANGE latency in microseconds for this namespace.
+    /// Total CLEAR_RANGE latency in microseconds for this organization.
     pub clear_range_latency_us: u64,
-    /// Total TRANSACTION latency in microseconds for this namespace.
+    /// Total TRANSACTION latency in microseconds for this organization.
     pub transaction_latency_us: u64,
-    /// Total errors for this namespace.
+    /// Total errors for this organization.
     pub error_count: u64,
 }
 
-impl NamespaceOperationSnapshot {
-    /// Returns the total operations across all types for this namespace.
+impl OrganizationOperationSnapshot {
+    /// Returns the total operations across all types for this organization.
     #[must_use = "returns a computed total without side effects"]
     pub fn total_operations(&self) -> u64 {
         self.get_count
@@ -167,7 +167,7 @@ impl NamespaceOperationSnapshot {
             + self.transaction_count
     }
 
-    /// Returns the error rate for this namespace (errors / total operations).
+    /// Returns the error rate for this organization (errors / total operations).
     #[must_use = "returns a computed rate without side effects"]
     pub fn error_rate(&self) -> f64 {
         let total = self.total_operations();
@@ -178,31 +178,31 @@ impl NamespaceOperationSnapshot {
     }
 }
 
-/// Bounded-cardinality tracker for per-namespace metrics.
+/// Bounded-cardinality tracker for per-organization metrics.
 ///
-/// Tracks up to `max_namespaces` distinct namespaces. Operations for namespaces
+/// Tracks up to `max_organizations` distinct organizations. Operations for organizations
 /// beyond the limit are aggregated into the `"_other"` overflow bucket.
-struct NamespaceTracker {
-    counters: HashMap<String, NamespaceCounters>,
-    max_namespaces: usize,
+struct OrganizationTracker {
+    counters: HashMap<String, OrganizationCounters>,
+    max_organizations: usize,
 }
 
-impl NamespaceTracker {
-    fn new(max_namespaces: usize) -> Self {
-        Self { counters: HashMap::new(), max_namespaces }
+impl OrganizationTracker {
+    fn new(max_organizations: usize) -> Self {
+        Self { counters: HashMap::new(), max_organizations }
     }
 
-    /// Returns counters for the given namespace, creating them if needed, respecting the
+    /// Returns counters for the given organization, creating them if needed, respecting the
     /// cardinality bound.
-    fn get_or_insert(&mut self, namespace: &str) -> &mut NamespaceCounters {
-        // Determine the effective key: the namespace itself if within cardinality
+    fn get_or_insert(&mut self, organization: &str) -> &mut OrganizationCounters {
+        // Determine the effective key: the organization itself if within cardinality
         // limit, or the overflow bucket otherwise.
-        let effective_key = if self.counters.contains_key(namespace) {
-            namespace.to_owned()
+        let effective_key = if self.counters.contains_key(organization) {
+            organization.to_owned()
         } else {
             let tracked = self.counters.keys().filter(|k| k.as_str() != OTHER_BUCKET).count();
-            if tracked < self.max_namespaces {
-                namespace.to_owned()
+            if tracked < self.max_organizations {
+                organization.to_owned()
             } else {
                 OTHER_BUCKET.to_owned()
             }
@@ -210,12 +210,12 @@ impl NamespaceTracker {
         self.counters.entry(effective_key).or_default()
     }
 
-    fn snapshot(&self) -> Vec<NamespaceOperationSnapshot> {
-        let mut entries: Vec<NamespaceOperationSnapshot> = self
+    fn snapshot(&self) -> Vec<OrganizationOperationSnapshot> {
+        let mut entries: Vec<OrganizationOperationSnapshot> = self
             .counters
             .iter()
-            .map(|(ns, c)| NamespaceOperationSnapshot {
-                namespace: ns.clone(),
+            .map(|(ns, c)| OrganizationOperationSnapshot {
+                organization: ns.clone(),
                 get_count: c.get_count,
                 set_count: c.set_count,
                 delete_count: c.delete_count,
@@ -418,12 +418,12 @@ pub struct MetricsSnapshot {
     #[builder(default)]
     pub health_check_count: u64,
 
-    /// Per-namespace metrics breakdowns for the top-N most active namespaces.
+    /// Per-organization metrics breakdowns for the top-N most active organizations.
     ///
-    /// Sorted by total operations descending. Namespaces beyond the configured
+    /// Sorted by total operations descending. Organizations beyond the configured
     /// cardinality limit are aggregated into the `"_other"` bucket.
     #[builder(default)]
-    pub namespace_metrics: Vec<NamespaceOperationSnapshot>,
+    pub organization_metrics: Vec<OrganizationOperationSnapshot>,
 }
 
 impl MetricsSnapshot {
@@ -567,8 +567,8 @@ struct MetricsInner {
     ttl_operations: AtomicU64,
     health_check_count: AtomicU64,
 
-    // Namespace-level tracking
-    namespace_tracker: Mutex<NamespaceTracker>,
+    // Organization-level tracking
+    organization_tracker: Mutex<OrganizationTracker>,
 }
 
 impl Metrics {
@@ -605,20 +605,20 @@ impl Metrics {
                 retry_exhausted_count: AtomicU64::new(0),
                 ttl_operations: AtomicU64::new(0),
                 health_check_count: AtomicU64::new(0),
-                namespace_tracker: Mutex::new(NamespaceTracker::new(
-                    DEFAULT_MAX_TRACKED_NAMESPACES,
+                organization_tracker: Mutex::new(OrganizationTracker::new(
+                    DEFAULT_MAX_TRACKED_ORGANIZATIONS,
                 )),
             }),
         }
     }
 
-    /// Creates a new metrics collector with a custom namespace cardinality limit.
+    /// Creates a new metrics collector with a custom organization cardinality limit.
     ///
-    /// `max_tracked_namespaces` controls how many distinct namespaces are tracked
-    /// individually. Operations for namespaces beyond this limit are aggregated
+    /// `max_tracked_organizations` controls how many distinct organizations are tracked
+    /// individually. Operations for organizations beyond this limit are aggregated
     /// into the `"_other"` overflow bucket.
     #[must_use = "constructing a metrics collector has no side effects"]
-    pub fn with_max_namespaces(max_tracked_namespaces: usize) -> Self {
+    pub fn with_max_organizations(max_tracked_organizations: usize) -> Self {
         Self {
             inner: Arc::new(MetricsInner {
                 get_count: AtomicU64::new(0),
@@ -649,7 +649,9 @@ impl Metrics {
                 retry_exhausted_count: AtomicU64::new(0),
                 ttl_operations: AtomicU64::new(0),
                 health_check_count: AtomicU64::new(0),
-                namespace_tracker: Mutex::new(NamespaceTracker::new(max_tracked_namespaces)),
+                organization_tracker: Mutex::new(OrganizationTracker::new(
+                    max_tracked_organizations,
+                )),
             }),
         }
     }
@@ -759,77 +761,77 @@ impl Metrics {
         self.inner.retry_exhausted_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    // ── Namespace-aware recording methods ───────────────────────────────
+    // ── Organization-aware recording methods ───────────────────────────────
     //
-    // These methods record both the global metric AND the per-namespace
-    // breakdown. Pass `namespace` to attribute the operation to a specific
-    // tenant/namespace for multi-tenant observability.
+    // These methods record both the global metric AND the per-organization
+    // breakdown. Pass `organization` to attribute the operation to a specific
+    // tenant/organization for multi-tenant observability.
 
-    /// Records a GET operation attributed to a namespace.
-    pub fn record_get_ns(&self, duration: Duration, namespace: &str) {
+    /// Records a GET operation attributed to an organization.
+    pub fn record_get_org(&self, duration: Duration, organization: &str) {
         self.record_get(duration);
         let us = duration.as_micros() as u64;
-        let mut tracker = self.inner.namespace_tracker.lock();
-        let c = tracker.get_or_insert(namespace);
+        let mut tracker = self.inner.organization_tracker.lock();
+        let c = tracker.get_or_insert(organization);
         c.get_count += 1;
         c.get_latency_us += us;
     }
 
-    /// Records a SET operation attributed to a namespace.
-    pub fn record_set_ns(&self, duration: Duration, namespace: &str) {
+    /// Records a SET operation attributed to an organization.
+    pub fn record_set_org(&self, duration: Duration, organization: &str) {
         self.record_set(duration);
         let us = duration.as_micros() as u64;
-        let mut tracker = self.inner.namespace_tracker.lock();
-        let c = tracker.get_or_insert(namespace);
+        let mut tracker = self.inner.organization_tracker.lock();
+        let c = tracker.get_or_insert(organization);
         c.set_count += 1;
         c.set_latency_us += us;
     }
 
-    /// Records a DELETE operation attributed to a namespace.
-    pub fn record_delete_ns(&self, duration: Duration, namespace: &str) {
+    /// Records a DELETE operation attributed to an organization.
+    pub fn record_delete_org(&self, duration: Duration, organization: &str) {
         self.record_delete(duration);
         let us = duration.as_micros() as u64;
-        let mut tracker = self.inner.namespace_tracker.lock();
-        let c = tracker.get_or_insert(namespace);
+        let mut tracker = self.inner.organization_tracker.lock();
+        let c = tracker.get_or_insert(organization);
         c.delete_count += 1;
         c.delete_latency_us += us;
     }
 
-    /// Records a GET_RANGE operation attributed to a namespace.
-    pub fn record_get_range_ns(&self, duration: Duration, namespace: &str) {
+    /// Records a GET_RANGE operation attributed to an organization.
+    pub fn record_get_range_org(&self, duration: Duration, organization: &str) {
         self.record_get_range(duration);
         let us = duration.as_micros() as u64;
-        let mut tracker = self.inner.namespace_tracker.lock();
-        let c = tracker.get_or_insert(namespace);
+        let mut tracker = self.inner.organization_tracker.lock();
+        let c = tracker.get_or_insert(organization);
         c.get_range_count += 1;
         c.get_range_latency_us += us;
     }
 
-    /// Records a CLEAR_RANGE operation attributed to a namespace.
-    pub fn record_clear_range_ns(&self, duration: Duration, namespace: &str) {
+    /// Records a CLEAR_RANGE operation attributed to an organization.
+    pub fn record_clear_range_org(&self, duration: Duration, organization: &str) {
         self.record_clear_range(duration);
         let us = duration.as_micros() as u64;
-        let mut tracker = self.inner.namespace_tracker.lock();
-        let c = tracker.get_or_insert(namespace);
+        let mut tracker = self.inner.organization_tracker.lock();
+        let c = tracker.get_or_insert(organization);
         c.clear_range_count += 1;
         c.clear_range_latency_us += us;
     }
 
-    /// Records a TRANSACTION operation attributed to a namespace.
-    pub fn record_transaction_ns(&self, duration: Duration, namespace: &str) {
+    /// Records a TRANSACTION operation attributed to an organization.
+    pub fn record_transaction_org(&self, duration: Duration, organization: &str) {
         self.record_transaction(duration);
         let us = duration.as_micros() as u64;
-        let mut tracker = self.inner.namespace_tracker.lock();
-        let c = tracker.get_or_insert(namespace);
+        let mut tracker = self.inner.organization_tracker.lock();
+        let c = tracker.get_or_insert(organization);
         c.transaction_count += 1;
         c.transaction_latency_us += us;
     }
 
-    /// Records an error attributed to a namespace.
-    pub fn record_error_ns(&self, namespace: &str) {
+    /// Records an error attributed to an organization.
+    pub fn record_error_org(&self, organization: &str) {
         self.record_error();
-        let mut tracker = self.inner.namespace_tracker.lock();
-        let c = tracker.get_or_insert(namespace);
+        let mut tracker = self.inner.organization_tracker.lock();
+        let c = tracker.get_or_insert(organization);
         c.error_count += 1;
     }
 
@@ -873,7 +875,7 @@ impl Metrics {
             retry_exhausted_count: self.inner.retry_exhausted_count.load(Ordering::Relaxed),
             ttl_operations: self.inner.ttl_operations.load(Ordering::Relaxed),
             health_check_count: self.inner.health_check_count.load(Ordering::Relaxed),
-            namespace_metrics: self.inner.namespace_tracker.lock().snapshot(),
+            organization_metrics: self.inner.organization_tracker.lock().snapshot(),
         }
     }
 
@@ -907,7 +909,7 @@ impl Metrics {
         self.inner.retry_exhausted_count.store(0, Ordering::Relaxed);
         self.inner.ttl_operations.store(0, Ordering::Relaxed);
         self.inner.health_check_count.store(0, Ordering::Relaxed);
-        self.inner.namespace_tracker.lock().reset();
+        self.inner.organization_tracker.lock().reset();
     }
 
     /// Logs current metrics at INFO level, with WARN-level alerts when the
@@ -965,16 +967,16 @@ impl Metrics {
             );
         }
 
-        // Log per-namespace breakdown (top 5 by total operations)
-        for ns in snapshot.namespace_metrics.iter().take(5) {
+        // Log per-organization breakdown (top 5 by total operations)
+        for entry in snapshot.organization_metrics.iter().take(5) {
             tracing::info!(
-                namespace = %ns.namespace,
-                total_ops = ns.total_operations(),
-                get_count = ns.get_count,
-                set_count = ns.set_count,
-                error_count = ns.error_count,
-                error_rate = ns.error_rate(),
-                "Namespace metrics"
+                organization = %entry.organization,
+                total_ops = entry.total_operations(),
+                get_count = entry.get_count,
+                set_count = entry.set_count,
+                error_count = entry.error_count,
+                error_rate = entry.error_rate(),
+                "Organization metrics"
             );
         }
     }
@@ -1483,45 +1485,45 @@ mod tests {
         assert_eq!(snapshot.clear_range_error_count, 0);
     }
 
-    // ── Namespace-level metrics tests ───────────────────────────────────
+    // ── Organization-level metrics tests ───────────────────────────────────
 
     #[test]
-    fn test_namespace_metrics_single_namespace() {
+    fn test_organization_metrics_single_organization() {
         let metrics = Metrics::new();
-        metrics.record_get_ns(Duration::from_micros(100), "ns-1");
-        metrics.record_set_ns(Duration::from_micros(200), "ns-1");
-        metrics.record_delete_ns(Duration::from_micros(50), "ns-1");
+        metrics.record_get_org(Duration::from_micros(100), "org-1");
+        metrics.record_set_org(Duration::from_micros(200), "org-1");
+        metrics.record_delete_org(Duration::from_micros(50), "org-1");
 
         let snapshot = metrics.snapshot();
-        assert_eq!(snapshot.namespace_metrics.len(), 1);
+        assert_eq!(snapshot.organization_metrics.len(), 1);
 
-        let ns = &snapshot.namespace_metrics[0];
-        assert_eq!(ns.namespace, "ns-1");
-        assert_eq!(ns.get_count, 1);
-        assert_eq!(ns.set_count, 1);
-        assert_eq!(ns.delete_count, 1);
-        assert_eq!(ns.get_latency_us, 100);
-        assert_eq!(ns.set_latency_us, 200);
-        assert_eq!(ns.delete_latency_us, 50);
-        assert_eq!(ns.total_operations(), 3);
+        let entry = &snapshot.organization_metrics[0];
+        assert_eq!(entry.organization, "org-1");
+        assert_eq!(entry.get_count, 1);
+        assert_eq!(entry.set_count, 1);
+        assert_eq!(entry.delete_count, 1);
+        assert_eq!(entry.get_latency_us, 100);
+        assert_eq!(entry.set_latency_us, 200);
+        assert_eq!(entry.delete_latency_us, 50);
+        assert_eq!(entry.total_operations(), 3);
     }
 
     #[test]
-    fn test_namespace_metrics_multiple_namespaces() {
+    fn test_organization_metrics_multiple_organizations() {
         let metrics = Metrics::new();
-        metrics.record_get_ns(Duration::from_micros(100), "ns-a");
-        metrics.record_get_ns(Duration::from_micros(100), "ns-a");
-        metrics.record_get_ns(Duration::from_micros(100), "ns-a");
-        metrics.record_set_ns(Duration::from_micros(200), "ns-b");
+        metrics.record_get_org(Duration::from_micros(100), "org-a");
+        metrics.record_get_org(Duration::from_micros(100), "org-a");
+        metrics.record_get_org(Duration::from_micros(100), "org-a");
+        metrics.record_set_org(Duration::from_micros(200), "org-b");
 
         let snapshot = metrics.snapshot();
-        assert_eq!(snapshot.namespace_metrics.len(), 2);
+        assert_eq!(snapshot.organization_metrics.len(), 2);
 
         // Sorted by total ops descending
-        assert_eq!(snapshot.namespace_metrics[0].namespace, "ns-a");
-        assert_eq!(snapshot.namespace_metrics[0].get_count, 3);
-        assert_eq!(snapshot.namespace_metrics[1].namespace, "ns-b");
-        assert_eq!(snapshot.namespace_metrics[1].set_count, 1);
+        assert_eq!(snapshot.organization_metrics[0].organization, "org-a");
+        assert_eq!(snapshot.organization_metrics[0].get_count, 3);
+        assert_eq!(snapshot.organization_metrics[1].organization, "org-b");
+        assert_eq!(snapshot.organization_metrics[1].set_count, 1);
 
         // Global metrics also updated
         assert_eq!(snapshot.get_count, 3);
@@ -1529,26 +1531,26 @@ mod tests {
     }
 
     #[test]
-    fn test_namespace_metrics_cardinality_bound() {
-        let metrics = Metrics::with_max_namespaces(3);
+    fn test_organization_metrics_cardinality_bound() {
+        let metrics = Metrics::with_max_organizations(3);
 
         // Fill up the 3 tracked slots
-        metrics.record_get_ns(Duration::from_micros(10), "ns-1");
-        metrics.record_get_ns(Duration::from_micros(20), "ns-2");
-        metrics.record_get_ns(Duration::from_micros(30), "ns-3");
+        metrics.record_get_org(Duration::from_micros(10), "org-1");
+        metrics.record_get_org(Duration::from_micros(20), "org-2");
+        metrics.record_get_org(Duration::from_micros(30), "org-3");
 
         // Overflow goes to _other
-        metrics.record_get_ns(Duration::from_micros(40), "ns-4");
-        metrics.record_get_ns(Duration::from_micros(50), "ns-5");
+        metrics.record_get_org(Duration::from_micros(40), "org-4");
+        metrics.record_get_org(Duration::from_micros(50), "org-5");
 
         let snapshot = metrics.snapshot();
         // 3 tracked + 1 _other = 4
-        assert_eq!(snapshot.namespace_metrics.len(), 4);
+        assert_eq!(snapshot.organization_metrics.len(), 4);
 
         let other = snapshot
-            .namespace_metrics
+            .organization_metrics
             .iter()
-            .find(|n| n.namespace == "_other")
+            .find(|entry| entry.organization == "_other")
             .expect("_other bucket should exist");
         assert_eq!(other.get_count, 2);
         assert_eq!(other.get_latency_us, 90); // 40 + 50
@@ -1558,42 +1560,42 @@ mod tests {
     }
 
     #[test]
-    fn test_namespace_metrics_existing_ns_not_counted_against_limit() {
-        let metrics = Metrics::with_max_namespaces(2);
+    fn test_organization_metrics_existing_ns_not_counted_against_limit() {
+        let metrics = Metrics::with_max_organizations(2);
 
-        metrics.record_get_ns(Duration::from_micros(10), "ns-1");
-        metrics.record_get_ns(Duration::from_micros(20), "ns-2");
-        // Re-recording to existing ns should NOT overflow
-        metrics.record_get_ns(Duration::from_micros(30), "ns-1");
+        metrics.record_get_org(Duration::from_micros(10), "org-1");
+        metrics.record_get_org(Duration::from_micros(20), "org-2");
+        // Re-recording to existing org should NOT overflow
+        metrics.record_get_org(Duration::from_micros(30), "org-1");
 
         let snapshot = metrics.snapshot();
-        assert_eq!(snapshot.namespace_metrics.len(), 2);
+        assert_eq!(snapshot.organization_metrics.len(), 2);
 
         let ns1 = snapshot
-            .namespace_metrics
+            .organization_metrics
             .iter()
-            .find(|n| n.namespace == "ns-1")
-            .expect("ns-1 should exist");
+            .find(|entry| entry.organization == "org-1")
+            .expect("org-1 should exist");
         assert_eq!(ns1.get_count, 2);
     }
 
     #[test]
-    fn test_namespace_metrics_all_operation_types() {
+    fn test_organization_metrics_all_operation_types() {
         let metrics = Metrics::new();
-        let ns = "tenant-42";
+        let org = "tenant-42";
 
-        metrics.record_get_ns(Duration::from_micros(10), ns);
-        metrics.record_set_ns(Duration::from_micros(20), ns);
-        metrics.record_delete_ns(Duration::from_micros(30), ns);
-        metrics.record_get_range_ns(Duration::from_micros(40), ns);
-        metrics.record_clear_range_ns(Duration::from_micros(50), ns);
-        metrics.record_transaction_ns(Duration::from_micros(60), ns);
-        metrics.record_error_ns(ns);
+        metrics.record_get_org(Duration::from_micros(10), org);
+        metrics.record_set_org(Duration::from_micros(20), org);
+        metrics.record_delete_org(Duration::from_micros(30), org);
+        metrics.record_get_range_org(Duration::from_micros(40), org);
+        metrics.record_clear_range_org(Duration::from_micros(50), org);
+        metrics.record_transaction_org(Duration::from_micros(60), org);
+        metrics.record_error_org(org);
 
         let snapshot = metrics.snapshot();
-        assert_eq!(snapshot.namespace_metrics.len(), 1);
-        let entry = &snapshot.namespace_metrics[0];
-        assert_eq!(entry.namespace, "tenant-42");
+        assert_eq!(snapshot.organization_metrics.len(), 1);
+        let entry = &snapshot.organization_metrics[0];
+        assert_eq!(entry.organization, "tenant-42");
         assert_eq!(entry.get_count, 1);
         assert_eq!(entry.set_count, 1);
         assert_eq!(entry.delete_count, 1);
@@ -1606,38 +1608,38 @@ mod tests {
     }
 
     #[test]
-    fn test_namespace_metrics_reset_clears_all() {
+    fn test_organization_metrics_reset_clears_all() {
         let metrics = Metrics::new();
-        metrics.record_get_ns(Duration::from_micros(100), "ns-1");
-        metrics.record_set_ns(Duration::from_micros(200), "ns-2");
+        metrics.record_get_org(Duration::from_micros(100), "org-1");
+        metrics.record_set_org(Duration::from_micros(200), "org-2");
 
         metrics.reset();
 
         let snapshot = metrics.snapshot();
-        assert!(snapshot.namespace_metrics.is_empty());
+        assert!(snapshot.organization_metrics.is_empty());
     }
 
     #[test]
-    fn test_namespace_metrics_sorted_by_total_operations() {
+    fn test_organization_metrics_sorted_by_total_operations() {
         let metrics = Metrics::new();
 
-        // ns-b has 1 op, ns-a has 3 ops
-        metrics.record_get_ns(Duration::from_micros(10), "ns-b");
-        metrics.record_get_ns(Duration::from_micros(10), "ns-a");
-        metrics.record_set_ns(Duration::from_micros(10), "ns-a");
-        metrics.record_delete_ns(Duration::from_micros(10), "ns-a");
+        // org-b has 1 op, org-a has 3 ops
+        metrics.record_get_org(Duration::from_micros(10), "org-b");
+        metrics.record_get_org(Duration::from_micros(10), "org-a");
+        metrics.record_set_org(Duration::from_micros(10), "org-a");
+        metrics.record_delete_org(Duration::from_micros(10), "org-a");
 
         let snapshot = metrics.snapshot();
-        assert_eq!(snapshot.namespace_metrics[0].namespace, "ns-a");
-        assert_eq!(snapshot.namespace_metrics[0].total_operations(), 3);
-        assert_eq!(snapshot.namespace_metrics[1].namespace, "ns-b");
-        assert_eq!(snapshot.namespace_metrics[1].total_operations(), 1);
+        assert_eq!(snapshot.organization_metrics[0].organization, "org-a");
+        assert_eq!(snapshot.organization_metrics[0].total_operations(), 3);
+        assert_eq!(snapshot.organization_metrics[1].organization, "org-b");
+        assert_eq!(snapshot.organization_metrics[1].total_operations(), 1);
     }
 
     #[test]
-    fn test_namespace_operation_snapshot_error_rate() {
-        let snap = NamespaceOperationSnapshot {
-            namespace: "test".into(),
+    fn test_organization_operation_snapshot_error_rate() {
+        let snap = OrganizationOperationSnapshot {
+            organization: "test".into(),
             get_count: 8,
             set_count: 2,
             error_count: 3,
@@ -1646,14 +1648,14 @@ mod tests {
         assert!((snap.error_rate() - 0.3).abs() < f64::EPSILON);
 
         // Zero ops = zero rate
-        let empty = NamespaceOperationSnapshot::default();
+        let empty = OrganizationOperationSnapshot::default();
         assert!((empty.error_rate()).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn test_namespace_metrics_default_snapshot_is_empty() {
+    fn test_organization_metrics_default_snapshot_is_empty() {
         let metrics = Metrics::new();
         let snapshot = metrics.snapshot();
-        assert!(snapshot.namespace_metrics.is_empty());
+        assert!(snapshot.organization_metrics.is_empty());
     }
 }

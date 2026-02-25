@@ -2,7 +2,7 @@
 //!
 //! These tests verify the authentication pipeline's resistance to common JWT
 //! attack vectors: algorithm substitution, algorithm confusion, expired/future
-//! tokens, namespace isolation, key rotation during active use, and malformed
+//! tokens, organization isolation, key rotation during active use, and malformed
 //! JWT structures.
 #![allow(clippy::expect_used, clippy::panic)]
 
@@ -21,7 +21,7 @@ use inferadb_common_authn::{
     validation::validate_algorithm,
 };
 use inferadb_common_storage::{
-    CertId, ClientId, NamespaceId,
+    CertId, ClientId, OrganizationSlug,
     auth::{MemorySigningKeyStore, PublicSigningKey, PublicSigningKeyStore},
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
@@ -57,7 +57,7 @@ fn generate_test_keypair() -> (Zeroizing<Vec<u8>>, String) {
 }
 
 /// Create a valid JWT signed with the given PKCS#8 DER key.
-fn create_signed_jwt(pkcs8_der: &[u8], kid: &str, org_id: &str) -> String {
+fn create_signed_jwt(pkcs8_der: &[u8], kid: &str, org: &str) -> String {
     let now = Utc::now().timestamp() as u64;
     let claims = json!({
         "iss": "https://api.inferadb.com",
@@ -66,7 +66,7 @@ fn create_signed_jwt(pkcs8_der: &[u8], kid: &str, org_id: &str) -> String {
         "exp": now + 3600,
         "iat": now,
         "scope": "vault:read vault:write",
-        "org_id": org_id,
+        "org": org,
     });
 
     let mut header = Header::new(Algorithm::EdDSA);
@@ -90,7 +90,7 @@ async fn register_key(
     store: &Arc<MemorySigningKeyStore>,
     kid: &str,
     public_key_b64: &str,
-    namespace: NamespaceId,
+    organization: OrganizationSlug,
 ) {
     let key = PublicSigningKey {
         kid: kid.to_string(),
@@ -104,7 +104,7 @@ async fn register_key(
         revoked_at: None,
         revocation_reason: None,
     };
-    store.create_key(namespace, &key).await.expect("Failed to register test key");
+    store.create_key(organization, &key).await.expect("Failed to register test key");
 }
 
 // ===========================================================================
@@ -127,11 +127,11 @@ async fn test_algorithm_none_jwt_rejected_end_to_end() {
     // Craft a JWT with alg: "none" and verify the full pipeline rejects it.
     let (_pkcs8_der, public_key_b64) = generate_test_keypair();
     let kid = "none-alg-key";
-    let ns = NamespaceId::from(99999);
+    let org = OrganizationSlug::from(99999);
 
     let store = Arc::new(MemorySigningKeyStore::new());
     let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
-    register_key(&store, kid, &public_key_b64, ns).await;
+    register_key(&store, kid, &public_key_b64, org).await;
 
     // Create a validly structured JWT but with alg: none
     let now = Utc::now().timestamp() as u64;
@@ -143,7 +143,7 @@ async fn test_algorithm_none_jwt_rejected_end_to_end() {
         "exp": now + 3600,
         "iat": now,
         "scope": "vault:read",
-        "org_id": ns.to_string(),
+        "org": org.to_string(),
     });
     let token = craft_raw_jwt(&header, &payload);
 
@@ -202,11 +202,11 @@ async fn test_algorithm_confusion_hs256_end_to_end() {
     // and sign it using the EdDSA public key as the HMAC secret.
     let (_pkcs8_der, public_key_b64) = generate_test_keypair();
     let kid = "confusion-key";
-    let ns = NamespaceId::from(88888);
+    let org = OrganizationSlug::from(88888);
 
     let store = Arc::new(MemorySigningKeyStore::new());
     let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
-    register_key(&store, kid, &public_key_b64, ns).await;
+    register_key(&store, kid, &public_key_b64, org).await;
 
     // Sign with HS256 using the public key bytes as HMAC secret
     let now = Utc::now().timestamp() as u64;
@@ -217,7 +217,7 @@ async fn test_algorithm_confusion_hs256_end_to_end() {
         "exp": now + 3600,
         "iat": now,
         "scope": "vault:read",
-        "org_id": ns.to_string(),
+        "org": org.to_string(),
     });
     let mut header = Header::new(Algorithm::HS256);
     header.kid = Some(kid.to_string());
@@ -252,8 +252,8 @@ fn test_token_expired_one_second_ago() {
         nbf: None,
         jti: None,
         scope: "vault:read".into(),
-        vault_id: None,
-        org_id: Some("12345".into()),
+        vault: None,
+        org: Some("12345".into()),
     };
     let result = validate_claims(&claims, None, Some(DEFAULT_MAX_IAT_AGE));
     assert!(
@@ -275,8 +275,8 @@ fn test_token_valid_one_second_from_now() {
         nbf: None,
         jti: None,
         scope: "vault:read".into(),
-        vault_id: None,
-        org_id: Some("12345".into()),
+        vault: None,
+        org: Some("12345".into()),
     };
     let result = validate_claims(&claims, None, Some(DEFAULT_MAX_IAT_AGE));
     assert!(result.is_ok(), "Token expiring in 1 second must be accepted, got: {result:?}");
@@ -299,8 +299,8 @@ fn test_future_nbf_rejected() {
         nbf: Some(now + 3600), // not valid for another hour
         jti: None,
         scope: "vault:read".into(),
-        vault_id: None,
-        org_id: Some("12345".into()),
+        vault: None,
+        org: Some("12345".into()),
     };
     let result = validate_claims(&claims, None, Some(DEFAULT_MAX_IAT_AGE));
     assert!(
@@ -322,56 +322,56 @@ fn test_nbf_in_past_accepted() {
         nbf: Some(now - 60), // was valid 60 seconds ago
         jti: None,
         scope: "vault:read".into(),
-        vault_id: None,
-        org_id: Some("12345".into()),
+        vault: None,
+        org: Some("12345".into()),
     };
     let result = validate_claims(&claims, None, Some(DEFAULT_MAX_IAT_AGE));
     assert!(result.is_ok(), "Token with past nbf must be accepted, got: {result:?}");
 }
 
 // ===========================================================================
-// 5. Namespace isolation: key for namespace A must not validate in namespace B
+// 5. Organization isolation: key for organization A must not validate in organization B
 // ===========================================================================
 
 #[tokio::test]
-async fn test_namespace_isolation_rejects_cross_namespace_key() {
-    // Security property: a JWT signed with a key registered in namespace A
-    // must NOT be verifiable when the JWT claims a different namespace (B).
+async fn test_organization_isolation_rejects_cross_organization_key() {
+    // Security property: a JWT signed with a key registered in organization A
+    // must NOT be verifiable when the JWT claims a different organization (B).
     let (pkcs8_der, public_key_b64) = generate_test_keypair();
     let kid = "ns-isolation-key";
-    let ns_a = NamespaceId::from(11111);
-    let ns_b = NamespaceId::from(22222);
+    let org_a = OrganizationSlug::from(11111);
+    let org_b = OrganizationSlug::from(22222);
 
     let store = Arc::new(MemorySigningKeyStore::new());
     let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
 
-    // Register key only in namespace A
-    register_key(&store, kid, &public_key_b64, ns_a).await;
+    // Register key only in organization A
+    register_key(&store, kid, &public_key_b64, org_a).await;
 
-    // Create JWT claiming to be from namespace B
-    let token = create_signed_jwt(&pkcs8_der, kid, &ns_b.to_string());
+    // Create JWT claiming to be from organization B
+    let token = create_signed_jwt(&pkcs8_der, kid, &org_b.to_string());
 
     let result = verify_with_signing_key_cache(&token, &cache).await;
     assert!(
         matches!(&result, Err(AuthError::KeyNotFound { .. })),
-        "Security: key from namespace A must not validate JWT for namespace B, got: {result:?}"
+        "Security: key from organization A must not validate JWT for organization B, got: {result:?}"
     );
 }
 
 #[tokio::test]
-async fn test_namespace_isolation_accepts_same_namespace() {
-    // Positive control: JWT verified with a key from the same namespace succeeds.
+async fn test_organization_isolation_accepts_same_organization() {
+    // Positive control: JWT verified with a key from the same organization succeeds.
     let (pkcs8_der, public_key_b64) = generate_test_keypair();
     let kid = "ns-same-key";
-    let ns = NamespaceId::from(33333);
+    let org = OrganizationSlug::from(33333);
 
     let store = Arc::new(MemorySigningKeyStore::new());
     let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
-    register_key(&store, kid, &public_key_b64, ns).await;
+    register_key(&store, kid, &public_key_b64, org).await;
 
-    let token = create_signed_jwt(&pkcs8_der, kid, &ns.to_string());
+    let token = create_signed_jwt(&pkcs8_der, kid, &org.to_string());
     let result = verify_with_signing_key_cache(&token, &cache).await;
-    assert!(result.is_ok(), "JWT with matching namespace must succeed, got: {result:?}");
+    assert!(result.is_ok(), "JWT with matching organization must succeed, got: {result:?}");
 }
 
 // ===========================================================================
@@ -384,24 +384,24 @@ async fn test_key_rotation_revoked_key_rejects_inflight_token() {
     // must be rejected, even if the JWT itself is not expired.
     let (pkcs8_der, public_key_b64) = generate_test_keypair();
     let kid = "rotation-old-key";
-    let ns = NamespaceId::from(44444);
+    let org = OrganizationSlug::from(44444);
 
     let store = Arc::new(MemorySigningKeyStore::new());
     let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
-    register_key(&store, kid, &public_key_b64, ns).await;
+    register_key(&store, kid, &public_key_b64, org).await;
 
     // Sign a valid JWT with the old key *before* revocation
-    let token = create_signed_jwt(&pkcs8_der, kid, &ns.to_string());
+    let token = create_signed_jwt(&pkcs8_der, kid, &org.to_string());
 
     // Verify it works before revocation
     let before = verify_with_signing_key_cache(&token, &cache).await;
     assert!(before.is_ok(), "JWT must verify before key revocation, got: {before:?}");
 
     // Invalidate the cache entry so the revoked state is fetched fresh
-    cache.invalidate(ns, kid).await;
+    cache.invalidate(org, kid).await;
 
     // Revoke the old key
-    store.revoke_key(ns, kid, Some("key rotation")).await.expect("Failed to revoke key");
+    store.revoke_key(org, kid, Some("key rotation")).await.expect("Failed to revoke key");
 
     // The in-flight token signed with the revoked key must now be rejected.
     // Note: revoke_key sets active=false AND revoked_at, and validate_key_state
@@ -421,20 +421,20 @@ async fn test_key_rotation_new_key_works_after_old_revoked() {
     let (new_pkcs8, new_pub_b64) = generate_test_keypair();
     let old_kid = "rotate-old";
     let new_kid = "rotate-new";
-    let ns = NamespaceId::from(55555);
+    let org = OrganizationSlug::from(55555);
 
     let store = Arc::new(MemorySigningKeyStore::new());
     let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
 
     // Register and then revoke old key
-    register_key(&store, old_kid, &old_pub_b64, ns).await;
-    store.revoke_key(ns, old_kid, Some("rotation")).await.expect("revoke old key");
+    register_key(&store, old_kid, &old_pub_b64, org).await;
+    store.revoke_key(org, old_kid, Some("rotation")).await.expect("revoke old key");
 
     // Register new key
-    register_key(&store, new_kid, &new_pub_b64, ns).await;
+    register_key(&store, new_kid, &new_pub_b64, org).await;
 
     // Old key JWT fails (KeyInactive or KeyRevoked — both are valid rejections)
-    let old_token = create_signed_jwt(&old_pkcs8, old_kid, &ns.to_string());
+    let old_token = create_signed_jwt(&old_pkcs8, old_kid, &org.to_string());
     let old_result = verify_with_signing_key_cache(&old_token, &cache).await;
     assert!(
         matches!(
@@ -445,7 +445,7 @@ async fn test_key_rotation_new_key_works_after_old_revoked() {
     );
 
     // New key JWT succeeds
-    let new_token = create_signed_jwt(&new_pkcs8, new_kid, &ns.to_string());
+    let new_token = create_signed_jwt(&new_pkcs8, new_kid, &org.to_string());
     let new_result = verify_with_signing_key_cache(&new_token, &cache).await;
     assert!(new_result.is_ok(), "New key JWT must succeed, got: {new_result:?}");
 }
@@ -537,7 +537,7 @@ fn test_malformed_jwt_empty_signature() {
         "exp": now + 3600,
         "iat": now,
         "scope": "vault:read",
-        "org_id": "12345",
+        "org": "12345",
     });
     let payload_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).expect("json"));
     let token = format!("{header_b64}.{payload_b64}.");

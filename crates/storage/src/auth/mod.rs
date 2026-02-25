@@ -16,9 +16,9 @@
 //!
 //! # Key Storage
 //!
-//! Keys are stored as Ledger entities in the organization's namespace:
+//! Keys are stored as Ledger entities scoped to an organization:
 //!
-//! - **Namespace**: `{namespace_id}` (where `namespace_id == org_id`)
+//! - **Organization**: `{organization_slug}`
 //! - **Key prefix**: `signing-keys/`
 //! - **Full path**: `signing-keys/{kid}`
 //!
@@ -34,11 +34,11 @@
 //! use inferadb_common_storage::auth::{
 //!     MemorySigningKeyStore, PublicSigningKey, PublicSigningKeyStore,
 //! };
-//! use inferadb_common_storage::NamespaceId;
+//! use inferadb_common_storage::OrganizationSlug;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! let store = MemorySigningKeyStore::new();
-//! let ns = NamespaceId::from(100);
+//! let org = OrganizationSlug::from(100);
 //!
 //! let key = PublicSigningKey::builder()
 //!     .kid("key-abc123")
@@ -47,9 +47,9 @@
 //!     .cert_id(42)
 //!     .build();
 //!
-//! store.create_key(ns, &key).await?;
+//! store.create_key(org, &key).await?;
 //!
-//! let retrieved = store.get_key(ns, "key-abc123").await?;
+//! let retrieved = store.get_key(org, "key-abc123").await?;
 //! assert!(retrieved.is_some());
 //! # Ok(())
 //! # }

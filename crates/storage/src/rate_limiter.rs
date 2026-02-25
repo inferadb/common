@@ -4,10 +4,10 @@
 //! that protects backends from overload. The [`RateLimitedBackend`] wrapper
 //! applies rate limiting transparently before delegating to the inner backend.
 //!
-//! # Per-Namespace Limiting
+//! # Per-Organization Limiting
 //!
-//! In multi-tenant deployments, [`RateLimitedBackend`] supports per-namespace
-//! rate limits via a configurable [`NamespaceExtractor`]. Each namespace gets
+//! In multi-tenant deployments, [`RateLimitedBackend`] supports per-organization
+//! rate limits via a configurable [`OrganizationExtractor`]. Each organization gets
 //! its own token bucket, preventing noisy-neighbor issues.
 //!
 //! # Examples
@@ -142,27 +142,27 @@ impl BucketState {
     }
 }
 
-/// Extracts a namespace identifier from a storage key.
+/// Extracts an organization identifier from a storage key.
 ///
-/// Implementations determine how keys map to namespaces for per-tenant
+/// Implementations determine how keys map to organizations for per-tenant
 /// rate limiting. When no extractor is set, all operations share a
 /// single global bucket.
-pub trait NamespaceExtractor: Send + Sync {
-    /// Returns the namespace for the given key, or `None` for the
+pub trait OrganizationExtractor: Send + Sync {
+    /// Returns the organization for the given key, or `None` for the
     /// global/default bucket.
     fn extract(&self, key: &[u8]) -> Option<String>;
 }
 
-/// Token-bucket rate limiter with optional per-namespace buckets.
+/// Token-bucket rate limiter with optional per-organization buckets.
 ///
 /// Thread-safe via internal [`parking_lot::Mutex`]. Supports both a global
-/// bucket and optional per-namespace buckets.
+/// bucket and optional per-organization buckets.
 pub struct TokenBucketLimiter {
     global: Mutex<BucketState>,
-    namespaces: Mutex<HashMap<String, BucketState>>,
-    namespace_config: Option<HashMap<String, RateLimitConfig>>,
+    organizations: Mutex<HashMap<String, BucketState>>,
+    organization_config: Option<HashMap<String, RateLimitConfig>>,
     default_config: RateLimitConfig,
-    extractor: Option<Arc<dyn NamespaceExtractor>>,
+    extractor: Option<Arc<dyn OrganizationExtractor>>,
     metrics: RateLimitMetrics,
 }
 
@@ -206,30 +206,33 @@ impl TokenBucketLimiter {
     pub fn new(config: RateLimitConfig) -> Self {
         Self {
             global: Mutex::new(BucketState::new(config)),
-            namespaces: Mutex::new(HashMap::new()),
-            namespace_config: None,
+            organizations: Mutex::new(HashMap::new()),
+            organization_config: None,
             default_config: config,
             extractor: None,
             metrics: RateLimitMetrics::new(),
         }
     }
 
-    /// Sets a namespace extractor for per-tenant rate limiting.
+    /// Sets an organization extractor for per-tenant rate limiting.
     ///
-    /// When set, each namespace gets its own token bucket. Operations
-    /// on unrecognized namespaces use the global bucket.
+    /// When set, each organization gets its own token bucket. Operations
+    /// on unrecognized organizations use the global bucket.
     #[must_use = "returns the modified limiter for chaining"]
-    pub fn with_namespace_extractor(mut self, extractor: Arc<dyn NamespaceExtractor>) -> Self {
+    pub fn with_organization_extractor(
+        mut self,
+        extractor: Arc<dyn OrganizationExtractor>,
+    ) -> Self {
         self.extractor = Some(extractor);
         self
     }
 
-    /// Sets per-namespace rate limit overrides.
+    /// Sets per-organization rate limit overrides.
     ///
-    /// Namespaces not in this map use `default_config`.
+    /// Organizations not in this map use `default_config`.
     #[must_use = "returns the modified limiter for chaining"]
-    pub fn with_namespace_configs(mut self, configs: HashMap<String, RateLimitConfig>) -> Self {
-        self.namespace_config = Some(configs);
+    pub fn with_organization_configs(mut self, configs: HashMap<String, RateLimitConfig>) -> Self {
+        self.organization_config = Some(configs);
         self
     }
 
@@ -240,11 +243,11 @@ impl TokenBucketLimiter {
     /// Returns [`StorageError::RateLimitExceeded`] with a `retry_after` hint if the
     /// bucket is empty.
     pub fn check(&self, key: &[u8]) -> StorageResult<()> {
-        // Per-namespace limiting if extractor is configured
+        // Per-organization limiting if extractor is configured
         if let Some(extractor) = &self.extractor
-            && let Some(ns) = extractor.extract(key)
+            && let Some(org) = extractor.extract(key)
         {
-            return self.check_namespace(&ns);
+            return self.check_organization(&org);
         }
 
         // Fall through to global bucket
@@ -265,15 +268,16 @@ impl TokenBucketLimiter {
         }
     }
 
-    fn check_namespace(&self, ns: &str) -> StorageResult<()> {
+    fn check_organization(&self, org: &str) -> StorageResult<()> {
         let config = self
-            .namespace_config
+            .organization_config
             .as_ref()
-            .and_then(|m| m.get(ns).copied())
+            .and_then(|m| m.get(org).copied())
             .unwrap_or(self.default_config);
 
-        let mut namespaces = self.namespaces.lock();
-        let bucket = namespaces.entry(ns.to_owned()).or_insert_with(|| BucketState::new(config));
+        let mut organizations = self.organizations.lock();
+        let bucket =
+            organizations.entry(org.to_owned()).or_insert_with(|| BucketState::new(config));
 
         match bucket.try_acquire() {
             Ok(()) => {
@@ -372,7 +376,7 @@ impl<B: StorageBackend> StorageBackend for RateLimitedBackend<B> {
     where
         R: RangeBounds<Vec<u8>> + Send,
     {
-        // Range operations use global bucket (no single key to extract namespace from)
+        // Range operations use global bucket (no single key to extract organization from)
         self.limiter.check_global()?;
         self.inner.get_range(range).await
     }
@@ -545,36 +549,36 @@ mod tests {
         assert!(txn.is_ok());
     }
 
-    /// Test namespace-based rate limiting with a simple prefix extractor.
+    /// Test organization-based rate limiting with a simple prefix extractor.
     struct PrefixExtractor;
 
-    impl NamespaceExtractor for PrefixExtractor {
+    impl OrganizationExtractor for PrefixExtractor {
         fn extract(&self, key: &[u8]) -> Option<String> {
-            // Extract namespace as the part before the first ':'
+            // Extract organization as the part before the first ':'
             let key_str = std::str::from_utf8(key).ok()?;
             key_str.split(':').next().map(String::from)
         }
     }
 
     #[test]
-    fn per_namespace_rate_limiting() {
+    fn per_organization_rate_limiting() {
         let config = RateLimitConfig::new(1000, 2).unwrap();
         let limiter =
-            TokenBucketLimiter::new(config).with_namespace_extractor(Arc::new(PrefixExtractor));
+            TokenBucketLimiter::new(config).with_organization_extractor(Arc::new(PrefixExtractor));
 
-        // Namespace "ns1" gets 2 tokens
+        // Organization "ns1" gets 2 tokens
         assert!(limiter.check(b"ns1:key1").is_ok());
         assert!(limiter.check(b"ns1:key2").is_ok());
         assert!(limiter.check(b"ns1:key3").is_err()); // exhausted
 
-        // Namespace "ns2" is independent — still has 2 tokens
+        // Organization "ns2" is independent — still has 2 tokens
         assert!(limiter.check(b"ns2:key1").is_ok());
         assert!(limiter.check(b"ns2:key2").is_ok());
         assert!(limiter.check(b"ns2:key3").is_err());
     }
 
     #[test]
-    fn per_namespace_config_override() {
+    fn per_organization_config_override() {
         let default_config = RateLimitConfig::new(1000, 2).unwrap();
         let premium_config = RateLimitConfig::new(1000, 5).unwrap();
 
@@ -582,15 +586,15 @@ mod tests {
         overrides.insert("premium".to_owned(), premium_config);
 
         let limiter = TokenBucketLimiter::new(default_config)
-            .with_namespace_extractor(Arc::new(PrefixExtractor))
-            .with_namespace_configs(overrides);
+            .with_organization_extractor(Arc::new(PrefixExtractor))
+            .with_organization_configs(overrides);
 
-        // "basic" namespace gets default (2 burst)
+        // "basic" organization gets default (2 burst)
         assert!(limiter.check(b"basic:k1").is_ok());
         assert!(limiter.check(b"basic:k2").is_ok());
         assert!(limiter.check(b"basic:k3").is_err());
 
-        // "premium" namespace gets override (5 burst)
+        // "premium" organization gets override (5 burst)
         for i in 0..5 {
             assert!(
                 limiter.check(format!("premium:k{i}").as_bytes()).is_ok(),

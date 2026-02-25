@@ -13,8 +13,8 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use inferadb_common_storage::{
-    HealthMetadata, HealthProbe, HealthStatus, KeyValue, Metrics, NamespaceId, SizeLimits,
-    StorageBackend, StorageError, StorageResult, Transaction, VaultId, validate_sizes,
+    HealthMetadata, HealthProbe, HealthStatus, KeyValue, Metrics, OrganizationSlug, SizeLimits,
+    StorageBackend, StorageError, StorageResult, Transaction, VaultSlug, validate_sizes,
 };
 use inferadb_ledger_sdk::{
     LedgerClient, ListEntitiesOpts, Operation, ReadConsistency, SetCondition,
@@ -39,7 +39,7 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
 /// Ledger-backed implementation of [`StorageBackend`].
 ///
 /// This backend uses the InferaDB Ledger SDK to provide durable, cryptographically
-/// verifiable key-value storage. All operations target a Ledger namespace
+/// verifiable key-value storage. All operations target a Ledger organization
 /// and optionally a vault for data isolation.
 ///
 /// # Key Encoding
@@ -72,7 +72,7 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
 ///
 ///     let config = LedgerBackendConfig::builder()
 ///         .client(client)
-///         .namespace_id(1)
+///         .organization(1)
 ///         .build()?;
 ///
 ///     let backend = LedgerBackend::new(config).await?;
@@ -90,11 +90,11 @@ pub struct LedgerBackend {
     /// The underlying SDK client.
     client: Arc<LedgerClient>,
 
-    /// Namespace ID for all operations.
-    namespace_id: NamespaceId,
+    /// Organization ID for all operations.
+    organization: OrganizationSlug,
 
     /// Optional vault ID for scoped operations.
-    vault_id: Option<VaultId>,
+    vault: Option<VaultSlug>,
 
     /// Read consistency level.
     read_consistency: ReadConsistency,
@@ -117,7 +117,7 @@ pub struct LedgerBackend {
     /// Optional circuit breaker for fail-fast during backend outages.
     circuit_breaker: Option<crate::circuit_breaker::CircuitBreaker>,
 
-    /// Metrics collector for per-namespace operation tracking.
+    /// Metrics collector for per-organization operation tracking.
     metrics: Metrics,
 
     /// Optional cancellation token for graceful shutdown.
@@ -127,8 +127,8 @@ pub struct LedgerBackend {
 impl std::fmt::Debug for LedgerBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LedgerBackend")
-            .field("namespace_id", &self.namespace_id)
-            .field("vault_id", &self.vault_id)
+            .field("organization", &self.organization)
+            .field("vault", &self.vault)
             .field("read_consistency", &self.read_consistency)
             .finish_non_exhaustive()
     }
@@ -162,7 +162,7 @@ impl LedgerBackend {
     ///
     /// let config = LedgerBackendConfig::builder()
     ///     .client(client)
-    ///     .namespace_id(1)
+    ///     .organization(1)
     ///     .build()?;
     ///
     /// let backend = LedgerBackend::new(config).await?;
@@ -170,8 +170,8 @@ impl LedgerBackend {
     /// # }
     /// ```
     pub async fn new(config: LedgerBackendConfig) -> Result<Self> {
-        let namespace_id = config.namespace_id();
-        let vault_id = config.vault_id();
+        let organization = config.organization();
+        let vault = config.vault();
         let read_consistency = config.read_consistency();
         let page_size = config.page_size();
         let max_range_results = config.max_range_results();
@@ -190,8 +190,8 @@ impl LedgerBackend {
 
         Ok(Self {
             client: Arc::new(client),
-            namespace_id,
-            vault_id,
+            organization,
+            vault,
             read_consistency,
             page_size,
             max_range_results,
@@ -217,15 +217,15 @@ impl LedgerBackend {
     #[must_use = "constructing a backend has no side effects"]
     pub fn from_client(
         client: Arc<LedgerClient>,
-        namespace_id: NamespaceId,
-        vault_id: Option<VaultId>,
+        organization: OrganizationSlug,
+        vault: Option<VaultSlug>,
         read_consistency: ReadConsistency,
     ) -> Self {
         use crate::config::{DEFAULT_MAX_RANGE_RESULTS, DEFAULT_PAGE_SIZE};
         Self {
             client,
-            namespace_id,
-            vault_id,
+            organization,
+            vault,
             read_consistency,
             page_size: DEFAULT_PAGE_SIZE,
             max_range_results: DEFAULT_MAX_RANGE_RESULTS,
@@ -238,16 +238,16 @@ impl LedgerBackend {
         }
     }
 
-    /// Returns the namespace ID.
+    /// Returns the organization ID.
     #[must_use = "returns a value without side effects"]
-    pub fn namespace_id(&self) -> NamespaceId {
-        self.namespace_id
+    pub fn organization(&self) -> OrganizationSlug {
+        self.organization
     }
 
     /// Returns the vault ID if configured.
     #[must_use = "returns a value without side effects"]
-    pub fn vault_id(&self) -> Option<VaultId> {
-        self.vault_id
+    pub fn vault(&self) -> Option<VaultSlug> {
+        self.vault
     }
 
     /// Returns the underlying SDK client.
@@ -277,14 +277,9 @@ impl LedgerBackend {
         self.max_range_results
     }
 
-    /// Returns the namespace ID as a raw `i64` for SDK calls.
-    fn ns_raw(&self) -> i64 {
-        self.namespace_id.into()
-    }
-
-    /// Returns the vault ID as a raw `Option<i64>` for SDK calls.
-    fn vault_raw(&self) -> Option<i64> {
-        self.vault_id.map(Into::into)
+    /// Returns the vault slug as `Option<u64>` for SDK calls that expect a raw value.
+    fn vault_raw(&self) -> Option<u64> {
+        self.vault.map(u64::from)
     }
 
     /// Returns `Ok(())` if no limits are configured or sizes are within bounds.
@@ -376,19 +371,19 @@ impl LedgerBackend {
         &self.metrics
     }
 
-    /// Returns the namespace ID as a string for metric recording.
-    fn ns_str(&self) -> String {
-        self.namespace_id.to_string()
+    /// Returns the organization ID as a string for metric recording.
+    fn org_str(&self) -> String {
+        self.organization.to_string()
     }
 
     /// Performs a read with the configured consistency level.
     async fn do_read(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, LedgerStorageError> {
         let result = match self.read_consistency {
             ReadConsistency::Linearizable => {
-                self.client.read_consistent(self.ns_raw(), self.vault_raw(), key).await
+                self.client.read_consistent(self.organization, self.vault_raw(), key).await
             },
             ReadConsistency::Eventual => {
-                self.client.read(self.ns_raw(), self.vault_raw(), key).await
+                self.client.read(self.organization, self.vault_raw(), key).await
             },
         };
 
@@ -450,9 +445,9 @@ impl StorageBackend for LedgerBackend {
         )
         .await;
         self.record_circuit_result(&result);
-        self.metrics.record_get_ns(start.elapsed(), &self.ns_str());
+        self.metrics.record_get_org(start.elapsed(), &self.org_str());
         if result.is_err() {
-            self.metrics.record_error_ns(&self.ns_str());
+            self.metrics.record_error_org(&self.org_str());
         }
         result
     }
@@ -474,7 +469,7 @@ impl StorageBackend for LedgerBackend {
             || async {
                 self.client
                     .write(
-                        self.ns_raw(),
+                        self.organization,
                         self.vault_raw(),
                         vec![Operation::set_entity(encoded_key.clone(), value.clone())],
                     )
@@ -485,9 +480,9 @@ impl StorageBackend for LedgerBackend {
         )
         .await;
         self.record_circuit_result(&result);
-        self.metrics.record_set_ns(start.elapsed(), &self.ns_str());
+        self.metrics.record_set_org(start.elapsed(), &self.org_str());
         if result.is_err() {
-            self.metrics.record_error_ns(&self.ns_str());
+            self.metrics.record_error_org(&self.org_str());
         }
         result
     }
@@ -526,7 +521,7 @@ impl StorageBackend for LedgerBackend {
                 match self
                     .client
                     .write(
-                        self.ns_raw(),
+                        self.organization,
                         self.vault_raw(),
                         vec![Operation::set_entity_if(
                             encoded_key.clone(),
@@ -546,9 +541,9 @@ impl StorageBackend for LedgerBackend {
         )
         .await;
         self.record_circuit_result(&result);
-        self.metrics.record_set_ns(start.elapsed(), &self.ns_str());
+        self.metrics.record_set_org(start.elapsed(), &self.org_str());
         if result.is_err() {
-            self.metrics.record_error_ns(&self.ns_str());
+            self.metrics.record_error_org(&self.org_str());
         }
         result
     }
@@ -569,7 +564,7 @@ impl StorageBackend for LedgerBackend {
             || async {
                 self.client
                     .write(
-                        self.ns_raw(),
+                        self.organization,
                         self.vault_raw(),
                         vec![Operation::delete_entity(encoded_key.clone())],
                     )
@@ -580,9 +575,9 @@ impl StorageBackend for LedgerBackend {
         )
         .await;
         self.record_circuit_result(&result);
-        self.metrics.record_delete_ns(start.elapsed(), &self.ns_str());
+        self.metrics.record_delete_org(start.elapsed(), &self.org_str());
         if result.is_err() {
-            self.metrics.record_error_ns(&self.ns_str());
+            self.metrics.record_error_org(&self.org_str());
         }
         result
     }
@@ -647,11 +642,11 @@ impl StorageBackend for LedgerBackend {
                         limit: self.page_size,
                         page_token: current_page_token.clone(),
                         consistency: self.read_consistency,
-                        vault_id: self.vault_raw(),
+                        vault_slug: self.vault_raw(),
                     };
 
                     self.client
-                        .list_entities(self.ns_raw(), opts)
+                        .list_entities(self.organization, opts)
                         .await
                         .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
                 })
@@ -718,9 +713,9 @@ impl StorageBackend for LedgerBackend {
         .await
         .unwrap_or(Err(StorageError::timeout()));
         self.record_circuit_result(&result);
-        self.metrics.record_get_range_ns(start.elapsed(), &self.ns_str());
+        self.metrics.record_get_range_org(start.elapsed(), &self.org_str());
         if result.is_err() {
-            self.metrics.record_error_ns(&self.ns_str());
+            self.metrics.record_error_org(&self.org_str());
         }
         result
     }
@@ -756,7 +751,7 @@ impl StorageBackend for LedgerBackend {
             "clear_range",
             || async {
                 self.client
-                    .write(self.ns_raw(), self.vault_raw(), operations.clone())
+                    .write(self.organization, self.vault_raw(), operations.clone())
                     .await
                     .map(|_| ())
                     .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
@@ -764,9 +759,9 @@ impl StorageBackend for LedgerBackend {
         )
         .await;
         self.record_circuit_result(&result);
-        self.metrics.record_clear_range_ns(start.elapsed(), &self.ns_str());
+        self.metrics.record_clear_range_org(start.elapsed(), &self.org_str());
         if result.is_err() {
-            self.metrics.record_error_ns(&self.ns_str());
+            self.metrics.record_error_org(&self.org_str());
         }
         result
     }
@@ -799,7 +794,7 @@ impl StorageBackend for LedgerBackend {
             || async {
                 self.client
                     .write(
-                        self.ns_raw(),
+                        self.organization,
                         self.vault_raw(),
                         vec![Operation::set_entity_with_expiry(
                             encoded_key.clone(),
@@ -814,9 +809,9 @@ impl StorageBackend for LedgerBackend {
         )
         .await;
         self.record_circuit_result(&result);
-        self.metrics.record_set_ns(start.elapsed(), &self.ns_str());
+        self.metrics.record_set_org(start.elapsed(), &self.org_str());
         if result.is_err() {
-            self.metrics.record_error_ns(&self.ns_str());
+            self.metrics.record_error_org(&self.org_str());
         }
         result
     }
@@ -829,11 +824,11 @@ impl StorageBackend for LedgerBackend {
         let start = std::time::Instant::now();
         let txn = LedgerTransaction::new(
             Arc::clone(&self.client),
-            self.namespace_id,
-            self.vault_id,
+            self.organization,
+            self.vault,
             self.read_consistency,
         );
-        self.metrics.record_transaction_ns(start.elapsed(), &self.ns_str());
+        self.metrics.record_transaction_org(start.elapsed(), &self.org_str());
         Ok(Box::new(txn))
     }
 

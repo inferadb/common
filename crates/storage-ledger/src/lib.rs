@@ -50,7 +50,7 @@
 //!
 //!     let config = LedgerBackendConfig::builder()
 //!         .client(client)
-//!         .namespace_id(1)
+//!         .organization(1)
 //!         .build()?;
 //!
 //!     let backend = LedgerBackend::new(config).await?;
@@ -105,7 +105,7 @@
 //!
 //! let config = LedgerBackendConfig::builder()
 //!     .client(client)
-//!     .namespace_id(1)
+//!     .organization(1)
 //!     .build()?;
 //!
 //! let backend = LedgerBackend::new(config).await?;

@@ -25,7 +25,7 @@
 //! let event = AuditEvent::builder()
 //!     .actor("admin@example.com")
 //!     .action(AuditAction::StoreKey)
-//!     .resource("ns:100/kid:key-abc123")
+//!     .resource("org:100/kid:key-abc123")
 //!     .result(AuditResult::Success)
 //!     .build();
 //! logger.log(&event).await;
@@ -114,7 +114,7 @@ pub struct AuditEvent {
     pub actor: String,
     /// The action that was performed.
     pub action: AuditAction,
-    /// Resource identifier (e.g., "ns:100/kid:key-abc123").
+    /// Resource identifier (e.g., "org:100/kid:key-abc123").
     #[builder(into)]
     pub resource: String,
     /// Outcome of the operation.
@@ -192,12 +192,12 @@ impl AuditLogger for NoopAuditLogger {
     async fn log(&self, _event: &AuditEvent) {}
 }
 
-/// Constructs a resource identifier string from namespace and kid.
+/// Constructs a resource identifier string from organization and kid.
 ///
-/// Returns a string in the format `"ns:{namespace_id}/kid:{kid}"`.
+/// Returns a string in the format `"org:{organization}/kid:{kid}"`.
 #[must_use = "returns a formatted resource identifier"]
-pub fn key_resource(namespace_id: impl fmt::Display, kid: &str) -> String {
-    format!("ns:{namespace_id}/kid:{kid}")
+pub fn key_resource(organization: impl fmt::Display, kid: &str) -> String {
+    format!("org:{organization}/kid:{kid}")
 }
 
 #[cfg(test)]
@@ -235,13 +235,13 @@ mod tests {
         let event = AuditEvent::builder()
             .actor("test-user")
             .action(AuditAction::StoreKey)
-            .resource("ns:1/kid:abc")
+            .resource("org:1/kid:abc")
             .result(AuditResult::Success)
             .build();
 
         assert_eq!(event.actor, "test-user");
         assert_eq!(event.action, AuditAction::StoreKey);
-        assert_eq!(event.resource, "ns:1/kid:abc");
+        assert_eq!(event.resource, "org:1/kid:abc");
         assert_eq!(event.result, AuditResult::Success);
         assert!(event.metadata.is_empty());
         // Timestamp should be approximately now
@@ -258,7 +258,7 @@ mod tests {
         let event = AuditEvent::builder()
             .actor("admin@org.com")
             .action(AuditAction::BulkRevokeKeys)
-            .resource("ns:42")
+            .resource("org:42")
             .result(AuditResult::Success)
             .metadata(metadata)
             .build();
@@ -269,8 +269,8 @@ mod tests {
 
     #[test]
     fn test_key_resource_helper() {
-        assert_eq!(key_resource(100, "key-abc"), "ns:100/kid:key-abc");
-        assert_eq!(key_resource(42, "my.key-v2"), "ns:42/kid:my.key-v2");
+        assert_eq!(key_resource(100, "key-abc"), "org:100/kid:key-abc");
+        assert_eq!(key_resource(42, "my.key-v2"), "org:42/kid:my.key-v2");
     }
 
     #[tokio::test]
@@ -285,7 +285,7 @@ mod tests {
         let event = AuditEvent::builder()
             .actor("test")
             .action(AuditAction::AccessKey)
-            .resource("ns:1/kid:k1")
+            .resource("org:1/kid:k1")
             .result(AuditResult::Success)
             .build();
 
@@ -299,7 +299,7 @@ mod tests {
         let event = AuditEvent::builder()
             .actor("test")
             .action(AuditAction::DeleteKey)
-            .resource("ns:1/kid:k1")
+            .resource("org:1/kid:k1")
             .result(AuditResult::Failure("not found".to_owned()))
             .build();
 
@@ -329,7 +329,7 @@ mod tests {
             let event = AuditEvent::builder()
                 .actor("test")
                 .action(action)
-                .resource("ns:1/kid:k1")
+                .resource("org:1/kid:k1")
                 .result(AuditResult::Success)
                 .build();
             logger.log(&event).await;

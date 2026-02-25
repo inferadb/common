@@ -8,7 +8,7 @@
 use std::{ops::Bound, time::Duration};
 
 use bytes::Bytes;
-use inferadb_common_storage::{HealthProbe, StorageBackend, StorageError, VaultId};
+use inferadb_common_storage::{HealthProbe, StorageBackend, StorageError, VaultSlug};
 use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig, TraceConfig};
 use inferadb_ledger_sdk::{ClientConfig, ServerSource, mock::MockLedgerServer};
 use tokio_util::sync::CancellationToken;
@@ -30,8 +30,8 @@ fn test_client_config(server: &MockLedgerServer, client_id: &str) -> ClientConfi
 async fn create_test_backend(server: &MockLedgerServer) -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
         .client(test_client_config(server, "test-client"))
-        .namespace_id(1)
-        .vault_id(VaultId::from(0))
+        .organization(1)
+        .vault(VaultSlug::from(0))
         .build()
         .expect("valid default config");
 
@@ -45,8 +45,8 @@ async fn create_backend_with_token(
 ) -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
         .client(test_client_config(server, "test-shutdown"))
-        .namespace_id(1)
-        .vault_id(VaultId::from(0))
+        .organization(1)
+        .vault(VaultSlug::from(0))
         .cancellation_token(token)
         .build()
         .expect("valid config with token");
@@ -417,7 +417,7 @@ async fn test_health_check_healthy() {
 }
 
 // ============================================================================
-// Namespace/Vault Isolation Tests
+// Organization/Vault Isolation Tests
 // ============================================================================
 
 #[tokio::test]
@@ -427,15 +427,15 @@ async fn test_vault_isolation() {
     // Create two backends with different vaults
     let config1 = LedgerBackendConfig::builder()
         .client(test_client_config(&server, "client-vault-1"))
-        .namespace_id(1)
-        .vault_id(VaultId::from(100))
+        .organization(1)
+        .vault(VaultSlug::from(100))
         .build()
         .expect("valid config");
 
     let config2 = LedgerBackendConfig::builder()
         .client(test_client_config(&server, "client-vault-2"))
-        .namespace_id(1)
-        .vault_id(VaultId::from(200))
+        .organization(1)
+        .vault(VaultSlug::from(200))
         .build()
         .expect("valid config");
 
@@ -510,7 +510,7 @@ mod signing_key_store {
 
     use chrono::{Duration, Utc};
     use inferadb_common_storage::{
-        ClientId, NamespaceId, StorageError,
+        ClientId, OrganizationSlug, StorageError,
         auth::{PublicSigningKey, PublicSigningKeyStore, SigningKeyMetrics},
     };
     use inferadb_common_storage_ledger::auth::LedgerSigningKeyStore;
@@ -548,14 +548,14 @@ mod signing_key_store {
         let store = create_signing_key_store(&server).await;
 
         let key = create_test_key("test-key-001");
-        let namespace_id = NamespaceId::from(100);
+        let organization = OrganizationSlug::from(100);
 
         // Create the key
-        store.create_key(namespace_id, &key).await.expect("create should succeed");
+        store.create_key(organization, &key).await.expect("create should succeed");
 
         // Retrieve it
         let retrieved =
-            store.get_key(namespace_id, "test-key-001").await.expect("get should succeed");
+            store.get_key(organization, "test-key-001").await.expect("get should succeed");
         assert!(retrieved.is_some());
         let retrieved = retrieved.unwrap();
         assert_eq!(retrieved.kid, "test-key-001");
@@ -568,13 +568,13 @@ mod signing_key_store {
         let store = create_signing_key_store(&server).await;
 
         let key = create_test_key("dup-key");
-        let namespace_id = NamespaceId::from(100);
+        let organization = OrganizationSlug::from(100);
 
         // Create first time
-        store.create_key(namespace_id, &key).await.expect("first create should succeed");
+        store.create_key(organization, &key).await.expect("first create should succeed");
 
         // Create again should fail with conflict
-        let result = store.create_key(namespace_id, &key).await;
+        let result = store.create_key(organization, &key).await;
         assert!(matches!(result, Err(StorageError::Conflict { .. })));
     }
 
@@ -583,8 +583,10 @@ mod signing_key_store {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
 
-        let result =
-            store.get_key(NamespaceId::from(100), "nonexistent").await.expect("get should succeed");
+        let result = store
+            .get_key(OrganizationSlug::from(100), "nonexistent")
+            .await
+            .expect("get should succeed");
         assert!(result.is_none());
     }
 
@@ -592,19 +594,19 @@ mod signing_key_store {
     async fn test_list_active_keys() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
-        let namespace_id = NamespaceId::from(100);
+        let organization = OrganizationSlug::from(100);
 
         // Create an active key
         let active_key = create_test_key("active-key");
-        store.create_key(namespace_id, &active_key).await.expect("create active");
+        store.create_key(organization, &active_key).await.expect("create active");
 
         // Create an inactive key
         let mut inactive_key = create_test_key("inactive-key");
         inactive_key.active = false;
-        store.create_key(namespace_id, &inactive_key).await.expect("create inactive");
+        store.create_key(organization, &inactive_key).await.expect("create inactive");
 
         // List should only return active keys
-        let active_keys = store.list_active_keys(namespace_id).await.expect("list should succeed");
+        let active_keys = store.list_active_keys(organization).await.expect("list should succeed");
 
         // Should have at least the active key (mock might have different behavior)
         let active_kids: Vec<_> = active_keys.iter().map(|k| k.kid.as_str()).collect();
@@ -615,20 +617,20 @@ mod signing_key_store {
     async fn test_deactivate_key() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
-        let namespace_id = NamespaceId::from(100);
+        let organization = OrganizationSlug::from(100);
 
         // Create a key
         let key = create_test_key("to-deactivate");
-        store.create_key(namespace_id, &key).await.expect("create");
+        store.create_key(organization, &key).await.expect("create");
 
         // Deactivate it
         store
-            .deactivate_key(namespace_id, "to-deactivate")
+            .deactivate_key(organization, "to-deactivate")
             .await
             .expect("deactivate should succeed");
 
         // Verify it's deactivated
-        let retrieved = store.get_key(namespace_id, "to-deactivate").await.expect("get").unwrap();
+        let retrieved = store.get_key(organization, "to-deactivate").await.expect("get").unwrap();
         assert!(!retrieved.active);
     }
 
@@ -637,7 +639,7 @@ mod signing_key_store {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
 
-        let result = store.deactivate_key(NamespaceId::from(100), "nonexistent").await;
+        let result = store.deactivate_key(OrganizationSlug::from(100), "nonexistent").await;
         assert!(matches!(result, Err(StorageError::NotFound { .. })));
     }
 
@@ -645,17 +647,17 @@ mod signing_key_store {
     async fn test_revoke_key() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
-        let namespace_id = NamespaceId::from(100);
+        let organization = OrganizationSlug::from(100);
 
         // Create a key
         let key = create_test_key("to-revoke");
-        store.create_key(namespace_id, &key).await.expect("create");
+        store.create_key(organization, &key).await.expect("create");
 
         // Revoke it
-        store.revoke_key(namespace_id, "to-revoke", Some("test reason")).await.expect("revoke");
+        store.revoke_key(organization, "to-revoke", Some("test reason")).await.expect("revoke");
 
         // Verify it's revoked
-        let retrieved = store.get_key(namespace_id, "to-revoke").await.expect("get").unwrap();
+        let retrieved = store.get_key(organization, "to-revoke").await.expect("get").unwrap();
         assert!(retrieved.revoked_at.is_some());
         assert!(!retrieved.active);
     }
@@ -664,21 +666,21 @@ mod signing_key_store {
     async fn test_revoke_key_idempotent() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
-        let namespace_id = NamespaceId::from(100);
+        let organization = OrganizationSlug::from(100);
 
         // Create and revoke a key
         let key = create_test_key("revoke-twice");
-        store.create_key(namespace_id, &key).await.expect("create");
-        store.revoke_key(namespace_id, "revoke-twice", None).await.expect("first revoke");
+        store.create_key(organization, &key).await.expect("create");
+        store.revoke_key(organization, "revoke-twice", None).await.expect("first revoke");
 
         // Get the revocation timestamp
-        let first = store.get_key(namespace_id, "revoke-twice").await.expect("get").unwrap();
+        let first = store.get_key(organization, "revoke-twice").await.expect("get").unwrap();
         let first_revoked_at = first.revoked_at.unwrap();
 
         // Revoke again - should be idempotent (keep original timestamp)
-        store.revoke_key(namespace_id, "revoke-twice", None).await.expect("second revoke");
+        store.revoke_key(organization, "revoke-twice", None).await.expect("second revoke");
 
-        let second = store.get_key(namespace_id, "revoke-twice").await.expect("get").unwrap();
+        let second = store.get_key(organization, "revoke-twice").await.expect("get").unwrap();
         assert_eq!(second.revoked_at.unwrap(), first_revoked_at);
     }
 
@@ -687,7 +689,7 @@ mod signing_key_store {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
 
-        let result = store.revoke_key(NamespaceId::from(100), "nonexistent", None).await;
+        let result = store.revoke_key(OrganizationSlug::from(100), "nonexistent", None).await;
         assert!(matches!(result, Err(StorageError::NotFound { .. })));
     }
 
@@ -695,18 +697,18 @@ mod signing_key_store {
     async fn test_activate_key() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
-        let namespace_id = NamespaceId::from(100);
+        let organization = OrganizationSlug::from(100);
 
         // Create and deactivate a key
         let key = create_test_key("to-activate");
-        store.create_key(namespace_id, &key).await.expect("create");
-        store.deactivate_key(namespace_id, "to-activate").await.expect("deactivate");
+        store.create_key(organization, &key).await.expect("create");
+        store.deactivate_key(organization, "to-activate").await.expect("deactivate");
 
         // Activate it
-        store.activate_key(namespace_id, "to-activate").await.expect("activate");
+        store.activate_key(organization, "to-activate").await.expect("activate");
 
         // Verify it's active
-        let retrieved = store.get_key(namespace_id, "to-activate").await.expect("get").unwrap();
+        let retrieved = store.get_key(organization, "to-activate").await.expect("get").unwrap();
         assert!(retrieved.active);
     }
 
@@ -714,15 +716,15 @@ mod signing_key_store {
     async fn test_activate_revoked_key_fails() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
-        let namespace_id = NamespaceId::from(100);
+        let organization = OrganizationSlug::from(100);
 
         // Create and revoke a key
         let key = create_test_key("revoked-key");
-        store.create_key(namespace_id, &key).await.expect("create");
-        store.revoke_key(namespace_id, "revoked-key", None).await.expect("revoke");
+        store.create_key(organization, &key).await.expect("create");
+        store.revoke_key(organization, "revoked-key", None).await.expect("revoke");
 
         // Trying to activate should fail
-        let result = store.activate_key(namespace_id, "revoked-key").await;
+        let result = store.activate_key(organization, "revoked-key").await;
         assert!(matches!(result, Err(StorageError::Internal { .. })));
     }
 
@@ -731,7 +733,7 @@ mod signing_key_store {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
 
-        let result = store.activate_key(NamespaceId::from(100), "nonexistent").await;
+        let result = store.activate_key(OrganizationSlug::from(100), "nonexistent").await;
         assert!(matches!(result, Err(StorageError::NotFound { .. })));
     }
 
@@ -739,17 +741,17 @@ mod signing_key_store {
     async fn test_delete_key() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
-        let namespace_id = NamespaceId::from(100);
+        let organization = OrganizationSlug::from(100);
 
         // Create a key
         let key = create_test_key("to-delete");
-        store.create_key(namespace_id, &key).await.expect("create");
+        store.create_key(organization, &key).await.expect("create");
 
         // Delete it
-        store.delete_key(namespace_id, "to-delete").await.expect("delete");
+        store.delete_key(organization, "to-delete").await.expect("delete");
 
         // Verify it's gone
-        let retrieved = store.get_key(namespace_id, "to-delete").await.expect("get");
+        let retrieved = store.get_key(organization, "to-delete").await.expect("get");
         assert!(retrieved.is_none());
     }
 
@@ -758,7 +760,7 @@ mod signing_key_store {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
 
-        let result = store.delete_key(NamespaceId::from(100), "nonexistent").await;
+        let result = store.delete_key(OrganizationSlug::from(100), "nonexistent").await;
         assert!(matches!(result, Err(StorageError::NotFound { .. })));
     }
 
@@ -780,8 +782,8 @@ mod signing_key_store {
 
         // Perform operations
         let key = create_test_key("metrics-key");
-        store.create_key(NamespaceId::from(100), &key).await.expect("create");
-        store.get_key(NamespaceId::from(100), "metrics-key").await.expect("get");
+        store.create_key(OrganizationSlug::from(100), &key).await.expect("create");
+        store.get_key(OrganizationSlug::from(100), "metrics-key").await.expect("get");
 
         // Check metrics were recorded
         let snapshot = metrics.snapshot();
@@ -806,8 +808,9 @@ mod signing_key_store {
 
         // Operations should still work
         let key = create_test_key("eventual-key");
-        store.create_key(NamespaceId::from(100), &key).await.expect("create");
-        let retrieved = store.get_key(NamespaceId::from(100), "eventual-key").await.expect("get");
+        store.create_key(OrganizationSlug::from(100), &key).await.expect("create");
+        let retrieved =
+            store.get_key(OrganizationSlug::from(100), "eventual-key").await.expect("get");
         assert!(retrieved.is_some());
     }
 
@@ -834,7 +837,7 @@ mod signing_key_store {
     async fn test_list_filters_expired_keys() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
-        let namespace_id = NamespaceId::from(100);
+        let organization = OrganizationSlug::from(100);
 
         // Create a key that's already expired
         let now = Utc::now();
@@ -847,14 +850,14 @@ mod signing_key_store {
             .valid_from(now - Duration::hours(2))
             .valid_until(now - Duration::hours(1)) // Expired 1 hour ago
             .build();
-        store.create_key(namespace_id, &expired_key).await.expect("create expired");
+        store.create_key(organization, &expired_key).await.expect("create expired");
 
         // Create a valid key
         let valid_key = create_test_key("valid-key");
-        store.create_key(namespace_id, &valid_key).await.expect("create valid");
+        store.create_key(organization, &valid_key).await.expect("create valid");
 
         // List should not include expired key
-        let active_keys = store.list_active_keys(namespace_id).await.expect("list");
+        let active_keys = store.list_active_keys(organization).await.expect("list");
         let kids: Vec<_> = active_keys.iter().map(|k| k.kid.as_str()).collect();
 
         assert!(kids.contains(&"valid-key"));
@@ -865,7 +868,7 @@ mod signing_key_store {
     async fn test_list_filters_not_yet_valid_keys() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
-        let namespace_id = NamespaceId::from(100);
+        let organization = OrganizationSlug::from(100);
 
         // Create a key that's not yet valid
         let now = Utc::now();
@@ -877,14 +880,14 @@ mod signing_key_store {
             .created_at(now)
             .valid_from(now + Duration::hours(1)) // Valid in 1 hour
             .build();
-        store.create_key(namespace_id, &future_key).await.expect("create future");
+        store.create_key(organization, &future_key).await.expect("create future");
 
         // Create a currently valid key
         let valid_key = create_test_key("now-valid-key");
-        store.create_key(namespace_id, &valid_key).await.expect("create valid");
+        store.create_key(organization, &valid_key).await.expect("create valid");
 
         // List should not include future key
-        let active_keys = store.list_active_keys(namespace_id).await.expect("list");
+        let active_keys = store.list_active_keys(organization).await.expect("list");
         let kids: Vec<_> = active_keys.iter().map(|k| k.kid.as_str()).collect();
 
         assert!(kids.contains(&"now-valid-key"));
@@ -904,17 +907,17 @@ mod signing_key_store {
         let metrics = SigningKeyMetrics::new();
         let store = LedgerSigningKeyStore::new(Arc::clone(&client)).with_metrics(metrics.clone());
 
-        let namespace_id = NamespaceId::from(100);
+        let organization = OrganizationSlug::from(100);
 
         // Write a valid key first
         let valid_key = create_test_key("valid-key");
-        store.create_key(namespace_id, &valid_key).await.expect("create valid key");
+        store.create_key(organization, &valid_key).await.expect("create valid key");
 
         // Write malformed data directly using the raw client,
         // bypassing the serialize_key path to simulate corruption
         client
             .write(
-                namespace_id.into(),
+                organization,
                 None,
                 vec![Operation::set_entity(
                     "signing-keys/corrupted-key".to_string(),
@@ -926,7 +929,7 @@ mod signing_key_store {
 
         // list_active_keys should succeed, returning only the valid key
         let active_keys = store
-            .list_active_keys(namespace_id)
+            .list_active_keys(organization)
             .await
             .expect("list should succeed despite malformed entry");
 
@@ -954,7 +957,7 @@ mod signing_key_store {
         let client = Arc::new(LedgerClient::new(config).await.expect("client"));
         let store = LedgerSigningKeyStore::new(Arc::clone(&client));
 
-        let namespace_id = NamespaceId::from(200);
+        let organization = OrganizationSlug::from(200);
 
         // Write multiple malformed entries with various corruption patterns
         let malformed_entries = vec![
@@ -965,18 +968,14 @@ mod signing_key_store {
 
         for (key, value) in malformed_entries {
             client
-                .write(
-                    namespace_id.into(),
-                    None,
-                    vec![Operation::set_entity(key.to_string(), value)],
-                )
+                .write(organization, None, vec![Operation::set_entity(key.to_string(), value)])
                 .await
                 .expect("write malformed data");
         }
 
         // Should succeed with empty list (no valid keys), no panics
         let active_keys = store
-            .list_active_keys(namespace_id)
+            .list_active_keys(organization)
             .await
             .expect("list should not panic on malformed data");
 
@@ -998,25 +997,25 @@ mod signing_key_store {
     async fn test_optimistic_locking_revoke_preserves_reason() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
-        let namespace_id = NamespaceId::from(100);
+        let organization = OrganizationSlug::from(100);
 
         let key = create_test_key("cas-revoke");
-        store.create_key(namespace_id, &key).await.expect("create");
+        store.create_key(organization, &key).await.expect("create");
 
         // First revoke with reason
         store
-            .revoke_key(namespace_id, "cas-revoke", Some("compromise"))
+            .revoke_key(organization, "cas-revoke", Some("compromise"))
             .await
             .expect("first revoke");
 
         // Second revoke (idempotent) — should succeed and preserve original reason
         store
-            .revoke_key(namespace_id, "cas-revoke", Some("different reason"))
+            .revoke_key(organization, "cas-revoke", Some("different reason"))
             .await
             .expect("idempotent revoke should succeed");
 
         let retrieved =
-            store.get_key(namespace_id, "cas-revoke").await.expect("get").expect("key exists");
+            store.get_key(organization, "cas-revoke").await.expect("get").expect("key exists");
         assert_eq!(
             retrieved.revocation_reason.as_deref(),
             Some("compromise"),
@@ -1029,15 +1028,15 @@ mod signing_key_store {
     async fn test_optimistic_locking_deactivate_succeeds() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
-        let namespace_id = NamespaceId::from(100);
+        let organization = OrganizationSlug::from(100);
 
         let key = create_test_key("cas-deactivate");
-        store.create_key(namespace_id, &key).await.expect("create");
+        store.create_key(organization, &key).await.expect("create");
 
-        store.deactivate_key(namespace_id, "cas-deactivate").await.expect("deactivate via CAS");
+        store.deactivate_key(organization, "cas-deactivate").await.expect("deactivate via CAS");
 
         let retrieved =
-            store.get_key(namespace_id, "cas-deactivate").await.expect("get").expect("key exists");
+            store.get_key(organization, "cas-deactivate").await.expect("get").expect("key exists");
         assert!(!retrieved.active, "key should be inactive after deactivation");
     }
 
@@ -1046,16 +1045,16 @@ mod signing_key_store {
     async fn test_optimistic_locking_activate_succeeds() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
-        let namespace_id = NamespaceId::from(100);
+        let organization = OrganizationSlug::from(100);
 
         let key = create_test_key("cas-activate");
-        store.create_key(namespace_id, &key).await.expect("create");
-        store.deactivate_key(namespace_id, "cas-activate").await.expect("deactivate");
+        store.create_key(organization, &key).await.expect("create");
+        store.deactivate_key(organization, "cas-activate").await.expect("deactivate");
 
-        store.activate_key(namespace_id, "cas-activate").await.expect("activate via CAS");
+        store.activate_key(organization, "cas-activate").await.expect("activate via CAS");
 
         let retrieved =
-            store.get_key(namespace_id, "cas-activate").await.expect("get").expect("key exists");
+            store.get_key(organization, "cas-activate").await.expect("get").expect("key exists");
         assert!(retrieved.active, "key should be active after activation");
     }
 
@@ -1064,14 +1063,14 @@ mod signing_key_store {
     async fn test_optimistic_locking_delete_succeeds() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
-        let namespace_id = NamespaceId::from(100);
+        let organization = OrganizationSlug::from(100);
 
         let key = create_test_key("cas-delete");
-        store.create_key(namespace_id, &key).await.expect("create");
+        store.create_key(organization, &key).await.expect("create");
 
-        store.delete_key(namespace_id, "cas-delete").await.expect("delete via CAS");
+        store.delete_key(organization, "cas-delete").await.expect("delete via CAS");
 
-        let retrieved = store.get_key(namespace_id, "cas-delete").await.expect("get");
+        let retrieved = store.get_key(organization, "cas-delete").await.expect("get");
         assert!(retrieved.is_none(), "key should be deleted");
     }
 }
@@ -1083,7 +1082,7 @@ mod signing_key_store {
 mod backend_tests {
     use std::sync::Arc;
 
-    use inferadb_common_storage::{NamespaceId, StorageBackend, VaultId};
+    use inferadb_common_storage::{OrganizationSlug, StorageBackend, VaultSlug};
     use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
     use inferadb_ledger_sdk::{
         ClientConfig, LedgerClient, ReadConsistency, ServerSource, mock::MockLedgerServer,
@@ -1102,8 +1101,8 @@ mod backend_tests {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
             .client(test_client(&server, "test-client"))
-            .namespace_id(42)
-            .vault_id(VaultId::from(100))
+            .organization(42)
+            .vault(VaultSlug::from(100))
             .build()
             .expect("valid config");
 
@@ -1111,8 +1110,8 @@ mod backend_tests {
         let debug_str = format!("{:?}", backend);
 
         assert!(debug_str.contains("LedgerBackend"));
-        assert!(debug_str.contains("namespace_id: NamespaceId(42)"));
-        assert!(debug_str.contains("vault_id: Some(VaultId(100))"));
+        assert!(debug_str.contains("organization: OrganizationSlug(42)"));
+        assert!(debug_str.contains("vault: Some(VaultSlug(100))"));
     }
 
     #[tokio::test]
@@ -1120,15 +1119,15 @@ mod backend_tests {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
             .client(test_client(&server, "test-client"))
-            .namespace_id(123)
-            .vault_id(VaultId::from(456))
+            .organization(123)
+            .vault(VaultSlug::from(456))
             .build()
             .expect("valid config");
 
         let backend = LedgerBackend::new(config).await.expect("backend");
 
-        assert_eq!(backend.namespace_id(), NamespaceId::from(123));
-        assert_eq!(backend.vault_id(), Some(VaultId::from(456)));
+        assert_eq!(backend.organization(), OrganizationSlug::from(123));
+        assert_eq!(backend.vault(), Some(VaultSlug::from(456)));
 
         // Test client accessor
         let _client = backend.client();
@@ -1151,13 +1150,13 @@ mod backend_tests {
 
         let backend = LedgerBackend::from_client(
             client.clone(),
-            NamespaceId::from(999),
-            Some(VaultId::from(888)),
+            OrganizationSlug::from(999),
+            Some(VaultSlug::from(888)),
             ReadConsistency::Eventual,
         );
 
-        assert_eq!(backend.namespace_id(), NamespaceId::from(999));
-        assert_eq!(backend.vault_id(), Some(VaultId::from(888)));
+        assert_eq!(backend.organization(), OrganizationSlug::from(999));
+        assert_eq!(backend.vault(), Some(VaultSlug::from(888)));
     }
 
     #[tokio::test]
@@ -1165,7 +1164,7 @@ mod backend_tests {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
             .client(test_client(&server, "test-client"))
-            .namespace_id(1)
+            .organization(1)
             .read_consistency(ReadConsistency::Eventual)
             .build()
             .expect("valid config");
@@ -1183,13 +1182,13 @@ mod backend_tests {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
             .client(test_client(&server, "test-client"))
-            .namespace_id(1)
+            .organization(1)
             .build()
             .expect("valid config");
 
         let backend = LedgerBackend::new(config).await.expect("backend");
 
-        assert_eq!(backend.vault_id(), None);
+        assert_eq!(backend.vault(), None);
     }
 }
 
@@ -1217,7 +1216,7 @@ mod transaction_tests {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
             .client(test_client(&server))
-            .namespace_id(1)
+            .organization(1)
             .read_consistency(ReadConsistency::Eventual)
             .build()
             .expect("valid config");
@@ -1239,7 +1238,7 @@ mod transaction_tests {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
             .client(test_client(&server))
-            .namespace_id(1)
+            .organization(1)
             .build()
             .expect("valid config");
 
@@ -1277,8 +1276,8 @@ async fn create_paginated_backend(
 ) -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
         .client(test_client_config(server, "test-pagination"))
-        .namespace_id(1)
-        .vault_id(VaultId::from(0))
+        .organization(1)
+        .vault(VaultSlug::from(0))
         .page_size(page_size)
         .max_range_results(max_range_results)
         .build()
@@ -2033,8 +2032,8 @@ async fn test_trace_enabled_backend_operations_succeed() {
 
     let config = LedgerBackendConfig::builder()
         .client(client)
-        .namespace_id(1)
-        .vault_id(VaultId::from(0))
+        .organization(1)
+        .vault(VaultSlug::from(0))
         .build()
         .expect("valid config");
 

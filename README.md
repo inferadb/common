@@ -119,16 +119,16 @@ Storage Operation
       → circuit breaker state update
 ```
 
-### ID Newtypes
+### Identifier Newtypes
 
 The workspace uses newtype wrappers for identifiers to prevent accidental mixing:
 
-| Type          | Purpose                           |
-| ------------- | --------------------------------- |
-| `NamespaceId` | Tenant/namespace identifier       |
-| `VaultId`     | Vault (key collection) identifier |
-| `ClientId`    | API client identifier             |
-| `CertId`      | Certificate identifier            |
+| Type               | Purpose                           |
+| ------------------ | --------------------------------- |
+| `OrganizationSlug` | Organization identifier (slug)    |
+| `VaultSlug`        | Vault (key collection) identifier |
+| `ClientId`         | API client identifier             |
+| `CertId`           | Certificate identifier            |
 
 ## Usage
 
@@ -186,7 +186,7 @@ let claims = verify_with_signing_key_cache(
     &expected_issuer,
 ).await?;
 
-println!("org: {}, vault: {}", claims.org_id, claims.vault_id);
+println!("org: {}, vault: {}", claims.org, claims.vault);
 ```
 
 ## Development

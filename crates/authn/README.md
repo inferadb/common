@@ -18,7 +18,7 @@ This crate provides JWT validation and signing key management with Ledger-backed
 
 ```
 JWT arrives → decode header (kid, alg)
-            → decode claims (org_id)
+            → decode claims (org)
             → validate algorithm (EdDSA only for Ledger keys)
             → fetch key from cache
               ├─ L1: local cache hit → use cached key
@@ -47,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6Im9yZy0xMjM0NSJ9...";
     let claims = verify_with_signing_key_cache(token, &cache).await?;
 
-    println!("Verified for org: {}", claims.org_id.unwrap_or_default());
+    println!("Verified for org: {}", claims.org.unwrap_or_default());
     println!("Scopes: {:?}", claims.parse_scopes());
 
     Ok(())
@@ -65,8 +65,8 @@ Per the Management API specification, JWTs should have the following structure:
   "aud": "https://api.inferadb.com/evaluate",
   "exp": 1234567890,
   "iat": 1234567800,
-  "org_id": "<organization_id>",
-  "vault_id": "<vault_id>",
+  "org": "<organization_slug>",
+  "vault": "<vault>",
   "scope": "vault:read vault:write"
 }
 ```
@@ -78,8 +78,8 @@ Per the Management API specification, JWTs should have the following structure:
 | `aud`      | Yes      | Audience (target service)          |
 | `exp`      | Yes      | Expiration time (Unix timestamp)   |
 | `iat`      | Yes      | Issued-at time (Unix timestamp)    |
-| `org_id`   | Yes      | Organization ID (Snowflake ID)     |
-| `vault_id` | No       | Vault ID for finer-grained scoping |
+| `org`   | Yes      | Organization slug (Snowflake ID)   |
+| `vault` | No       | Vault slug for finer-grained scoping |
 | `scope`    | Yes      | Space-separated permission scopes  |
 
 ## Signing Key Cache
@@ -167,7 +167,7 @@ All operations return `Result<T, AuthError>`:
 | `TokenExpired`         | Token has expired (exp claim)         |
 | `TokenNotYetValid`     | Token not yet valid (nbf claim)       |
 | `InvalidSignature`     | Signature verification failed         |
-| `MissingClaim`         | Required claim missing (org_id, etc.) |
+| `MissingClaim`         | Required claim missing (org, etc.) |
 | `UnsupportedAlgorithm` | Algorithm not in allowed list         |
 | `KeyNotFound`          | Signing key not found in Ledger       |
 | `KeyInactive`          | Signing key is soft-disabled          |

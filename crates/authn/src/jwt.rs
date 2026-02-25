@@ -13,7 +13,7 @@
 //! let claims = decode_jwt_claims(token)?;
 //!
 //! println!("Algorithm: {:?}", header.alg);
-//! println!("Organization: {:?}", claims.org_id);
+//! println!("Organization: {:?}", claims.org);
 //! # Ok(())
 //! # }
 //! ```
@@ -48,8 +48,8 @@ pub const DEFAULT_MAX_IAT_AGE: std::time::Duration = std::time::Duration::from_s
 ///   "aud": "https://api.inferadb.com/evaluate",
 ///   "exp": 1234567890,
 ///   "iat": 1234567800,
-///   "org_id": "<organization_id>",
-///   "vault_id": "<vault_id>",
+///   "org": "<organization_slug>",
+///   "vault": "<vault>",
 ///   "vault_role": "write",
 ///   "scope": "vault:read vault:write"
 /// }
@@ -81,28 +81,28 @@ pub struct JwtClaims {
     pub scope: String,
     /// Vault ID (Snowflake ID as string for multi-tenancy isolation).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vault_id: Option<String>,
+    pub vault: Option<String>,
     /// Organization ID (Snowflake ID as string).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub org_id: Option<String>,
+    pub org: Option<String>,
 }
 
 impl JwtClaims {
     /// Returns the organization ID, or an error if absent or empty.
     ///
-    /// Use this when the `org_id` claim is mandatory for the operation (e.g., JWT verification
+    /// Use this when the `org` claim is mandatory for the operation (e.g., JWT verification
     /// where the org ID is needed to look up the signing key). For optional access, use
-    /// [`org_id`](Self::org_id) instead.
+    /// [`org`](Self::org) instead.
     ///
     /// # Errors
     ///
-    /// Returns `AuthError::MissingClaim` if the `org_id` claim is missing or empty.
-    pub fn require_org_id(&self) -> Result<String, AuthError> {
-        self.org_id
+    /// Returns `AuthError::MissingClaim` if the `org` claim is missing or empty.
+    pub fn require_org(&self) -> Result<String, AuthError> {
+        self.org
             .as_ref()
             .filter(|id| !id.is_empty())
             .cloned()
-            .ok_or_else(|| AuthError::missing_claim("org_id"))
+            .ok_or_else(|| AuthError::missing_claim("org"))
     }
 
     /// Parses scopes from the space-separated `scope` claim.
@@ -113,20 +113,20 @@ impl JwtClaims {
         self.scope.split_whitespace().map(|s| s.to_string()).collect()
     }
 
-    /// Returns the `vault_id` claim value, if present.
+    /// Returns the `vault` claim value, if present.
     ///
     /// Returns `None` if the claim is absent. No error is raised for missing vault IDs.
     #[must_use = "returns the vault ID without modifying the claims"]
-    pub fn vault_id(&self) -> Option<String> {
-        self.vault_id.clone()
+    pub fn vault(&self) -> Option<String> {
+        self.vault.clone()
     }
 
-    /// Returns the `org_id` claim value if present.
+    /// Returns the `org` claim value if present.
     ///
-    /// Use [`require_org_id`](Self::require_org_id) when the org ID is mandatory.
+    /// Use [`require_org`](Self::require_org) when the org ID is mandatory.
     #[must_use = "returns the org ID without modifying the claims"]
-    pub fn org_id(&self) -> Option<String> {
-        self.org_id.clone()
+    pub fn org(&self) -> Option<String> {
+        self.org.clone()
     }
 }
 
@@ -174,7 +174,7 @@ pub fn decode_jwt_claims(token: &str) -> Result<JwtClaims, AuthError> {
 
     // Decode payload (part 1) using base64 URL-safe encoding.
     // Wrap in Zeroizing because JWT claims may contain sensitive data
-    // (org_id, client_id, scopes) that should not persist in memory.
+    // (org, client_id, scopes) that should not persist in memory.
     let payload_bytes: Zeroizing<Vec<u8>> =
         Zeroizing::new(URL_SAFE_NO_PAD.decode(parts[1]).map_err(|e| {
             AuthError::invalid_token_format(format!("Failed to decode JWT payload: {}", e))
@@ -347,7 +347,7 @@ pub fn verify_signature(
 /// let token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6Im9yZy0uLi4ifQ...";
 /// let claims = verify_with_signing_key_cache(token, &cache).await?;
 ///
-/// println!("Verified claims for organization: {}", claims.org_id.unwrap_or_default());
+/// println!("Verified claims for organization: {}", claims.org.unwrap_or_default());
 /// # Ok(())
 /// # }
 /// ```
@@ -373,19 +373,19 @@ pub async fn verify_with_signing_key_cache(
 
     // 2. Decode claims without verification to extract organization ID
     let claims = decode_jwt_claims(token)?;
-    let org_id_str = claims.require_org_id()?;
-    let org_id =
-        inferadb_common_storage::NamespaceId::from(org_id_str.parse::<i64>().map_err(|_| {
+    let org_str = claims.require_org()?;
+    let org =
+        inferadb_common_storage::OrganizationSlug::from(org_str.parse::<u64>().map_err(|_| {
             AuthError::invalid_token_format(format!(
-                "org_id '{}' is not a valid Snowflake ID",
-                org_id_str
+                "org '{}' is not a valid Snowflake ID",
+                org_str
             ))
         })?);
 
     // 3. Get decoding key from signing key cache (fetches from Ledger on cache miss)
-    let decoding_key = signing_key_cache.get_decoding_key(org_id, &kid).await.map_err(|e| {
+    let decoding_key = signing_key_cache.get_decoding_key(org, &kid).await.map_err(|e| {
         tracing::warn!(
-            org_id = %org_id,
+            org = %org,
             kid = %kid,
             error = %e,
             "Failed to get signing key from Ledger"
@@ -398,7 +398,7 @@ pub async fn verify_with_signing_key_cache(
     let verified_claims = verify_signature(token, &decoding_key, header.alg)?;
 
     tracing::debug!(
-        org_id = %org_id,
+        org = %org,
         kid = %kid,
         "JWT verified using Ledger-backed signing key"
     );
@@ -484,7 +484,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_require_org_id_present() {
+    fn test_require_org_present() {
         let claims = JwtClaims {
             iss: "https://api.inferadb.com".into(),
             sub: "client:test-client".into(),
@@ -494,15 +494,15 @@ mod tests {
             nbf: None,
             jti: None,
             scope: "vault:read vault:write".into(),
-            vault_id: Some("123456789".into()),
-            org_id: Some("987654321".into()),
+            vault: Some("123456789".into()),
+            org: Some("987654321".into()),
         };
 
-        assert_eq!(claims.require_org_id().unwrap(), "987654321");
+        assert_eq!(claims.require_org().unwrap(), "987654321");
     }
 
     #[test]
-    fn test_require_org_id_missing() {
+    fn test_require_org_missing() {
         let claims = JwtClaims {
             iss: "https://auth.example.com".into(),
             sub: "test".into(),
@@ -512,15 +512,15 @@ mod tests {
             nbf: None,
             jti: None,
             scope: "inferadb.check".into(),
-            vault_id: None,
-            org_id: None,
+            vault: None,
+            org: None,
         };
 
-        assert!(claims.require_org_id().is_err());
+        assert!(claims.require_org().is_err());
     }
 
     #[test]
-    fn test_require_org_id_empty() {
+    fn test_require_org_empty() {
         let claims = JwtClaims {
             iss: "https://api.inferadb.com".into(),
             sub: "client:test-client".into(),
@@ -530,15 +530,15 @@ mod tests {
             nbf: None,
             jti: None,
             scope: "vault:read vault:write".into(),
-            vault_id: Some("123456789".into()),
-            org_id: Some("".into()),
+            vault: Some("123456789".into()),
+            org: Some("".into()),
         };
 
-        assert!(claims.require_org_id().is_err());
+        assert!(claims.require_org().is_err());
     }
 
     #[test]
-    fn test_org_id_present() {
+    fn test_org_present() {
         let claims = JwtClaims {
             iss: "https://api.inferadb.com".into(),
             sub: "client:test-client".into(),
@@ -548,15 +548,15 @@ mod tests {
             nbf: None,
             jti: None,
             scope: "vault:read vault:write".into(),
-            vault_id: Some("123456789".into()),
-            org_id: Some("987654321".into()),
+            vault: Some("123456789".into()),
+            org: Some("987654321".into()),
         };
 
-        assert_eq!(claims.org_id(), Some("987654321".to_owned()));
+        assert_eq!(claims.org(), Some("987654321".to_owned()));
     }
 
     #[test]
-    fn test_org_id_absent() {
+    fn test_org_absent() {
         let claims = JwtClaims {
             iss: "https://auth.example.com".into(),
             sub: "test".into(),
@@ -566,11 +566,11 @@ mod tests {
             nbf: None,
             jti: None,
             scope: "inferadb.check".into(),
-            vault_id: None,
-            org_id: None,
+            vault: None,
+            org: None,
         };
 
-        assert_eq!(claims.org_id(), None);
+        assert_eq!(claims.org(), None);
     }
 
     #[test]
@@ -584,8 +584,8 @@ mod tests {
             nbf: None,
             jti: None,
             scope: "inferadb.check inferadb.write inferadb.expand".into(),
-            vault_id: None,
-            org_id: None,
+            vault: None,
+            org: None,
         };
 
         let scopes = claims.parse_scopes();
@@ -606,8 +606,8 @@ mod tests {
             nbf: None,
             jti: None,
             scope: "".into(),
-            vault_id: None,
-            org_id: None,
+            vault: None,
+            org: None,
         };
 
         let scopes = claims.parse_scopes();
@@ -641,8 +641,8 @@ mod tests {
             nbf: None,
             jti: None,
             scope: "vault:read".to_owned(),
-            vault_id: None,
-            org_id: Some("12345".to_owned()),
+            vault: None,
+            org: Some("12345".to_owned()),
         }
     }
 
@@ -753,23 +753,12 @@ mod tests {
                 proptest::option::of(1_000_000_000u64..2_000_000_000u64), // nbf
                 proptest::option::of("[a-zA-Z0-9-]{1,64}"),               // jti
                 "[a-z:_ ]{1,64}",                                         // scope
-                proptest::option::of("[0-9]{1,20}"),                      // vault_id
-                proptest::option::of("[0-9]{1,20}"),                      // org_id
+                proptest::option::of("[0-9]{1,20}"),                      // vault
+                proptest::option::of("[0-9]{1,20}"),                      // org
             )
-                .prop_map(
-                    |(iss, sub, aud, exp, iat, nbf, jti, scope, vault_id, org_id)| JwtClaims {
-                        iss,
-                        sub,
-                        aud,
-                        exp,
-                        iat,
-                        nbf,
-                        jti,
-                        scope,
-                        vault_id,
-                        org_id,
-                    },
-                )
+                .prop_map(|(iss, sub, aud, exp, iat, nbf, jti, scope, vault, org)| {
+                    JwtClaims { iss, sub, aud, exp, iat, nbf, jti, scope, vault, org }
+                })
         }
 
         proptest! {
@@ -810,11 +799,11 @@ mod tests {
                 if claims.jti.is_none() {
                     prop_assert!(parsed.get("jti").is_none());
                 }
-                if claims.vault_id.is_none() {
-                    prop_assert!(parsed.get("vault_id").is_none());
+                if claims.vault.is_none() {
+                    prop_assert!(parsed.get("vault").is_none());
                 }
-                if claims.org_id.is_none() {
-                    prop_assert!(parsed.get("org_id").is_none());
+                if claims.org.is_none() {
+                    prop_assert!(parsed.get("org").is_none());
                 }
             }
         }
@@ -1037,7 +1026,7 @@ mod ledger_verification_tests {
 
     use chrono::Utc;
     use inferadb_common_storage::{
-        NamespaceId,
+        OrganizationSlug,
         auth::{MemorySigningKeyStore, PublicSigningKeyStore},
     };
     use jsonwebtoken::{Algorithm, EncodingKey, Header};
@@ -1054,17 +1043,17 @@ mod ledger_verification_tests {
     #[tokio::test]
     async fn test_verify_with_signing_key_cache_success() {
         let (pkcs8_der, key) = create_test_signing_key("test-key-001");
-        let org_id = NamespaceId::from(12345);
+        let org = OrganizationSlug::from(12345);
 
         let store = Arc::new(MemorySigningKeyStore::new());
         let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
 
-        store.create_key(org_id, &key).await.unwrap();
+        store.create_key(org, &key).await.unwrap();
 
-        let token = create_signed_jwt(&pkcs8_der, "test-key-001", &org_id.to_string());
+        let token = create_signed_jwt(&pkcs8_der, "test-key-001", &org.to_string());
         let claims = verify_with_signing_key_cache(&token, &cache).await.unwrap();
 
-        assert_eq!(claims.org_id, Some(org_id.to_string()));
+        assert_eq!(claims.org, Some(org.to_string()));
         assert_eq!(claims.sub, "client:test-client");
     }
 
@@ -1072,12 +1061,12 @@ mod ledger_verification_tests {
     async fn test_verify_with_signing_key_cache_key_not_found() {
         let (pkcs8_der, _) = generate_test_keypair();
         let kid = "nonexistent-key";
-        let org_id = NamespaceId::from(12345);
+        let org = OrganizationSlug::from(12345);
 
         let store = Arc::new(MemorySigningKeyStore::new());
         let cache = SigningKeyCache::new(store, Duration::from_secs(300));
 
-        let token = create_signed_jwt(&pkcs8_der, kid, &org_id.to_string());
+        let token = create_signed_jwt(&pkcs8_der, kid, &org.to_string());
         let result = verify_with_signing_key_cache(&token, &cache).await;
 
         assert!(matches!(result, Err(AuthError::KeyNotFound { .. })));
@@ -1087,30 +1076,30 @@ mod ledger_verification_tests {
     async fn test_verify_with_signing_key_cache_key_revoked() {
         let (pkcs8_der, public_key_b64) = generate_test_keypair();
         let kid = "revoked-key";
-        let org_id = NamespaceId::from(12345);
+        let org = OrganizationSlug::from(12345);
 
         let store = Arc::new(MemorySigningKeyStore::new());
         let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
 
         let mut public_key = create_test_signing_key_with_pubkey(kid, &public_key_b64);
         public_key.revoked_at = Some(Utc::now());
-        store.create_key(org_id, &public_key).await.unwrap();
+        store.create_key(org, &public_key).await.unwrap();
 
-        let token = create_signed_jwt(&pkcs8_der, kid, &org_id.to_string());
+        let token = create_signed_jwt(&pkcs8_der, kid, &org.to_string());
         let result = verify_with_signing_key_cache(&token, &cache).await;
 
         assert!(matches!(result, Err(AuthError::KeyRevoked { .. })));
     }
 
     #[tokio::test]
-    async fn test_verify_with_signing_key_cache_invalid_org_id() {
+    async fn test_verify_with_signing_key_cache_invalid_org() {
         let (pkcs8_der, _) = generate_test_keypair();
         let kid = "test-key";
 
         let store = Arc::new(MemorySigningKeyStore::new());
         let cache = SigningKeyCache::new(store, Duration::from_secs(300));
 
-        // Create JWT with non-numeric org_id
+        // Create JWT with non-numeric org
         let now = Utc::now().timestamp() as u64;
         let claims = JwtClaims {
             iss: "https://api.inferadb.com".into(),
@@ -1121,8 +1110,8 @@ mod ledger_verification_tests {
             nbf: None,
             jti: None,
             scope: "vault:read".into(),
-            vault_id: None,
-            org_id: Some("not-a-number".into()),
+            vault: None,
+            org: Some("not-a-number".into()),
         };
 
         let mut header = Header::new(Algorithm::EdDSA);
@@ -1154,8 +1143,8 @@ mod ledger_verification_tests {
             nbf: None,
             jti: None,
             scope: "vault:read".into(),
-            vault_id: None,
-            org_id: Some("12345".into()),
+            vault: None,
+            org: Some("12345".into()),
         };
 
         let header = Header::new(Algorithm::EdDSA); // No kid set
@@ -1174,15 +1163,15 @@ mod ledger_verification_tests {
         use crate::{replay::InMemoryReplayDetector, testutil::create_signed_jwt_with_jti};
 
         let (pkcs8_der, key) = create_test_signing_key("rd-key-001");
-        let org_id = NamespaceId::from(12345);
+        let org = OrganizationSlug::from(12345);
 
         let store = Arc::new(MemorySigningKeyStore::new());
         let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
-        store.create_key(org_id, &key).await.unwrap();
+        store.create_key(org, &key).await.unwrap();
 
         let detector = InMemoryReplayDetector::new(1000);
         let token =
-            create_signed_jwt_with_jti(&pkcs8_der, "rd-key-001", &org_id.to_string(), "jti-001");
+            create_signed_jwt_with_jti(&pkcs8_der, "rd-key-001", &org.to_string(), "jti-001");
 
         let result = verify_with_replay_detection(&token, &cache, &detector).await;
         assert!(result.is_ok());
@@ -1193,15 +1182,15 @@ mod ledger_verification_tests {
         use crate::{replay::InMemoryReplayDetector, testutil::create_signed_jwt_with_jti};
 
         let (pkcs8_der, key) = create_test_signing_key("rd-key-002");
-        let org_id = NamespaceId::from(12345);
+        let org = OrganizationSlug::from(12345);
 
         let store = Arc::new(MemorySigningKeyStore::new());
         let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
-        store.create_key(org_id, &key).await.unwrap();
+        store.create_key(org, &key).await.unwrap();
 
         let detector = InMemoryReplayDetector::new(1000);
         let token =
-            create_signed_jwt_with_jti(&pkcs8_der, "rd-key-002", &org_id.to_string(), "jti-002");
+            create_signed_jwt_with_jti(&pkcs8_der, "rd-key-002", &org.to_string(), "jti-002");
 
         // First presentation succeeds
         verify_with_replay_detection(&token, &cache, &detector).await.unwrap();
@@ -1219,15 +1208,15 @@ mod ledger_verification_tests {
         use crate::replay::InMemoryReplayDetector;
 
         let (pkcs8_der, key) = create_test_signing_key("rd-key-003");
-        let org_id = NamespaceId::from(12345);
+        let org = OrganizationSlug::from(12345);
 
         let store = Arc::new(MemorySigningKeyStore::new());
         let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
-        store.create_key(org_id, &key).await.unwrap();
+        store.create_key(org, &key).await.unwrap();
 
         let detector = InMemoryReplayDetector::new(1000);
         // Token without jti
-        let token = create_signed_jwt(&pkcs8_der, "rd-key-003", &org_id.to_string());
+        let token = create_signed_jwt(&pkcs8_der, "rd-key-003", &org.to_string());
 
         let result = verify_with_replay_detection(&token, &cache, &detector).await;
         assert!(
@@ -1241,17 +1230,17 @@ mod ledger_verification_tests {
         use crate::{replay::InMemoryReplayDetector, testutil::create_signed_jwt_with_jti};
 
         let (pkcs8_der, key) = create_test_signing_key("rd-key-004");
-        let org_id = NamespaceId::from(12345);
+        let org = OrganizationSlug::from(12345);
 
         let store = Arc::new(MemorySigningKeyStore::new());
         let cache = SigningKeyCache::new(store.clone(), Duration::from_secs(300));
-        store.create_key(org_id, &key).await.unwrap();
+        store.create_key(org, &key).await.unwrap();
 
         let detector = InMemoryReplayDetector::new(1000);
         let token_a =
-            create_signed_jwt_with_jti(&pkcs8_der, "rd-key-004", &org_id.to_string(), "jti-a");
+            create_signed_jwt_with_jti(&pkcs8_der, "rd-key-004", &org.to_string(), "jti-a");
         let token_b =
-            create_signed_jwt_with_jti(&pkcs8_der, "rd-key-004", &org_id.to_string(), "jti-b");
+            create_signed_jwt_with_jti(&pkcs8_der, "rd-key-004", &org.to_string(), "jti-b");
 
         verify_with_replay_detection(&token_a, &cache, &detector).await.unwrap();
         let result = verify_with_replay_detection(&token_b, &cache, &detector).await;

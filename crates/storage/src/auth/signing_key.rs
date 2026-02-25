@@ -22,9 +22,8 @@ use crate::types::{CertId, ClientId};
 ///
 /// # Storage
 ///
-/// Keys are stored as Ledger entities in the organization's namespace:
-/// - **Storage key**: `signing-keys/{kid}` (in org namespace)
-/// - **Namespace mapping**: `namespace_id == org_id` (1:1 mapping)
+/// Keys are stored as Ledger entities scoped to an organization:
+/// - **Storage key**: `signing-keys/{kid}` (within the organization)
 ///
 /// # Validation Rules
 ///

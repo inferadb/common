@@ -52,7 +52,7 @@
 //! let token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6Im9yZy0uLi4ifQ...";
 //! let claims = verify_with_signing_key_cache(token, &cache).await?;
 //!
-//! println!("Verified for org: {}", claims.org_id.unwrap_or_default());
+//! println!("Verified for org: {}", claims.org.unwrap_or_default());
 //! # Ok(())
 //! # }
 //! ```

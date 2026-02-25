@@ -8,7 +8,7 @@
 //! # Architecture
 //!
 //! The Ledger stores public signing keys directly in the organization's
-//! namespace using the key format `signing-keys/{kid}`. This allows Engine
+//! organization using the key format `signing-keys/{kid}`. This allows Engine
 //! to validate tokens without requiring connectivity to Control.
 //!
 //! ```text
@@ -19,11 +19,10 @@
 //! └─────────────┘       └─────────────────────┘       └─────────────┘
 //! ```
 //!
-//! # Namespace Mapping
+//! # Organization Scoping
 //!
-//! Keys are stored at the namespace level (no vault required), where
-//! `namespace_id == org_id`. Each organization has its own isolated
-//! namespace for signing keys.
+//! Keys are stored at the organization level (no vault required). Each
+//! organization has its own isolated key space for signing keys.
 //!
 //! # Examples
 //!
@@ -33,7 +32,7 @@
 //! use chrono::Utc;
 //! use inferadb_ledger_sdk::LedgerClient;
 //! use inferadb_common_storage::auth::{PublicSigningKey, PublicSigningKeyStore};
-//! use inferadb_common_storage::NamespaceId;
+//! use inferadb_common_storage::OrganizationSlug;
 //! use inferadb_common_storage_ledger::auth::LedgerSigningKeyStore;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -48,12 +47,12 @@
 //!     .cert_id(42)
 //!     .build();
 //!
-//! // Store the key in the org's namespace
-//! let ns = NamespaceId::from(100);
-//! store.create_key(ns, &key).await?;
+//! // Store the key in the org's organization
+//! let org = OrganizationSlug::from(100);
+//! store.create_key(org, &key).await?;
 //!
 //! // Retrieve it later
-//! let retrieved = store.get_key(ns, "key-2024-001").await?;
+//! let retrieved = store.get_key(org, "key-2024-001").await?;
 //! assert!(retrieved.is_some());
 //! # Ok(())
 //! # }
@@ -64,7 +63,7 @@ use std::{collections::HashMap, future::Future, sync::Arc, time::Instant};
 use async_trait::async_trait;
 use chrono::Utc;
 use inferadb_common_storage::{
-    NamespaceId, StorageError, StorageResult,
+    OrganizationSlug, StorageError, StorageResult,
     auth::{
         PublicSigningKey, PublicSigningKeyStore, SIGNING_KEY_PREFIX, SigningKeyErrorKind,
         SigningKeyMetrics,
@@ -234,7 +233,7 @@ impl LedgerSigningKeyStore {
 
     /// Constructs the storage key for a signing key.
     ///
-    /// Keys are stored at `signing-keys/{kid}` within the namespace.
+    /// Keys are stored at `signing-keys/{kid}` within the organization.
     fn storage_key(kid: &str) -> String {
         format!("{SIGNING_KEY_PREFIX}{kid}")
     }
@@ -242,13 +241,14 @@ impl LedgerSigningKeyStore {
     /// Reads a key from Ledger with the configured consistency.
     async fn do_read(
         &self,
-        namespace_id: NamespaceId,
+        organization: OrganizationSlug,
         key: &str,
     ) -> Result<Option<Vec<u8>>, LedgerStorageError> {
-        let ns: i64 = namespace_id.into();
         let result = match self.read_consistency {
-            ReadConsistency::Linearizable => self.client.read_consistent(ns, None, key).await,
-            ReadConsistency::Eventual => self.client.read(ns, None, key).await,
+            ReadConsistency::Linearizable => {
+                self.client.read_consistent(organization, None, key).await
+            },
+            ReadConsistency::Eventual => self.client.read(organization, None, key).await,
         };
 
         result.map_err(LedgerStorageError::from)
@@ -280,7 +280,7 @@ impl LedgerSigningKeyStore {
     /// Callers should retry the full read-modify-write cycle on conflict.
     async fn cas_write(
         &self,
-        namespace_id: NamespaceId,
+        organization: OrganizationSlug,
         storage_key: String,
         new_value: Vec<u8>,
         expected_value: Vec<u8>,
@@ -290,7 +290,7 @@ impl LedgerSigningKeyStore {
         match self
             .client
             .write(
-                namespace_id.into(),
+                organization,
                 None,
                 vec![Operation::set_entity_if(
                     storage_key,
@@ -316,7 +316,7 @@ impl LedgerSigningKeyStore {
     /// fails with [`StorageError::Conflict`].
     async fn cas_delete(
         &self,
-        namespace_id: NamespaceId,
+        organization: OrganizationSlug,
         storage_key: String,
         expected_value: Vec<u8>,
     ) -> StorageResult<()> {
@@ -325,7 +325,7 @@ impl LedgerSigningKeyStore {
         match self
             .client
             .write(
-                namespace_id.into(),
+                organization,
                 None,
                 vec![
                     // Precondition: value must match what we read
@@ -387,14 +387,14 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
     #[tracing::instrument(skip(self, key), fields(kid = %key.kid))]
     async fn create_key(
         &self,
-        namespace_id: NamespaceId,
+        organization: OrganizationSlug,
         key: &PublicSigningKey,
     ) -> StorageResult<()> {
         let start = Instant::now();
         let storage_key = Self::storage_key(&key.kid);
 
         // Check if key already exists
-        if let Some(_existing) = self.do_read(namespace_id, &storage_key).await? {
+        if let Some(_existing) = self.do_read(organization, &storage_key).await? {
             self.record_error(SigningKeyErrorKind::Conflict);
             return Err(StorageError::conflict());
         }
@@ -404,8 +404,8 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         let result = self
             .client
             .write(
-                namespace_id.into(),
-                None, // No vault - keys are namespace-level
+                organization,
+                None, // No vault - keys are organization-level
                 vec![Operation::set_entity(storage_key, value)],
             )
             .await
@@ -437,13 +437,13 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
     #[tracing::instrument(skip(self))]
     async fn get_key(
         &self,
-        namespace_id: NamespaceId,
+        organization: OrganizationSlug,
         kid: &str,
     ) -> StorageResult<Option<PublicSigningKey>> {
         let start = Instant::now();
         let storage_key = Self::storage_key(kid);
 
-        let result = match self.do_read(namespace_id, &storage_key).await {
+        let result = match self.do_read(organization, &storage_key).await {
             Ok(Some(bytes)) => Self::deserialize_key(&bytes).map(Some),
             Ok(None) => Ok(None),
             Err(e) => Err(StorageError::from(e)),
@@ -460,11 +460,11 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         result
     }
 
-    /// Lists all active signing keys in the namespace.
+    /// Lists all active signing keys in the organization.
     #[tracing::instrument(skip(self))]
     async fn list_active_keys(
         &self,
-        namespace_id: NamespaceId,
+        organization: OrganizationSlug,
     ) -> StorageResult<Vec<PublicSigningKey>> {
         let start = Instant::now();
         let opts = ListEntitiesOpts {
@@ -474,12 +474,12 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
             limit: 1000, // Reasonable limit for signing keys per org
             page_token: None,
             consistency: self.read_consistency,
-            vault_id: None, // Signing keys are namespace-level, not vault-scoped
+            vault_slug: None, // Signing keys are organization-level, not vault-scoped
         };
 
         let result = self
             .client
-            .list_entities(namespace_id.into(), opts)
+            .list_entities(organization, opts)
             .await
             .map_err(|e| StorageError::from(LedgerStorageError::from(e)));
 
@@ -530,14 +530,14 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
     /// Deactivates a signing key using CAS for consistency.
     #[tracing::instrument(skip(self))]
-    async fn deactivate_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
+    async fn deactivate_key(&self, organization: OrganizationSlug, kid: &str) -> StorageResult<()> {
         let start = Instant::now();
         let storage_key = Self::storage_key(kid);
 
         let result = self
             .with_cas_retry(|| async {
                 let bytes = self
-                    .do_read(namespace_id, &storage_key)
+                    .do_read(organization, &storage_key)
                     .await?
                     .ok_or_else(|| StorageError::not_found(format!("Key not found: {kid}")))?;
 
@@ -546,7 +546,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
                 let value = Self::serialize_key(&key)?;
 
-                self.cas_write(namespace_id, storage_key.clone(), value, bytes).await
+                self.cas_write(organization, storage_key.clone(), value, bytes).await
             })
             .await;
 
@@ -565,7 +565,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
     #[tracing::instrument(skip(self))]
     async fn revoke_key(
         &self,
-        namespace_id: NamespaceId,
+        organization: OrganizationSlug,
         kid: &str,
         reason: Option<&str>,
     ) -> StorageResult<()> {
@@ -579,7 +579,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
                 let reason_ref = reason_owned.clone();
                 async move {
                     let bytes = self
-                        .do_read(namespace_id, &sk)
+                        .do_read(organization, &sk)
                         .await?
                         .ok_or_else(|| StorageError::not_found(format!("Key not found: {kid}")))?;
 
@@ -594,7 +594,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
                     let value = Self::serialize_key(&key)?;
 
-                    self.cas_write(namespace_id, sk, value, bytes).await
+                    self.cas_write(organization, sk, value, bytes).await
                 }
             })
             .await;
@@ -612,14 +612,14 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
     /// Reactivates a previously deactivated signing key using CAS.
     #[tracing::instrument(skip(self))]
-    async fn activate_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
+    async fn activate_key(&self, organization: OrganizationSlug, kid: &str) -> StorageResult<()> {
         let start = Instant::now();
         let storage_key = Self::storage_key(kid);
 
         let result = self
             .with_cas_retry(|| async {
                 let bytes = self
-                    .do_read(namespace_id, &storage_key)
+                    .do_read(organization, &storage_key)
                     .await?
                     .ok_or_else(|| StorageError::not_found(format!("Key not found: {kid}")))?;
 
@@ -636,7 +636,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
                 let value = Self::serialize_key(&key)?;
 
-                self.cas_write(namespace_id, storage_key.clone(), value, bytes).await
+                self.cas_write(organization, storage_key.clone(), value, bytes).await
             })
             .await;
 
@@ -653,18 +653,18 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
     /// Permanently removes a signing key from the Ledger using CAS.
     #[tracing::instrument(skip(self))]
-    async fn delete_key(&self, namespace_id: NamespaceId, kid: &str) -> StorageResult<()> {
+    async fn delete_key(&self, organization: OrganizationSlug, kid: &str) -> StorageResult<()> {
         let start = Instant::now();
         let storage_key = Self::storage_key(kid);
 
         let result = self
             .with_cas_retry(|| async {
                 let bytes = self
-                    .do_read(namespace_id, &storage_key)
+                    .do_read(organization, &storage_key)
                     .await?
                     .ok_or_else(|| StorageError::not_found(format!("Key not found: {kid}")))?;
 
-                self.cas_delete(namespace_id, storage_key.clone(), bytes).await
+                self.cas_delete(organization, storage_key.clone(), bytes).await
             })
             .await;
 
@@ -690,7 +690,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
     #[tracing::instrument(skip(self, keys), fields(count = keys.len()))]
     async fn create_keys(
         &self,
-        namespace_id: NamespaceId,
+        organization: OrganizationSlug,
         keys: &[PublicSigningKey],
     ) -> Vec<StorageResult<()>> {
         if keys.is_empty() {
@@ -721,7 +721,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         let batch_failed = if operations.is_empty() {
             false
         } else {
-            match self.client.write(namespace_id.into(), None, operations).await {
+            match self.client.write(organization, None, operations).await {
                 Ok(_) => false,
                 Err(e) => {
                     let storage_err = StorageError::from(LedgerStorageError::from(e));

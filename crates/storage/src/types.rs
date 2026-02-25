@@ -4,6 +4,11 @@
 //! and their consumers.
 
 use bytes::Bytes;
+// Re-export slug types from the Ledger types crate.
+// These replace the previous `OrganizationId` and `VaultId` newtypes,
+// aligning our public API with the Ledger SDK's terminology where
+// "slugs" are the external (public API) identifiers.
+pub use inferadb_ledger_types::{OrganizationSlug, VaultSlug};
 
 /// Key-value pair returned from range queries.
 ///
@@ -50,14 +55,14 @@ impl KeyValue {
     }
 }
 
-/// Macro to define a newtype wrapper around `i64` with standard trait
+/// Macro to define a newtype wrapper around `u64` with standard trait
 /// implementations.
 ///
 /// Each generated type:
-/// - Is a transparent wrapper around `i64` (zero runtime cost)
+/// - Is a transparent wrapper around `u64` (zero runtime cost)
 /// - Derives `Copy`, `Clone`, `Debug`, `PartialEq`, `Eq`, `Hash`, `PartialOrd`, `Ord`
 /// - Derives `Serialize` and `Deserialize` (transparent)
-/// - Implements `From<i64>` and `Into<i64>` for SDK interop
+/// - Implements `From<u64>` and `Into<u64>` for SDK interop
 /// - Implements `Display` that outputs the inner value
 macro_rules! define_id {
     ($(#[$meta:meta])* $name:ident) => {
@@ -67,15 +72,15 @@ macro_rules! define_id {
             serde::Serialize, serde::Deserialize,
         )]
         #[serde(transparent)]
-        pub struct $name(pub i64);
+        pub struct $name(pub u64);
 
-        impl From<i64> for $name {
-            fn from(value: i64) -> Self {
+        impl From<u64> for $name {
+            fn from(value: u64) -> Self {
                 Self(value)
             }
         }
 
-        impl From<$name> for i64 {
+        impl From<$name> for u64 {
             fn from(id: $name) -> Self {
                 id.0
             }
@@ -90,45 +95,6 @@ macro_rules! define_id {
 }
 
 define_id!(
-    /// Namespace ID for data isolation in the Ledger.
-    ///
-    /// In InferaDB, namespaces map 1:1 to organizations. All storage
-    /// operations are scoped to a namespace to ensure data isolation.
-    ///
-    /// This type wraps a raw `i64` (Snowflake ID) to prevent accidental
-    /// misuse — passing a `VaultId` where a `NamespaceId` is expected
-    /// is a compile-time error.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use inferadb_common_storage::NamespaceId;
-    ///
-    /// let ns = NamespaceId::from(42);
-    /// assert_eq!(i64::from(ns), 42);
-    /// assert_eq!(ns.to_string(), "42");
-    /// ```
-    NamespaceId
-);
-
-define_id!(
-    /// Vault ID for finer-grained data scoping within a namespace.
-    ///
-    /// Vaults represent blockchain chains within a Ledger namespace.
-    /// When present, all key-value operations are scoped to the vault.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use inferadb_common_storage::VaultId;
-    ///
-    /// let vault = VaultId::from(100);
-    /// assert_eq!(i64::from(vault), 100);
-    /// ```
-    VaultId
-);
-
-define_id!(
     /// Client ID that owns a signing key (Snowflake ID).
     ///
     /// Links a [`PublicSigningKey`](crate::auth::PublicSigningKey) to the
@@ -140,7 +106,7 @@ define_id!(
     /// use inferadb_common_storage::ClientId;
     ///
     /// let client = ClientId::from(12345);
-    /// assert_eq!(i64::from(client), 12345);
+    /// assert_eq!(u64::from(client), 12345);
     /// ```
     ClientId
 );
@@ -157,7 +123,7 @@ define_id!(
     /// use inferadb_common_storage::CertId;
     ///
     /// let cert = CertId::from(42);
-    /// assert_eq!(i64::from(cert), 42);
+    /// assert_eq!(u64::from(cert), 42);
     /// ```
     CertId
 );

@@ -15,6 +15,7 @@ repository = "https://github.com/inferadb/common"
 [workspace.dependencies]
 # Internal (uses latest from crates.io; consider using .cargo/config.toml override for local development)
 inferadb-ledger-sdk = ">=0.1.0-0"
+inferadb-ledger-types = ">=0.1.0-0"
 
 # Async
 async-trait = "0.1"

@@ -38,10 +38,10 @@ struct FuzzedJwt {
     jti: Option<String>,
     /// Scope string
     scope: String,
-    /// Organization ID (optional)
-    org_id: Option<String>,
-    /// Vault ID (optional)
-    vault_id: Option<String>,
+    /// Organization slug (optional)
+    org: Option<String>,
+    /// Vault slug (optional)
+    vault: Option<String>,
     /// Extra arbitrary bytes appended to the signature segment
     signature_bytes: Vec<u8>,
     /// Whether to include a type field in the header
@@ -125,11 +125,11 @@ fn build_jwt(input: &FuzzedJwt) -> String {
         payload.insert("jti".to_string(), serde_json::Value::String(jti.clone()));
     }
     payload.insert("scope".to_string(), serde_json::Value::String(input.scope.clone()));
-    if let Some(ref org_id) = input.org_id {
-        payload.insert("org_id".to_string(), serde_json::Value::String(org_id.clone()));
+    if let Some(ref org) = input.org {
+        payload.insert("org".to_string(), serde_json::Value::String(org.clone()));
     }
-    if let Some(ref vault_id) = input.vault_id {
-        payload.insert("vault_id".to_string(), serde_json::Value::String(vault_id.clone()));
+    if let Some(ref vault) = input.vault {
+        payload.insert("vault".to_string(), serde_json::Value::String(vault.clone()));
     }
 
     let header_json = serde_json::Value::Object(header);

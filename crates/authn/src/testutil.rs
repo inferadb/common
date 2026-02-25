@@ -65,7 +65,7 @@ pub fn generate_test_keypair() -> (Zeroizing<Vec<u8>>, String) {
 /// Signs a JWT with the given Ed25519 private key (PKCS#8 DER format).
 ///
 /// The JWT contains standard claims (`iss`, `sub`, `aud`, `exp`, `iat`,
-/// `scope`) and the given `org_id`. The `kid` header is set to the
+/// `scope`) and the given `org`. The `kid` header is set to the
 /// provided value so the verifier can look up the correct public key.
 ///
 /// The token expires in 1 hour from the current time.
@@ -74,7 +74,7 @@ pub fn generate_test_keypair() -> (Zeroizing<Vec<u8>>, String) {
 ///
 /// Panics if JWT encoding fails. This indicates an invalid `pkcs8_der`
 /// key — should not occur with keys from [`generate_test_keypair`].
-pub fn create_signed_jwt(pkcs8_der: &[u8], kid: &str, org_id: &str) -> String {
+pub fn create_signed_jwt(pkcs8_der: &[u8], kid: &str, org: &str) -> String {
     let now = Utc::now().timestamp() as u64;
     let claims = json!({
         "iss": "https://api.inferadb.com",
@@ -83,7 +83,7 @@ pub fn create_signed_jwt(pkcs8_der: &[u8], kid: &str, org_id: &str) -> String {
         "exp": now + 3600,
         "iat": now,
         "scope": "vault:read vault:write",
-        "org_id": org_id,
+        "org": org,
     });
 
     let mut header = Header::new(Algorithm::EdDSA);
@@ -104,7 +104,7 @@ pub fn create_signed_jwt(pkcs8_der: &[u8], kid: &str, org_id: &str) -> String {
 ///
 /// Panics if JWT encoding fails. This indicates an invalid `pkcs8_der`
 /// key — should not occur with keys from [`generate_test_keypair`].
-pub fn create_signed_jwt_with_jti(pkcs8_der: &[u8], kid: &str, org_id: &str, jti: &str) -> String {
+pub fn create_signed_jwt_with_jti(pkcs8_der: &[u8], kid: &str, org: &str, jti: &str) -> String {
     let now = Utc::now().timestamp() as u64;
     let claims = json!({
         "iss": "https://api.inferadb.com",
@@ -113,7 +113,7 @@ pub fn create_signed_jwt_with_jti(pkcs8_der: &[u8], kid: &str, org_id: &str, jti
         "exp": now + 3600,
         "iat": now,
         "scope": "vault:read vault:write",
-        "org_id": org_id,
+        "org": org,
         "jti": jti,
     });
 

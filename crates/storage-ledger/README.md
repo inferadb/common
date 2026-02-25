@@ -44,7 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = LedgerBackendConfig::builder()
         .with_endpoint("http://localhost:50051")
         .with_client_id("my-service")
-        .with_namespace_id(1)
+        .with_organization(1)
         .build()?;
 
     let backend = LedgerBackend::new(config).await?;
@@ -65,8 +65,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 let config = LedgerBackendConfig::builder()
     .with_endpoint("http://localhost:50051")
     .with_client_id("engine-prod-001")
-    .with_namespace_id(1)
-    .with_vault_id(100)                    // Optional
+    .with_organization(1)
+    .with_vault(100)                  // Optional
     .with_timeout(Duration::from_secs(30)) // Optional
     .with_read_consistency(ReadConsistency::Linearizable) // Optional
     .build()?;
@@ -78,8 +78,8 @@ let config = LedgerBackendConfig::builder()
 |--------|----------|---------|-------------|
 | `endpoint` | Yes | - | Ledger server URL (e.g., `http://localhost:50051`) |
 | `client_id` | Yes | - | Unique client ID for idempotency tracking |
-| `namespace_id` | Yes | - | Namespace ID for data scoping |
-| `vault_id` | No | None | Vault ID for finer-grained scoping |
+| `organization` | Yes | - | Organization slug for data scoping |
+| `vault` | No | None | Vault slug for finer-grained scoping |
 | `timeout` | No | 30s | Request timeout |
 | `connect_timeout` | No | 10s | Connection timeout |
 | `read_consistency` | No | Linearizable | Read consistency level |
@@ -111,7 +111,7 @@ For read-heavy workloads where staleness is acceptable, configure eventual consi
 let config = LedgerBackendConfig::builder()
     .with_endpoint("http://localhost:50051")
     .with_client_id("my-service")
-    .with_namespace_id(1)
+    .with_organization(1)
     .with_read_consistency(ReadConsistency::Eventual)
     .build()?;
 ```

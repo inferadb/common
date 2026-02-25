@@ -108,7 +108,7 @@ pub mod error;
 pub mod health;
 /// In-memory [`StorageBackend`] implementation for testing and development.
 pub mod memory;
-/// Operation metrics collection: counts, latencies, percentiles, and per-namespace breakdowns.
+/// Operation metrics collection: counts, latencies, percentiles, and per-organization breakdowns.
 pub mod metrics;
 /// Token-bucket rate limiter wrapper for storage backends.
 pub mod rate_limiter;
@@ -120,7 +120,7 @@ pub mod size_limits;
 pub mod testutil;
 /// Transaction trait for atomic multi-operation commits.
 pub mod transaction;
-/// Common domain types: [`KeyValue`], [`NamespaceId`], [`VaultId`], and other ID newtypes.
+/// Common domain types: [`KeyValue`], [`OrganizationSlug`], [`VaultSlug`], and other ID newtypes.
 pub mod types;
 
 // Re-export primary types at crate root for convenience
@@ -130,16 +130,16 @@ pub use error::{BoxError, ConfigError, StorageError, StorageResult, TimeoutConte
 pub use health::{HealthMetadata, HealthProbe, HealthStatus};
 pub use memory::MemoryBackend;
 pub use metrics::{
-    DEFAULT_MAX_TRACKED_NAMESPACES, LatencyPercentiles, Metrics, MetricsCollector, MetricsSnapshot,
-    NamespaceOperationSnapshot,
+    DEFAULT_MAX_TRACKED_ORGANIZATIONS, LatencyPercentiles, Metrics, MetricsCollector,
+    MetricsSnapshot, OrganizationOperationSnapshot,
 };
 pub use rate_limiter::{
-    NamespaceExtractor, RateLimitConfig, RateLimitMetricsSnapshot, RateLimitedBackend,
+    OrganizationExtractor, RateLimitConfig, RateLimitMetricsSnapshot, RateLimitedBackend,
     TokenBucketLimiter,
 };
 pub use size_limits::{
     DEFAULT_MAX_KEY_SIZE, DEFAULT_MAX_VALUE_SIZE, SizeLimits, validate_key_size, validate_sizes,
 };
 pub use transaction::Transaction;
-pub use types::{CertId, ClientId, KeyValue, NamespaceId, VaultId};
+pub use types::{CertId, ClientId, KeyValue, OrganizationSlug, VaultSlug};
 pub use zeroize::Zeroizing;

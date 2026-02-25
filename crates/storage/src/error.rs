@@ -707,7 +707,7 @@ mod tests {
         StorageError::serialization("invalid key format at path /vault/secret"),
         "Serialization error"
     )]
-    #[case::not_found(StorageError::not_found("ns-123/vault-456/secret-key"), "Key not found")]
+    #[case::not_found(StorageError::not_found("org-123/vault-456/secret-key"), "Key not found")]
     fn display_is_generic(#[case] err: StorageError, #[case] expected: &str) {
         assert_eq!(err.to_string(), expected);
     }
@@ -717,8 +717,8 @@ mod tests {
         let err = StorageError::connection("tcp://ledger.internal:9200 refused");
         assert_eq!(err.detail(), "Connection error: tcp://ledger.internal:9200 refused");
 
-        let err = StorageError::not_found("ns-123/vault-456/key");
-        assert_eq!(err.detail(), "Key not found: ns-123/vault-456/key");
+        let err = StorageError::not_found("org-123/vault-456/key");
+        assert_eq!(err.detail(), "Key not found: org-123/vault-456/key");
 
         let err = StorageError::internal("Auth error: admin denied");
         assert_eq!(err.detail(), "Internal error: Auth error: admin denied");
@@ -738,8 +738,8 @@ mod tests {
         &["/vault/secret", "invalid format"]
     )]
     #[case::not_found(
-        StorageError::not_found("ns-123/vault-456/secret-key"),
-        &["ns-123", "vault-456", "secret-key"]
+        StorageError::not_found("org-123/vault-456/secret-key"),
+        &["org-123", "vault-456", "secret-key"]
     )]
     fn display_never_contains_internal_details(
         #[case] err: StorageError,

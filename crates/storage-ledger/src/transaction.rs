@@ -11,7 +11,9 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use inferadb_common_storage::{NamespaceId, StorageError, StorageResult, Transaction, VaultId};
+use inferadb_common_storage::{
+    OrganizationSlug, StorageError, StorageResult, Transaction, VaultSlug,
+};
 use inferadb_ledger_sdk::{LedgerClient, Operation, ReadConsistency, SetCondition};
 
 use crate::{error::LedgerStorageError, keys::encode_key};
@@ -103,11 +105,11 @@ pub struct LedgerTransaction {
     /// The SDK client for reads and final commit.
     client: Arc<LedgerClient>,
 
-    /// Namespace ID.
-    namespace_id: NamespaceId,
+    /// Organization ID.
+    organization: OrganizationSlug,
 
     /// Optional vault ID.
-    vault_id: Option<VaultId>,
+    vault: Option<VaultSlug>,
 
     /// Read consistency level.
     read_consistency: ReadConsistency,
@@ -125,8 +127,8 @@ pub struct LedgerTransaction {
 impl std::fmt::Debug for LedgerTransaction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LedgerTransaction")
-            .field("namespace_id", &self.namespace_id)
-            .field("vault_id", &self.vault_id)
+            .field("organization", &self.organization)
+            .field("vault", &self.vault)
             .field("pending_sets", &self.pending_sets.len())
             .field("pending_deletes", &self.pending_deletes.len())
             .field("pending_cas", &self.pending_cas.len())
@@ -138,14 +140,14 @@ impl LedgerTransaction {
     /// Creates a new transaction.
     pub(crate) fn new(
         client: Arc<LedgerClient>,
-        namespace_id: NamespaceId,
-        vault_id: Option<VaultId>,
+        organization: OrganizationSlug,
+        vault: Option<VaultSlug>,
         read_consistency: ReadConsistency,
     ) -> Self {
         Self {
             client,
-            namespace_id,
-            vault_id,
+            organization,
+            vault,
             read_consistency,
             pending_sets: HashMap::new(),
             pending_deletes: HashSet::new(),
@@ -153,16 +155,19 @@ impl LedgerTransaction {
         }
     }
 
+    /// Returns the vault slug as `Option<u64>` for SDK calls that expect a raw value.
+    fn vault_raw(&self) -> Option<u64> {
+        self.vault.map(u64::from)
+    }
+
     /// Performs a read with the configured consistency level.
     async fn do_read(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, LedgerStorageError> {
         let result = match self.read_consistency {
             ReadConsistency::Linearizable => {
-                self.client
-                    .read_consistent(self.namespace_id.into(), self.vault_id.map(Into::into), key)
-                    .await
+                self.client.read_consistent(self.organization, self.vault_raw(), key).await
             },
             ReadConsistency::Eventual => {
-                self.client.read(self.namespace_id.into(), self.vault_id.map(Into::into), key).await
+                self.client.read(self.organization, self.vault_raw(), key).await
             },
         };
 
@@ -240,6 +245,10 @@ impl Transaction for LedgerTransaction {
             return Ok(());
         }
 
+        // Capture SDK params before consuming fields via into_iter
+        let organization = self.organization;
+        let vault = self.vault_raw();
+
         // Build the list of operations
         let mut operations = Vec::with_capacity(
             self.pending_sets.len() + self.pending_deletes.len() + self.pending_cas.len(),
@@ -269,11 +278,7 @@ impl Transaction for LedgerTransaction {
         use inferadb_ledger_sdk::SdkError;
         use tonic::Code;
 
-        match self
-            .client
-            .write(self.namespace_id.into(), self.vault_id.map(Into::into), operations)
-            .await
-        {
+        match self.client.write(organization, vault, operations).await {
             Ok(_) => Ok(()),
             Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
                 // CAS condition failed
@@ -311,7 +316,12 @@ mod tests {
             .expect("valid config");
 
         let client = Arc::new(LedgerClient::new(config).await.expect("client"));
-        LedgerTransaction::new(client, NamespaceId::from(1), Some(VaultId::from(100)), consistency)
+        LedgerTransaction::new(
+            client,
+            OrganizationSlug::from(1),
+            Some(VaultSlug::from(100)),
+            consistency,
+        )
     }
 
     #[tokio::test]
@@ -326,8 +336,8 @@ mod tests {
         let debug_str = format!("{:?}", txn);
 
         assert!(debug_str.contains("LedgerTransaction"));
-        assert!(debug_str.contains("namespace_id: NamespaceId(1)"));
-        assert!(debug_str.contains("vault_id: Some(VaultId(100))"));
+        assert!(debug_str.contains("organization: OrganizationSlug(1)"));
+        assert!(debug_str.contains("vault: Some(VaultSlug(100))"));
         assert!(debug_str.contains("pending_sets: 2"));
         assert!(debug_str.contains("pending_deletes: 1"));
     }

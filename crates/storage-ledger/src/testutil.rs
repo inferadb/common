@@ -20,7 +20,7 @@
 //! use inferadb_common_storage_ledger::testutil::{test_client_config, create_test_backend};
 //! ```
 
-use inferadb_common_storage::VaultId;
+use inferadb_common_storage::VaultSlug;
 use inferadb_ledger_sdk::{ClientConfig, ServerSource, mock::MockLedgerServer};
 
 use crate::{backend::LedgerBackend, config::LedgerBackendConfig};
@@ -49,7 +49,7 @@ pub fn test_client_config_with_id(server: &MockLedgerServer, client_id: &str) ->
 
 /// Creates a [`LedgerBackend`] connected to the given mock server.
 ///
-/// Uses namespace 1, vault 0, and default pagination settings.
+/// Uses organization 1, vault 0, and default pagination settings.
 /// For custom configuration, build the backend manually using
 /// [`test_client_config`].
 ///
@@ -59,8 +59,8 @@ pub fn test_client_config_with_id(server: &MockLedgerServer, client_id: &str) ->
 pub async fn create_test_backend(server: &MockLedgerServer) -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
         .client(test_client_config(server))
-        .namespace_id(1)
-        .vault_id(VaultId::from(0))
+        .organization(1)
+        .vault(VaultSlug::from(0))
         .build()
         .expect("valid default config");
 
@@ -81,8 +81,8 @@ pub async fn create_paginated_backend(
 ) -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
         .client(test_client_config(server))
-        .namespace_id(1)
-        .vault_id(VaultId::from(0))
+        .organization(1)
+        .vault(VaultSlug::from(0))
         .page_size(page_size)
         .max_range_results(max_range_results)
         .build()

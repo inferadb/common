@@ -34,7 +34,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use inferadb_common_storage::{HealthProbe, NamespaceId, StorageBackend, VaultId};
+use inferadb_common_storage::{HealthProbe, OrganizationSlug, StorageBackend, VaultSlug};
 use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
 use inferadb_ledger_sdk::{ClientConfig, ServerSource};
 use tokio::time::sleep;
@@ -57,16 +57,16 @@ fn ledger_endpoint() -> String {
     env::var("LEDGER_ENDPOINT").unwrap_or_else(|_| "http://localhost:50051".to_string())
 }
 
-/// Get the namespace ID from environment, or default.
-fn ledger_namespace_id() -> NamespaceId {
-    NamespaceId::from(
-        env::var("LEDGER_NAMESPACE_ID").ok().and_then(|s| s.parse().ok()).unwrap_or(1),
+/// Get the organization ID from environment, or default.
+fn ledger_organization() -> OrganizationSlug {
+    OrganizationSlug::from(
+        env::var("LEDGER_ORGANIZATION_ID").ok().and_then(|s| s.parse().ok()).unwrap_or(1),
     )
 }
 
 /// Get a unique vault ID for test isolation.
-fn unique_vault_id() -> VaultId {
-    VaultId::from(VAULT_COUNTER.fetch_add(1, Ordering::SeqCst) as i64)
+fn unique_vault_slug() -> VaultSlug {
+    VaultSlug::from(VAULT_COUNTER.fetch_add(1, Ordering::SeqCst))
 }
 
 /// Creates a ClientConfig for testing.
@@ -81,9 +81,9 @@ fn test_client_config(client_id: &str) -> ClientConfig {
 /// Creates a LedgerBackend for testing with a unique vault.
 async fn create_test_backend() -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
-        .client(test_client_config(&format!("test-client-{}", unique_vault_id())))
-        .namespace_id(ledger_namespace_id())
-        .vault_id(unique_vault_id())
+        .client(test_client_config(&format!("test-client-{}", unique_vault_slug())))
+        .organization(ledger_organization())
+        .vault(unique_vault_slug())
         .build()
         .expect("valid config");
 
@@ -91,11 +91,11 @@ async fn create_test_backend() -> LedgerBackend {
 }
 
 /// Creates a LedgerBackend with a specific vault ID (for isolation tests).
-async fn create_backend_with_vault(vault_id: VaultId) -> LedgerBackend {
+async fn create_backend_with_vault(vault: VaultSlug) -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
-        .client(test_client_config(&format!("test-client-vault-{}", vault_id)))
-        .namespace_id(ledger_namespace_id())
-        .vault_id(vault_id)
+        .client(test_client_config(&format!("test-client-vault-{}", vault)))
+        .organization(ledger_organization())
+        .vault(vault)
         .build()
         .expect("valid config");
 
@@ -345,6 +345,108 @@ async fn test_real_ledger_ttl() {
     assert_eq!(result, None, "key should have expired");
 }
 
+/// Verifies that `set_with_ttl` computes the correct `expires_at` timestamp on the
+/// underlying Ledger entity, using `list_entities` to inspect the raw metadata.
+#[tokio::test]
+async fn test_real_ledger_ttl_sets_correct_expires_at() {
+    if !should_run() {
+        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
+        return;
+    }
+
+    let backend = create_test_backend().await;
+    let ttl = Duration::from_secs(60);
+
+    let before =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+    backend
+        .set_with_ttl(b"ttl-verify".to_vec(), b"value".to_vec(), ttl)
+        .await
+        .expect("set_with_ttl should succeed");
+
+    let after =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+    // Inspect the stored entity's expires_at via the raw SDK client.
+    let hex_key = hex::encode(b"ttl-verify");
+    let organization = backend.organization();
+    let vault = backend.vault().map(u64::from);
+    let opts = inferadb_ledger_sdk::ListEntitiesOpts {
+        key_prefix: hex_key,
+        include_expired: false,
+        vault_slug: vault,
+        ..Default::default()
+    };
+
+    let result = backend.client().list_entities(organization, opts).await.expect("list_entities");
+    assert_eq!(result.items.len(), 1, "should find exactly one entity");
+
+    let entity = &result.items[0];
+    let expires_at = entity.expires_at.expect("entity should have expires_at set");
+
+    assert!(
+        expires_at >= before + ttl.as_secs(),
+        "expires_at ({expires_at}) should be >= {}",
+        before + ttl.as_secs(),
+    );
+    assert!(
+        expires_at <= after + ttl.as_secs(),
+        "expires_at ({expires_at}) should be <= {}",
+        after + ttl.as_secs(),
+    );
+}
+
+/// Verifies that an expired-but-not-yet-GC'd entity is still visible via
+/// `list_entities` with `include_expired: true`. Ledger's `TtlGarbageCollector`
+/// runs every 60 seconds, so a 2-second TTL followed by a 3-second sleep
+/// leaves the entity expired but physically present.
+#[tokio::test]
+async fn test_real_ledger_ttl_visible_with_include_expired() {
+    if !should_run() {
+        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
+        return;
+    }
+
+    let backend = create_test_backend().await;
+
+    backend
+        .set_with_ttl(b"ttl-include".to_vec(), b"ghost_value".to_vec(), Duration::from_secs(2))
+        .await
+        .expect("set_with_ttl should succeed");
+
+    // Confirm key exists before expiry.
+    let value = backend.get(b"ttl-include").await.expect("get should succeed");
+    assert_eq!(value, Some(Bytes::from("ghost_value")));
+
+    // Wait for expiry.
+    sleep(Duration::from_secs(3)).await;
+
+    // Standard read should return None (read-time filtering).
+    let value = backend.get(b"ttl-include").await.expect("get should succeed");
+    assert_eq!(value, None, "expired key should be invisible to normal reads");
+
+    // list_entities with include_expired=true should still see it.
+    let hex_key = hex::encode(b"ttl-include");
+    let organization = backend.organization();
+    let vault = backend.vault().map(u64::from);
+    let opts = inferadb_ledger_sdk::ListEntitiesOpts {
+        key_prefix: hex_key,
+        include_expired: true,
+        vault_slug: vault,
+        ..Default::default()
+    };
+
+    let result = backend.client().list_entities(organization, opts).await.expect("list_entities");
+
+    assert!(
+        !result.items.is_empty(),
+        "expired entity should still be visible with include_expired=true \
+         (GC cycle is 60s, we waited only 3s)",
+    );
+    assert_eq!(result.items[0].value, b"ghost_value");
+}
+
 // ============================================================================
 // Transaction Tests
 // ============================================================================
@@ -451,8 +553,8 @@ async fn test_real_ledger_vault_isolation() {
         return;
     }
 
-    let vault_a = unique_vault_id();
-    let vault_b = unique_vault_id();
+    let vault_a = unique_vault_slug();
+    let vault_b = unique_vault_slug();
 
     let backend_a = create_backend_with_vault(vault_a).await;
     let backend_b = create_backend_with_vault(vault_b).await;
@@ -510,7 +612,7 @@ async fn test_real_ledger_concurrent_writes_same_key() {
         return;
     }
 
-    let base_vault = unique_vault_id();
+    let base_vault = unique_vault_slug();
 
     // Multiple writers to the same vault/key
     let mut handles = Vec::new();
@@ -649,7 +751,7 @@ async fn test_real_ledger_concurrent_revoke_conflict() {
     let config = test_client_config("conflict-test");
     let client = Arc::new(LedgerClient::new(config).await.expect("client"));
 
-    let namespace_id = ledger_namespace_id();
+    let organization = ledger_organization();
     let now = Utc::now();
 
     // Create a unique key for this test run
@@ -664,7 +766,7 @@ async fn test_real_ledger_concurrent_revoke_conflict() {
         .build();
 
     let setup_store = LedgerSigningKeyStore::new(Arc::clone(&client));
-    setup_store.create_key(namespace_id, &key).await.expect("create");
+    setup_store.create_key(organization, &key).await.expect("create");
 
     // Launch two concurrent revocations from independent store instances
     let store_a = LedgerSigningKeyStore::new(Arc::clone(&client));
@@ -673,13 +775,13 @@ async fn test_real_ledger_concurrent_revoke_conflict() {
     let kid_a = kid.clone();
     let handle_a =
         tokio::spawn(
-            async move { store_a.revoke_key(namespace_id, &kid_a, Some("reason A")).await },
+            async move { store_a.revoke_key(organization, &kid_a, Some("reason A")).await },
         );
 
     let kid_b = kid;
     let handle_b =
         tokio::spawn(
-            async move { store_b.revoke_key(namespace_id, &kid_b, Some("reason B")).await },
+            async move { store_b.revoke_key(organization, &kid_b, Some("reason B")).await },
         );
 
     let result_a = handle_a.await.expect("join a");
