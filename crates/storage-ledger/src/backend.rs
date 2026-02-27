@@ -277,11 +277,6 @@ impl LedgerBackend {
         self.max_range_results
     }
 
-    /// Returns the vault slug as `Option<u64>` for SDK calls that expect a raw value.
-    fn vault_raw(&self) -> Option<u64> {
-        self.vault.map(u64::from)
-    }
-
     /// Returns `Ok(())` if no limits are configured or sizes are within bounds.
     ///
     /// Returns [`StorageError::SizeLimitExceeded`] if limits are exceeded.
@@ -380,11 +375,9 @@ impl LedgerBackend {
     async fn do_read(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, LedgerStorageError> {
         let result = match self.read_consistency {
             ReadConsistency::Linearizable => {
-                self.client.read_consistent(self.organization, self.vault_raw(), key).await
+                self.client.read_consistent(self.organization, self.vault, key).await
             },
-            ReadConsistency::Eventual => {
-                self.client.read(self.organization, self.vault_raw(), key).await
-            },
+            ReadConsistency::Eventual => self.client.read(self.organization, self.vault, key).await,
         };
 
         result.map_err(LedgerStorageError::from)
@@ -470,7 +463,7 @@ impl StorageBackend for LedgerBackend {
                 self.client
                     .write(
                         self.organization,
-                        self.vault_raw(),
+                        self.vault,
                         vec![Operation::set_entity(encoded_key.clone(), value.clone())],
                     )
                     .await
@@ -522,7 +515,7 @@ impl StorageBackend for LedgerBackend {
                     .client
                     .write(
                         self.organization,
-                        self.vault_raw(),
+                        self.vault,
                         vec![Operation::set_entity_if(
                             encoded_key.clone(),
                             new_value.clone(),
@@ -565,7 +558,7 @@ impl StorageBackend for LedgerBackend {
                 self.client
                     .write(
                         self.organization,
-                        self.vault_raw(),
+                        self.vault,
                         vec![Operation::delete_entity(encoded_key.clone())],
                     )
                     .await
@@ -642,7 +635,7 @@ impl StorageBackend for LedgerBackend {
                         limit: self.page_size,
                         page_token: current_page_token.clone(),
                         consistency: self.read_consistency,
-                        vault_slug: self.vault_raw(),
+                        vault: self.vault,
                     };
 
                     self.client
@@ -751,7 +744,7 @@ impl StorageBackend for LedgerBackend {
             "clear_range",
             || async {
                 self.client
-                    .write(self.organization, self.vault_raw(), operations.clone())
+                    .write(self.organization, self.vault, operations.clone())
                     .await
                     .map(|_| ())
                     .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
@@ -795,7 +788,7 @@ impl StorageBackend for LedgerBackend {
                 self.client
                     .write(
                         self.organization,
-                        self.vault_raw(),
+                        self.vault,
                         vec![Operation::set_entity_with_expiry(
                             encoded_key.clone(),
                             value.clone(),

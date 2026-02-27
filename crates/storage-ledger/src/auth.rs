@@ -474,7 +474,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
             limit: 1000, // Reasonable limit for signing keys per org
             page_token: None,
             consistency: self.read_consistency,
-            vault_slug: None, // Signing keys are organization-level, not vault-scoped
+            vault: None, // Signing keys are organization-level, not vault-scoped
         };
 
         let result = self

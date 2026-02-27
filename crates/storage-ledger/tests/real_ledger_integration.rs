@@ -371,11 +371,11 @@ async fn test_real_ledger_ttl_sets_correct_expires_at() {
     // Inspect the stored entity's expires_at via the raw SDK client.
     let hex_key = hex::encode(b"ttl-verify");
     let organization = backend.organization();
-    let vault = backend.vault().map(u64::from);
+    let vault = backend.vault();
     let opts = inferadb_ledger_sdk::ListEntitiesOpts {
         key_prefix: hex_key,
         include_expired: false,
-        vault_slug: vault,
+        vault,
         ..Default::default()
     };
 
@@ -429,11 +429,11 @@ async fn test_real_ledger_ttl_visible_with_include_expired() {
     // list_entities with include_expired=true should still see it.
     let hex_key = hex::encode(b"ttl-include");
     let organization = backend.organization();
-    let vault = backend.vault().map(u64::from);
+    let vault = backend.vault();
     let opts = inferadb_ledger_sdk::ListEntitiesOpts {
         key_prefix: hex_key,
         include_expired: true,
-        vault_slug: vault,
+        vault,
         ..Default::default()
     };
 

@@ -155,20 +155,13 @@ impl LedgerTransaction {
         }
     }
 
-    /// Returns the vault slug as `Option<u64>` for SDK calls that expect a raw value.
-    fn vault_raw(&self) -> Option<u64> {
-        self.vault.map(u64::from)
-    }
-
     /// Performs a read with the configured consistency level.
     async fn do_read(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, LedgerStorageError> {
         let result = match self.read_consistency {
             ReadConsistency::Linearizable => {
-                self.client.read_consistent(self.organization, self.vault_raw(), key).await
+                self.client.read_consistent(self.organization, self.vault, key).await
             },
-            ReadConsistency::Eventual => {
-                self.client.read(self.organization, self.vault_raw(), key).await
-            },
+            ReadConsistency::Eventual => self.client.read(self.organization, self.vault, key).await,
         };
 
         result.map_err(LedgerStorageError::from)
@@ -247,7 +240,7 @@ impl Transaction for LedgerTransaction {
 
         // Capture SDK params before consuming fields via into_iter
         let organization = self.organization;
-        let vault = self.vault_raw();
+        let vault = self.vault;
 
         // Build the list of operations
         let mut operations = Vec::with_capacity(
