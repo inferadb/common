@@ -379,6 +379,37 @@ impl StorageBackend for MemoryBackend {
         Ok(())
     }
 
+    #[tracing::instrument(skip(self, key, expected, new_value), fields(key_len = key.len(), ttl_ms = ttl.as_millis() as u64))]
+    async fn compare_and_set_with_ttl(
+        &self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        new_value: Vec<u8>,
+        ttl: Duration,
+    ) -> StorageResult<()> {
+        self.check_sizes(key, &new_value)?;
+        let mut data = self.data.write();
+
+        let current = if self.is_expired(key) { None } else { data.get(key).cloned() };
+
+        let matches = match (expected, &current) {
+            (None, None) => true,
+            (Some(exp), Some(cur)) => exp == &cur[..],
+            _ => false,
+        };
+
+        if !matches {
+            return Err(StorageError::conflict());
+        }
+
+        data.insert(key.to_vec(), Bytes::from(new_value));
+
+        let mut ttl_guard = self.ttl_data.write();
+        ttl_guard.insert(key.to_vec(), Instant::now() + ttl);
+
+        Ok(())
+    }
+
     #[tracing::instrument(skip(self))]
     async fn transaction(&self) -> StorageResult<Box<dyn Transaction>> {
         Ok(Box::new(MemoryTransaction::new(self.clone())))
@@ -423,6 +454,7 @@ struct CasOperation {
     key: Vec<u8>,
     expected: Option<Vec<u8>>,
     new_value: Vec<u8>,
+    ttl: Option<Duration>,
 }
 
 /// In-memory transaction implementation.
@@ -445,12 +477,18 @@ struct CasOperation {
 struct MemoryTransaction {
     backend: MemoryBackend,
     pending_writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+    pending_ttls: BTreeMap<Vec<u8>, Duration>,
     pending_cas: Vec<CasOperation>,
 }
 
 impl MemoryTransaction {
     fn new(backend: MemoryBackend) -> Self {
-        Self { backend, pending_writes: BTreeMap::new(), pending_cas: Vec::new() }
+        Self {
+            backend,
+            pending_writes: BTreeMap::new(),
+            pending_ttls: BTreeMap::new(),
+            pending_cas: Vec::new(),
+        }
     }
 }
 
@@ -466,10 +504,12 @@ impl Transaction for MemoryTransaction {
     }
 
     fn set(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        self.pending_ttls.remove(&key);
         self.pending_writes.insert(key, Some(value));
     }
 
     fn delete(&mut self, key: Vec<u8>) {
+        self.pending_ttls.remove(&key);
         self.pending_writes.insert(key, None);
     }
 
@@ -481,7 +521,24 @@ impl Transaction for MemoryTransaction {
     ) -> StorageResult<()> {
         self.backend.check_sizes(&key, &new_value)?;
         // Buffer the CAS operation - it will be verified at commit time
-        self.pending_cas.push(CasOperation { key, expected, new_value });
+        self.pending_cas.push(CasOperation { key, expected, new_value, ttl: None });
+        Ok(())
+    }
+
+    fn set_with_ttl(&mut self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) {
+        self.pending_ttls.insert(key.clone(), ttl);
+        self.pending_writes.insert(key, Some(value));
+    }
+
+    fn compare_and_set_with_ttl(
+        &mut self,
+        key: Vec<u8>,
+        expected: Option<Vec<u8>>,
+        new_value: Vec<u8>,
+        ttl: Duration,
+    ) -> StorageResult<()> {
+        self.backend.check_sizes(&key, &new_value)?;
+        self.pending_cas.push(CasOperation { key, expected, new_value, ttl: Some(ttl) });
         Ok(())
     }
 
@@ -524,7 +581,14 @@ impl Transaction for MemoryTransaction {
         // Apply all CAS writes
         for cas in self.pending_cas {
             data.insert(cas.key.clone(), Bytes::from(cas.new_value));
-            ttl_guard.remove(&cas.key);
+            match cas.ttl {
+                Some(ttl) => {
+                    ttl_guard.insert(cas.key, Instant::now() + ttl);
+                },
+                None => {
+                    ttl_guard.remove(&cas.key);
+                },
+            }
         }
 
         // Apply all pending writes atomically
@@ -532,7 +596,11 @@ impl Transaction for MemoryTransaction {
             match value {
                 Some(v) => {
                     data.insert(key.clone(), Bytes::from(v));
-                    ttl_guard.remove(&key);
+                    if let Some(ttl) = self.pending_ttls.get(&key) {
+                        ttl_guard.insert(key, Instant::now() + *ttl);
+                    } else {
+                        ttl_guard.remove(&key);
+                    }
                 },
                 None => {
                     data.remove(&key);
@@ -1119,6 +1187,98 @@ mod tests {
         // Neither write should be visible
         let val = backend.get(b"good_key").await.unwrap();
         assert!(val.is_none());
+    }
+
+    // ─── compare_and_set_with_ttl (backend-level) ─────────────────────
+
+    #[tokio::test]
+    async fn test_compare_and_set_with_ttl() {
+        let backend = MemoryBackend::new();
+        backend.set(b"casttl".to_vec(), b"v1".to_vec()).await.unwrap();
+
+        backend
+            .compare_and_set_with_ttl(
+                b"casttl",
+                Some(b"v1"),
+                b"v2".to_vec(),
+                Duration::from_millis(50),
+            )
+            .await
+            .unwrap();
+
+        let val = backend.get(b"casttl").await.unwrap();
+        assert_eq!(val, Some(Bytes::from("v2")));
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let val = backend.get(b"casttl").await.unwrap();
+        assert_eq!(val, None);
+    }
+
+    // ─── Transaction set_with_ttl ───────────────────────────────────
+
+    #[tokio::test]
+    async fn test_transaction_set_with_ttl() {
+        let backend = MemoryBackend::new();
+        let mut txn = backend.transaction().await.unwrap();
+        txn.set_with_ttl(b"txttl".to_vec(), b"val".to_vec(), Duration::from_millis(50));
+        txn.commit().await.unwrap();
+
+        let val = backend.get(b"txttl").await.unwrap();
+        assert_eq!(val, Some(Bytes::from("val")));
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let val = backend.get(b"txttl").await.unwrap();
+        assert_eq!(val, None);
+    }
+
+    #[tokio::test]
+    async fn test_transaction_set_with_ttl_read_your_writes() {
+        let backend = MemoryBackend::new();
+        let mut txn = backend.transaction().await.unwrap();
+        txn.set_with_ttl(b"txttl:ryw".to_vec(), b"buffered".to_vec(), Duration::from_secs(60));
+
+        let val = txn.get(b"txttl:ryw").await.unwrap();
+        assert_eq!(val, Some(Bytes::from("buffered")));
+    }
+
+    // ─── Transaction compare_and_set_with_ttl ───────────────────────
+
+    #[tokio::test]
+    async fn test_transaction_compare_and_set_with_ttl() {
+        let backend = MemoryBackend::new();
+        backend.set(b"txcasttl".to_vec(), b"v1".to_vec()).await.unwrap();
+
+        let mut txn = backend.transaction().await.unwrap();
+        txn.compare_and_set_with_ttl(
+            b"txcasttl".to_vec(),
+            Some(b"v1".to_vec()),
+            b"v2".to_vec(),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        txn.commit().await.unwrap();
+
+        let val = backend.get(b"txcasttl").await.unwrap();
+        assert_eq!(val, Some(Bytes::from("v2")));
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let val = backend.get(b"txcasttl").await.unwrap();
+        assert_eq!(val, None);
+    }
+
+    #[tokio::test]
+    async fn test_transaction_set_with_ttl_overwrite_clears_ttl() {
+        let backend = MemoryBackend::new();
+        let mut txn = backend.transaction().await.unwrap();
+        // First write with TTL, then overwrite with plain set (no TTL)
+        txn.set_with_ttl(b"txclr".to_vec(), b"ephemeral".to_vec(), Duration::from_millis(50));
+        txn.set(b"txclr".to_vec(), b"permanent".to_vec());
+        txn.commit().await.unwrap();
+
+        // Should survive past the original TTL because the plain set cleared it
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let val = backend.get(b"txclr").await.unwrap();
+        assert_eq!(val, Some(Bytes::from("permanent")));
     }
 
     mod proptests {

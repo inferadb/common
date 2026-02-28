@@ -371,6 +371,8 @@ pub enum Operation {
     SetWithTtl,
     /// [`StorageBackend::compare_and_set`]
     CompareAndSet,
+    /// [`StorageBackend::compare_and_set_with_ttl`]
+    CompareAndSetWithTtl,
     /// [`StorageBackend::delete`]
     Delete,
     /// [`StorageBackend::get_range`]
@@ -590,6 +592,17 @@ impl<B: StorageBackend> StorageBackend for FailingBackend<B> {
     ) -> StorageResult<()> {
         self.check_failure(Operation::CompareAndSet)?;
         self.inner.compare_and_set(key, expected, new_value).await
+    }
+
+    async fn compare_and_set_with_ttl(
+        &self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        new_value: Vec<u8>,
+        ttl: Duration,
+    ) -> StorageResult<()> {
+        self.check_failure(Operation::CompareAndSetWithTtl)?;
+        self.inner.compare_and_set_with_ttl(key, expected, new_value, ttl).await
     }
 
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {

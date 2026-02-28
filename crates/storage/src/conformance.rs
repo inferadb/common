@@ -309,6 +309,72 @@ pub async fn tx_cas_conflict_rejects_commit<B: StorageBackend>(backend: &B) {
 }
 
 // ============================================================================
+// Transaction TTL — set_with_ttl and compare_and_set_with_ttl in transactions (3 tests)
+// ============================================================================
+
+/// `set_with_ttl` in a transaction applies the TTL on commit, and the key
+/// expires after the TTL elapses.
+pub async fn tx_set_with_ttl_applies_on_commit<B: StorageBackend>(backend: &B) {
+    let mut tx = backend.transaction().await.expect("transaction");
+    tx.set_with_ttl(
+        b"txtl:expire".to_vec(),
+        b"ephemeral".to_vec(),
+        std::time::Duration::from_millis(50),
+    );
+    tx.commit().await.expect("commit");
+
+    // Immediately after commit the key should be readable
+    let val = backend.get(b"txtl:expire").await.expect("get");
+    assert_eq!(val, Some(Bytes::from("ephemeral")));
+
+    // After sleeping past the TTL the key should be gone
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let val = backend.get(b"txtl:expire").await.expect("get after ttl");
+    assert_eq!(val, None);
+}
+
+/// `set_with_ttl` in a transaction supports read-your-writes: a `get` in the
+/// same transaction returns the buffered value.
+pub async fn tx_set_with_ttl_read_your_writes<B: StorageBackend>(backend: &B) {
+    let mut tx = backend.transaction().await.expect("transaction");
+    tx.set_with_ttl(b"txtl:ryw".to_vec(), b"buffered".to_vec(), std::time::Duration::from_secs(60));
+
+    let val = tx.get(b"txtl:ryw").await.expect("get");
+    assert_eq!(val, Some(Bytes::from("buffered")));
+
+    // Drop without commit — the key should not be visible
+    drop(tx);
+    let val = backend.get(b"txtl:ryw").await.expect("get after drop");
+    assert_eq!(val, None);
+}
+
+/// `compare_and_set_with_ttl` in a transaction applies both the CAS
+/// precondition and the TTL on commit.
+pub async fn tx_compare_and_set_with_ttl<B: StorageBackend>(backend: &B) {
+    // Insert a key so we can CAS against it
+    backend.set(b"txtl:cas".to_vec(), b"v1".to_vec()).await.expect("set");
+
+    let mut tx = backend.transaction().await.expect("transaction");
+    tx.compare_and_set_with_ttl(
+        b"txtl:cas".to_vec(),
+        Some(b"v1".to_vec()),
+        b"v2".to_vec(),
+        std::time::Duration::from_millis(50),
+    )
+    .expect("buffer CAS with TTL");
+    tx.commit().await.expect("commit");
+
+    // Immediately after commit the key should hold the new value
+    let val = backend.get(b"txtl:cas").await.expect("get");
+    assert_eq!(val, Some(Bytes::from("v2")));
+
+    // After sleeping past the TTL the key should be gone
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let val = backend.get(b"txtl:cas").await.expect("get after ttl");
+    assert_eq!(val, None);
+}
+
+// ============================================================================
 // CAS — compare_and_set precondition checks (4 tests)
 // ============================================================================
 
@@ -516,6 +582,11 @@ pub async fn run_all<B: StorageBackend + 'static>(backend: Arc<B>) {
     tx_drop_without_commit_is_noop(backend.as_ref()).await;
     tx_delete_then_get_returns_none(backend.as_ref()).await;
     tx_cas_conflict_rejects_commit(backend.as_ref()).await;
+
+    // Transaction TTL
+    tx_set_with_ttl_applies_on_commit(backend.as_ref()).await;
+    tx_set_with_ttl_read_your_writes(backend.as_ref()).await;
+    tx_compare_and_set_with_ttl(backend.as_ref()).await;
 
     // CAS
     cas_insert_if_absent(backend.as_ref()).await;

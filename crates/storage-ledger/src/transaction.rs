@@ -7,6 +7,7 @@
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -27,6 +28,8 @@ struct CasOperation {
     expected: Option<Vec<u8>>,
     /// New value to set if condition is met.
     new_value: Vec<u8>,
+    /// Optional TTL for the new value.
+    ttl: Option<Duration>,
 }
 
 /// Transaction for atomic operations on the Ledger backend.
@@ -120,6 +123,9 @@ pub struct LedgerTransaction {
     /// Pending delete operations: hex-encoded keys.
     pending_deletes: HashSet<String>,
 
+    /// Pending TTLs for set operations: hex-encoded key -> duration.
+    pending_ttls: HashMap<String, Duration>,
+
     /// Pending compare-and-set operations.
     pending_cas: Vec<CasOperation>,
 }
@@ -151,6 +157,7 @@ impl LedgerTransaction {
             read_consistency,
             pending_sets: HashMap::new(),
             pending_deletes: HashSet::new(),
+            pending_ttls: HashMap::new(),
             pending_cas: Vec::new(),
         }
     }
@@ -199,6 +206,9 @@ impl Transaction for LedgerTransaction {
         // Remove from pending deletes if it was marked for deletion
         self.pending_deletes.remove(&encoded_key);
 
+        // Clear any pending TTL — a plain set produces a non-expiring key
+        self.pending_ttls.remove(&encoded_key);
+
         // Add to pending sets
         self.pending_sets.insert(encoded_key, value);
     }
@@ -206,6 +216,9 @@ impl Transaction for LedgerTransaction {
     /// Buffers a delete operation for atomic commit.
     fn delete(&mut self, key: Vec<u8>) {
         let encoded_key = encode_key(&key);
+
+        // Clear any pending TTL
+        self.pending_ttls.remove(&encoded_key);
 
         // Remove from pending sets if it was set in this transaction
         self.pending_sets.remove(&encoded_key);
@@ -224,7 +237,40 @@ impl Transaction for LedgerTransaction {
         let encoded_key = encode_key(&key);
 
         // Buffer the CAS operation - it will be applied at commit time
-        self.pending_cas.push(CasOperation { key: encoded_key, expected, new_value });
+        self.pending_cas.push(CasOperation { key: encoded_key, expected, new_value, ttl: None });
+        Ok(())
+    }
+
+    /// Buffers a set operation with TTL for atomic commit.
+    fn set_with_ttl(&mut self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) {
+        let encoded_key = encode_key(&key);
+
+        // Remove from pending deletes if it was marked for deletion
+        self.pending_deletes.remove(&encoded_key);
+
+        // Track the TTL for this key
+        self.pending_ttls.insert(encoded_key.clone(), ttl);
+
+        // Add to pending sets
+        self.pending_sets.insert(encoded_key, value);
+    }
+
+    /// Buffers a compare-and-set operation with TTL for atomic commit.
+    fn compare_and_set_with_ttl(
+        &mut self,
+        key: Vec<u8>,
+        expected: Option<Vec<u8>>,
+        new_value: Vec<u8>,
+        ttl: Duration,
+    ) -> StorageResult<()> {
+        let encoded_key = encode_key(&key);
+
+        self.pending_cas.push(CasOperation {
+            key: encoded_key,
+            expected,
+            new_value,
+            ttl: Some(ttl),
+        });
         Ok(())
     }
 
@@ -253,12 +299,24 @@ impl Transaction for LedgerTransaction {
                 None => SetCondition::NotExists,
                 Some(expected_value) => SetCondition::ValueEquals(expected_value),
             };
-            operations.push(Operation::set_entity_if(cas.key, cas.new_value, condition));
+            let expires_at =
+                cas.ttl.map(crate::LedgerBackend::compute_expiration_timestamp).transpose()?;
+            operations.push(Operation::SetEntity {
+                key: cas.key,
+                value: cas.new_value,
+                expires_at,
+                condition: Some(condition),
+            });
         }
 
         // Add regular set operations
         for (key, value) in self.pending_sets {
-            operations.push(Operation::set_entity(key, value));
+            if let Some(ttl) = self.pending_ttls.get(&key) {
+                let expires_at = crate::LedgerBackend::compute_expiration_timestamp(*ttl)?;
+                operations.push(Operation::set_entity_with_expiry(key, value, expires_at));
+            } else {
+                operations.push(Operation::set_entity(key, value));
+            }
         }
 
         // Add delete operations

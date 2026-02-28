@@ -367,6 +367,17 @@ impl<B: StorageBackend> StorageBackend for RateLimitedBackend<B> {
         self.inner.compare_and_set(key, expected, new_value).await
     }
 
+    async fn compare_and_set_with_ttl(
+        &self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        new_value: Vec<u8>,
+        ttl: Duration,
+    ) -> StorageResult<()> {
+        self.limiter.check(key)?;
+        self.inner.compare_and_set_with_ttl(key, expected, new_value, ttl).await
+    }
+
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {
         self.limiter.check(key)?;
         self.inner.delete(key).await

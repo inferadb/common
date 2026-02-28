@@ -395,7 +395,7 @@ impl LedgerBackend {
     ///
     /// Returns [`StorageError::Internal`] if the system clock is set before
     /// the Unix epoch.
-    fn compute_expiration_timestamp(ttl: Duration) -> StorageResult<u64> {
+    pub(crate) fn compute_expiration_timestamp(ttl: Duration) -> StorageResult<u64> {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() + ttl.as_secs())
@@ -798,6 +798,70 @@ impl StorageBackend for LedgerBackend {
                     .await
                     .map(|_| ())
                     .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+            },
+        )
+        .await;
+        self.record_circuit_result(&result);
+        self.metrics.record_set_org(start.elapsed(), &self.org_str());
+        if result.is_err() {
+            self.metrics.record_error_org(&self.org_str());
+        }
+        result
+    }
+
+    /// Performs a compare-and-set operation with TTL, retrying on transient errors.
+    ///
+    /// Combines CAS precondition checking with automatic key expiration.
+    /// Conflict errors (`FailedPrecondition`) are **not** retried.
+    #[tracing::instrument(skip(self, key, expected, new_value), fields(key_len = key.len(), ttl_ms = ttl.as_millis() as u64))]
+    async fn compare_and_set_with_ttl(
+        &self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        new_value: Vec<u8>,
+        ttl: Duration,
+    ) -> StorageResult<()> {
+        self.check_cancelled()?;
+        self.check_circuit()?;
+        self.check_sizes(key, &new_value)?;
+        let start = std::time::Instant::now();
+        let encoded_key = encode_key(key);
+        let expires_at = Self::compute_expiration_timestamp(ttl)?;
+
+        let condition = match expected {
+            None => SetCondition::NotExists,
+            Some(expected_value) => SetCondition::ValueEquals(expected_value.to_vec()),
+        };
+
+        use inferadb_ledger_sdk::SdkError;
+        use tonic::Code;
+
+        let result = with_retry_timeout(
+            &self.retry_config,
+            self.timeout_config.write_timeout,
+            None,
+            "compare_and_set_with_ttl",
+            || async {
+                match self
+                    .client
+                    .write(
+                        self.organization,
+                        self.vault,
+                        vec![Operation::SetEntity {
+                            key: encoded_key.clone(),
+                            value: new_value.clone(),
+                            expires_at: Some(expires_at),
+                            condition: Some(condition.clone()),
+                        }],
+                    )
+                    .await
+                {
+                    Ok(_) => Ok(()),
+                    Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
+                        Err(StorageError::conflict())
+                    },
+                    Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
+                }
             },
         )
         .await;

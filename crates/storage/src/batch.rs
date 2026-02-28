@@ -1057,6 +1057,23 @@ mod tests {
             self.inner.get_mut().expect("lock poisoned").compare_and_set(key, expected, new_value)
         }
 
+        fn set_with_ttl(&mut self, key: Vec<u8>, value: Vec<u8>, ttl: std::time::Duration) {
+            self.inner.get_mut().expect("lock poisoned").set_with_ttl(key, value, ttl);
+        }
+
+        fn compare_and_set_with_ttl(
+            &mut self,
+            key: Vec<u8>,
+            expected: Option<Vec<u8>>,
+            new_value: Vec<u8>,
+            ttl: std::time::Duration,
+        ) -> StorageResult<()> {
+            self.inner
+                .get_mut()
+                .expect("lock poisoned")
+                .compare_and_set_with_ttl(key, expected, new_value, ttl)
+        }
+
         async fn commit(self: Box<Self>) -> StorageResult<()> {
             if self.should_fail {
                 Err(StorageError::connection("simulated commit failure"))
@@ -1083,6 +1100,16 @@ mod tests {
             new_value: Vec<u8>,
         ) -> StorageResult<()> {
             self.inner.compare_and_set(key, expected, new_value).await
+        }
+
+        async fn compare_and_set_with_ttl(
+            &self,
+            key: &[u8],
+            expected: Option<&[u8]>,
+            new_value: Vec<u8>,
+            ttl: std::time::Duration,
+        ) -> StorageResult<()> {
+            self.inner.compare_and_set_with_ttl(key, expected, new_value, ttl).await
         }
 
         async fn delete(&self, key: &[u8]) -> StorageResult<()> {

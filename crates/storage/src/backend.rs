@@ -57,6 +57,7 @@ use crate::{
 /// | [`get_range`](StorageBackend::get_range) | Retrieve multiple keys in a range |
 /// | [`clear_range`](StorageBackend::clear_range) | Delete multiple keys in a range |
 /// | [`set_with_ttl`](StorageBackend::set_with_ttl) | Store with automatic expiration |
+/// | [`compare_and_set_with_ttl`](StorageBackend::compare_and_set_with_ttl) | Atomic compare-and-set with expiration |
 /// | [`transaction`](StorageBackend::transaction) | Begin an atomic transaction |
 /// | [`health_check`](StorageBackend::health_check) | Verify backend availability |
 ///
@@ -406,6 +407,42 @@ pub trait StorageBackend: Send + Sync {
     /// - Other [`StorageError`] variants on backend failures.
     #[must_use = "storage operations may fail and errors must be handled"]
     async fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> StorageResult<()>;
+
+    /// Atomically sets a key's value if it matches the expected current value,
+    /// with automatic expiration.
+    ///
+    /// Combines the semantics of [`compare_and_set`](StorageBackend::compare_and_set)
+    /// with [`set_with_ttl`](StorageBackend::set_with_ttl): the CAS precondition
+    /// is evaluated first, and on success the new value is stored with the
+    /// given TTL.
+    ///
+    /// # Semantics
+    ///
+    /// See [`compare_and_set`](StorageBackend::compare_and_set) for the full
+    /// CAS precondition rules. The only difference is that on success the key
+    /// is given a TTL instead of becoming non-expiring.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` — The key to update.
+    /// * `expected` — The expected current value. Use `None` for insert-if-absent.
+    /// * `new_value` — The new value to set if the comparison succeeds.
+    /// * `ttl` — Time-to-live duration after which the key expires.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::Conflict`](crate::StorageError) — the current value does not match
+    ///   `expected`.
+    /// - [`StorageError::SizeLimitExceeded`] — `key` or `new_value` exceeds the configured size
+    ///   limits.
+    #[must_use = "compare-and-set may fail with a conflict and errors must be handled"]
+    async fn compare_and_set_with_ttl(
+        &self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        new_value: Vec<u8>,
+        ttl: Duration,
+    ) -> StorageResult<()>;
 
     /// Begins a new transaction.
     ///

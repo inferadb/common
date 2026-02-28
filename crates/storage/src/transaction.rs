@@ -35,6 +35,8 @@
 //! # }
 //! ```
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use bytes::Bytes;
 
@@ -187,6 +189,50 @@ pub trait Transaction: Send {
         key: Vec<u8>,
         expected: Option<Vec<u8>>,
         new_value: Vec<u8>,
+    ) -> StorageResult<()>;
+
+    /// Buffers a set operation with TTL within the transaction.
+    ///
+    /// The write is not immediately applied to storage; it is buffered
+    /// and will be applied atomically when [`commit`](Transaction::commit)
+    /// is called. On commit, the key will be stored with the given TTL.
+    ///
+    /// Subsequent [`get`](Transaction::get) calls for this key within the
+    /// same transaction will return the buffered value (TTL does not affect
+    /// read-your-writes behavior).
+    ///
+    /// # Arguments
+    ///
+    /// * `key` — The key to set
+    /// * `value` — The value to store
+    /// * `ttl` — Time-to-live duration after which the key expires
+    fn set_with_ttl(&mut self, key: Vec<u8>, value: Vec<u8>, ttl: Duration);
+
+    /// Buffers a compare-and-set operation with TTL within the transaction.
+    ///
+    /// Combines the semantics of [`compare_and_set`](Transaction::compare_and_set)
+    /// with a TTL: the CAS precondition is evaluated at
+    /// [`commit`](Transaction::commit) time, and on success the new value is
+    /// stored with the given TTL.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` — The key to update.
+    /// * `expected` — The expected current value. Use `None` for insert-if-absent.
+    /// * `new_value` — The new value to set if the comparison succeeds.
+    /// * `ttl` — Time-to-live duration after which the key expires.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::SizeLimitExceeded`](crate::StorageError) — `key` or `new_value` exceeds
+    ///   configured size limits. This is checked immediately (not deferred to commit).
+    #[must_use = "compare-and-set may fail with a size limit error and must be handled"]
+    fn compare_and_set_with_ttl(
+        &mut self,
+        key: Vec<u8>,
+        expected: Option<Vec<u8>>,
+        new_value: Vec<u8>,
+        ttl: Duration,
     ) -> StorageResult<()>;
 
     /// Commits all buffered operations atomically.
