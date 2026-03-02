@@ -33,7 +33,6 @@
 
 use std::{
     collections::HashMap,
-    ops::RangeBounds,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -43,7 +42,7 @@ use bytes::Bytes;
 use parking_lot::Mutex;
 
 use crate::{
-    StorageBackend,
+    StorageBackend, StorageRange,
     error::{StorageError, StorageResult},
     health::{HealthProbe, HealthStatus},
     metrics::{Metrics, MetricsCollector},
@@ -383,19 +382,13 @@ impl<B: StorageBackend> StorageBackend for RateLimitedBackend<B> {
         self.inner.delete(key).await
     }
 
-    async fn get_range<R>(&self, range: R) -> StorageResult<Vec<KeyValue>>
-    where
-        R: RangeBounds<Vec<u8>> + Send,
-    {
+    async fn get_range(&self, range: StorageRange) -> StorageResult<Vec<KeyValue>> {
         // Range operations use global bucket (no single key to extract organization from)
         self.limiter.check_global()?;
         self.inner.get_range(range).await
     }
 
-    async fn clear_range<R>(&self, range: R) -> StorageResult<()>
-    where
-        R: RangeBounds<Vec<u8>> + Send,
-    {
+    async fn clear_range(&self, range: StorageRange) -> StorageResult<()> {
         self.limiter.check_global()?;
         self.inner.clear_range(range).await
     }

@@ -8,6 +8,7 @@
 
 - [Architecture Overview](#architecture-overview)
 - [Crate: `inferadb-common-storage`](#crate-inferadb-common-storage)
+- [Crate: `inferadb-common-ratelimit`](#crate-inferadb-common-ratelimit)
 - [Crate: `inferadb-common-authn`](#crate-inferadb-common-authn)
 - [Crate: `inferadb-common-storage-ledger`](#crate-inferadb-common-storage-ledger)
 - [Cross-Cutting Observations](#cross-cutting-observations)
@@ -64,9 +65,11 @@
 ### Crate Dependency Graph
 
 ```
-inferadb-common-storage          (core abstractions, no external DB deps)
+inferadb-common-storage              (core abstractions, no external DB deps)
     ↑
-    ├── inferadb-common-authn    (JWT auth, depends on storage for key store trait)
+    ├── inferadb-common-ratelimit    (distributed fixed-window rate limiter)
+    │
+    ├── inferadb-common-authn        (JWT auth, depends on storage for key store trait)
     │
     └── inferadb-common-storage-ledger  (Ledger implementation of StorageBackend)
             ↑
@@ -82,17 +85,22 @@ inferadb-common-storage          (core abstractions, no external DB deps)
 
 ### Key Dependencies
 
-| Dependency    | Purpose                                                    |
-| ------------- | ---------------------------------------------------------- |
-| `async-trait` | Async trait support for `StorageBackend` and `Transaction` |
-| `bon`         | Builder pattern generation                                 |
-| `bytes`       | Zero-copy byte buffers                                     |
-| `chrono`      | DateTime handling for signing keys                         |
-| `parking_lot` | High-performance mutex/rwlock                              |
-| `thiserror`   | Ergonomic error derivation                                 |
-| `tokio`       | Async runtime                                              |
-| `tracing`     | Structured logging and instrumentation                     |
-| `zeroize`     | Secure memory zeroing for key material                     |
+| Dependency              | Purpose                                                    |
+| ----------------------- | ---------------------------------------------------------- |
+| `async-trait`           | Async trait support for `StorageBackend` and `Transaction` |
+| `bon`                   | Builder pattern generation                                 |
+| `bytes`                 | Zero-copy byte buffers                                     |
+| `chrono`                | DateTime handling for signing keys                         |
+| `fail`                  | Failpoint injection (feature-gated)                        |
+| `inferadb-ledger-types` | `OrganizationSlug`, `VaultSlug` re-exports                 |
+| `moka`                  | Async cache for `CachedBackend`                            |
+| `parking_lot`           | High-performance mutex/rwlock                              |
+| `rand`                  | Jitter for CAS retry backoff                               |
+| `serde` / `serde_json`  | Serialization for `compare_and_set_json`                   |
+| `thiserror`             | Ergonomic error derivation                                 |
+| `tokio`                 | Async runtime                                              |
+| `tracing`               | Structured logging and instrumentation                     |
+| `zeroize`               | Secure memory zeroing for key material                     |
 
 ### Features
 
@@ -105,7 +113,7 @@ inferadb-common-storage          (core abstractions, no external DB deps)
 
 **Purpose:** Module organization and public API re-exports.
 
-**Key Re-exports:** `StorageBackend`, `StorageError`, `ConfigError`, `StorageResult`, `MemoryBackend`, `Metrics`, `LatencyPercentiles`, `RateLimitConfig`, `RateLimitedBackend`, `TokenBucketLimiter`, `OrganizationExtractor`, `SizeLimits`, `Transaction`, `BatchConfig`, `BatchWriter`, `BatchResult`, `BatchFlushStats`, `BatchOperation`, `BoxError`, `TimeoutContext`, `HealthProbe`, `HealthStatus`, `HealthMetadata`, `MetricsCollector`, `MetricsSnapshot`, `OrganizationOperationSnapshot`, `RateLimitMetricsSnapshot`, `validate_key_size`, `validate_sizes`, `DEFAULT_MAX_KEY_SIZE`, `DEFAULT_MAX_VALUE_SIZE`, `Zeroizing`
+**Key Re-exports:** `StorageBackend`, `StorageBackendExt`, `DynBackend`, `StorageRange`, `to_storage_range`, `StorageError`, `ConfigError`, `StorageResult`, `MemoryBackend`, `InstrumentedBackend`, `BufferedBackend`, `CachedBackend`, `CacheConfig`, `CasRetryConfig`, `with_cas_retry`, `DEFAULT_CAS_RETRY_BASE_DELAY`, `DEFAULT_MAX_CAS_RETRIES`, `Metrics`, `LatencyPercentiles`, `DEFAULT_MAX_TRACKED_ORGANIZATIONS`, `RateLimitConfig`, `RateLimitedBackend`, `TokenBucketLimiter`, `OrganizationExtractor`, `SizeLimits`, `Transaction`, `BatchConfig`, `BatchWriter`, `BatchResult`, `BatchFlushStats`, `BatchOperation`, `BoxError`, `TimeoutContext`, `HealthProbe`, `HealthStatus`, `HealthMetadata`, `MetricsCollector`, `MetricsSnapshot`, `OrganizationOperationSnapshot`, `RateLimitMetricsSnapshot`, `validate_key_size`, `validate_sizes`, `DEFAULT_MAX_KEY_SIZE`, `DEFAULT_MAX_VALUE_SIZE`, `KeyValue`, `OrganizationSlug`, `VaultSlug`, `ClientId`, `CertId`, `Zeroizing`
 
 **Insights:**
 
@@ -115,24 +123,56 @@ inferadb-common-storage          (core abstractions, no external DB deps)
 
 ---
 
-### `src/backend.rs` — StorageBackend Trait
+### `src/backend.rs` — StorageBackend Trait, DynBackend, and Extension Trait
 
-**Purpose:** The core abstraction that all storage implementations must satisfy.
+**Purpose:** The core abstraction that all storage implementations must satisfy, plus object-safe dynamic dispatch support.
+
+#### Type Alias: `StorageRange`
+
+```rust
+pub type StorageRange = (Bound<Vec<u8>>, Bound<Vec<u8>>);
+```
+
+Concrete range type replacing generic `R: RangeBounds<Vec<u8>>` parameters — enables the trait to be object-safe.
+
+#### Function: `to_storage_range`
+
+```rust
+pub fn to_storage_range(range: impl RangeBounds<Vec<u8>>) -> StorageRange
+```
+
+Converts any `RangeBounds<Vec<u8>>` into a concrete `StorageRange`. Callers use this when passing range literals (e.g., `to_storage_range(start..end)`).
 
 #### Trait: `StorageBackend`
 
-| Method                 | Signature                                                                                                                                | Description                                             |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| `get`                  | `async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>>`                                                                        | Retrieves value by key; returns `None` for missing keys |
-| `set`                  | `async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()>`                                                                 | Unconditional write (upsert)                            |
-| `compare_and_set`      | `async fn compare_and_set(&self, key: &[u8], expected: Option<&[u8]>, new_value: Vec<u8>) -> StorageResult<()>`                          | Atomic CAS; `expected: None` = insert-if-absent         |
-| `delete`               | `async fn delete(&self, key: &[u8]) -> StorageResult<()>`                                                                                | Removes key; no-op if missing                           |
-| `get_range`            | `async fn get_range<R: RangeBounds<Vec<u8>> + Send>(&self, range: R) -> StorageResult<Vec<KeyValue>>`                                    | Range scan; results sorted by key                       |
-| `clear_range`          | `async fn clear_range<R: RangeBounds<Vec<u8>> + Send>(&self, range: R) -> StorageResult<()>`                                             | Deletes all keys in range                               |
-| `set_with_ttl`         | `async fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> StorageResult<()>`                                         | Sets key with time-to-live                              |
-| `transaction`          | `async fn transaction(&self) -> StorageResult<Box<dyn Transaction>>`                                                                     | Creates a new transaction                               |
-| `health_check`         | `async fn health_check(&self, probe: HealthProbe) -> StorageResult<HealthStatus>`                                                        | Kubernetes-style health probe                           |
-| `compare_and_set_json` | `async fn compare_and_set_json<T: Serialize + Deserialize>(&self, key: &[u8], expected: Option<&T>, new_value: &T) -> StorageResult<()>` | Typed CAS with JSON serialization (default impl)        |
+| Method                     | Signature                                                                                                                               | Description                                             |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `get`                      | `async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>>`                                                                       | Retrieves value by key; returns `None` for missing keys |
+| `set`                      | `async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()>`                                                                | Unconditional write (upsert)                            |
+| `compare_and_set`          | `async fn compare_and_set(&self, key: &[u8], expected: Option<&[u8]>, new_value: Vec<u8>) -> StorageResult<()>`                         | Atomic CAS; `expected: None` = insert-if-absent         |
+| `delete`                   | `async fn delete(&self, key: &[u8]) -> StorageResult<()>`                                                                               | Removes key; no-op if missing                           |
+| `get_range`                | `async fn get_range(&self, range: StorageRange) -> StorageResult<Vec<KeyValue>>`                                                        | Range scan; results sorted by key                       |
+| `clear_range`              | `async fn clear_range(&self, range: StorageRange) -> StorageResult<()>`                                                                 | Deletes all keys in range                               |
+| `set_with_ttl`             | `async fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> StorageResult<()>`                                        | Sets key with time-to-live                              |
+| `compare_and_set_with_ttl` | `async fn compare_and_set_with_ttl(&self, key: &[u8], expected: Option<&[u8]>, new_value: Vec<u8>, ttl: Duration) -> StorageResult<()>` | Atomic CAS with TTL                                     |
+| `transaction`              | `async fn transaction(&self) -> StorageResult<Box<dyn Transaction>>`                                                                    | Creates a new transaction                               |
+| `health_check`             | `async fn health_check(&self, probe: HealthProbe) -> StorageResult<HealthStatus>`                                                       | Kubernetes-style health probe                           |
+
+#### Trait: `StorageBackendExt` (Extension)
+
+Auto-implemented for all `StorageBackend` types. Extracted from the main trait to preserve object safety (contains generic methods).
+
+| Method                 | Signature                                                                                                                                     | Description                                      |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `compare_and_set_json` | `async fn compare_and_set_json<T: Serialize + DeserializeOwned>(&self, key: &[u8], expected: Option<&T>, new_value: &T) -> StorageResult<()>` | Typed CAS with JSON serialization (default impl) |
+
+#### Type Alias: `DynBackend`
+
+```rust
+pub type DynBackend = Arc<dyn StorageBackend>;
+```
+
+Object-safe dynamic dispatch wrapper. `StorageBackend` is implemented for `Arc<dyn StorageBackend>`, enabling `DynBackend` to be used directly where a `StorageBackend` is expected.
 
 **Insights:**
 
@@ -140,7 +180,9 @@ inferadb-common-storage          (core abstractions, no external DB deps)
 - Each method has detailed documentation covering semantics, edge cases, and errors
 - CAS semantics clearly specified: `None` = insert-if-absent, `Some(val)` = update-if-matches
 - TTL interaction documented: CAS treats expired keys as absent
-- `compare_and_set_json` includes warnings about `serde_json` non-determinism
+- `StorageBackendExt` extracted for object safety — `compare_and_set_json` requires generics incompatible with `dyn`
+- `DynBackend` enables runtime polymorphism (e.g., `Arc<MemoryBackend>` or `Arc<LedgerBackend>` behind one type)
+- `StorageRange` concrete type replaces generics on `get_range`/`clear_range` — the key change enabling object safety
 
 ---
 
@@ -150,13 +192,15 @@ inferadb-common-storage          (core abstractions, no external DB deps)
 
 #### Trait: `Transaction`
 
-| Method            | Signature                                                                                                         | Description                                |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| `get`             | `async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>>`                                                 | Reads with read-your-writes semantics      |
-| `set`             | `fn set(&mut self, key: Vec<u8>, value: Vec<u8>)`                                                                 | Buffers a write                            |
-| `delete`          | `fn delete(&mut self, key: Vec<u8>)`                                                                              | Buffers a delete                           |
-| `compare_and_set` | `fn compare_and_set(&mut self, key: Vec<u8>, expected: Option<Vec<u8>>, new_value: Vec<u8>) -> StorageResult<()>` | Buffers a CAS operation                    |
-| `commit`          | `async fn commit(self: Box<Self>) -> StorageResult<()>`                                                           | Atomically applies all buffered operations |
+| Method                     | Signature                                                                                                                                 | Description                                |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| `get`                      | `async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>>`                                                                         | Reads with read-your-writes semantics      |
+| `set`                      | `fn set(&mut self, key: Vec<u8>, value: Vec<u8>)`                                                                                         | Buffers a write                            |
+| `delete`                   | `fn delete(&mut self, key: Vec<u8>)`                                                                                                      | Buffers a delete                           |
+| `compare_and_set`          | `fn compare_and_set(&mut self, key: Vec<u8>, expected: Option<Vec<u8>>, new_value: Vec<u8>) -> StorageResult<()>`                         | Buffers a CAS operation                    |
+| `set_with_ttl`             | `fn set_with_ttl(&mut self, key: Vec<u8>, value: Vec<u8>, ttl: Duration)`                                                                 | Buffers a write with TTL                   |
+| `compare_and_set_with_ttl` | `fn compare_and_set_with_ttl(&mut self, key: Vec<u8>, expected: Option<Vec<u8>>, new_value: Vec<u8>, ttl: Duration) -> StorageResult<()>` | Buffers a CAS operation with TTL           |
+| `commit`                   | `async fn commit(self: Box<Self>) -> StorageResult<()>`                                                                                   | Atomically applies all buffered operations |
 
 **Isolation Model:**
 
@@ -171,7 +215,7 @@ inferadb-common-storage          (core abstractions, no external DB deps)
 
 **Insights:**
 
-- Exceptional documentation (215 lines) with SQL comparison table
+- Exceptional documentation with SQL comparison table
 - `Box<Self>` for commit prevents use-after-commit
 - Explicitly documents what is NOT provided (snapshot isolation, serializability)
 
@@ -202,22 +246,28 @@ inferadb-common-storage          (core abstractions, no external DB deps)
 | Method                                                  | Description                                                     |
 | ------------------------------------------------------- | --------------------------------------------------------------- |
 | `is_transient() -> bool`                                | Returns `true` for `Connection`, `Timeout`, `RateLimitExceeded` |
+| `is_not_found() -> bool`                                | Returns `true` for `NotFound` variant                           |
+| `is_conflict() -> bool`                                 | Returns `true` for `Conflict` variant                           |
+| `suggested_status_code() -> u16`                        | Maps variant to HTTP status (404, 409, 429, 400, 503, 504, 500) |
 | `detail() -> String`                                    | Full diagnostic context (server-side only)                      |
+| `span_id() -> Option<&tracing::span::Id>`               | Returns captured tracing span ID                                |
 | `not_found(key)`, `conflict()`, `connection(msg)`, etc. | Constructor helpers that capture current span ID                |
 
 #### Struct: `TimeoutContext`
 
-| Field                 | Type                       | Description                                            |
-| --------------------- | -------------------------- | ------------------------------------------------------ |
-| `attempts_completed`  | `u32`                      | Number of retry attempts completed before timeout      |
-| `during_backoff`      | `bool`                     | Whether timeout fired during backoff sleep (vs backend call) |
-| `last_error`          | `Option<Box<StorageError>>` | Last backend error before timeout; reconstructed from `detail()` on cancellation |
+| Field                | Type                        | Description                                                                      |
+| -------------------- | --------------------------- | -------------------------------------------------------------------------------- |
+| `attempts_completed` | `u32`                       | Number of retry attempts completed before timeout                                |
+| `during_backoff`     | `bool`                      | Whether timeout fired during backoff sleep (vs backend call)                     |
+| `last_error`         | `Option<Box<StorageError>>` | Last backend error before timeout; reconstructed from `detail()` on cancellation |
 
 #### Enum: `ConfigError` (`#[non_exhaustive]`)
 
-| Variant        | Fields                                                | Description                         |
-| -------------- | ----------------------------------------------------- | ----------------------------------- |
-| `BelowMinimum` | `field: &'static str`, `min: String`, `value: String` | Config value below required minimum |
+| Variant           | Fields                                                | Description                                   |
+| ----------------- | ----------------------------------------------------- | --------------------------------------------- |
+| `MustBePositive`  | `field: &'static str`, `value: String`                | Config value must be greater than zero        |
+| `BelowMinimum`    | `field: &'static str`, `min: String`, `value: String` | Config value below required minimum           |
+| `InvalidRelation` | `field: &'static str`, `min: String`, `value: String` | Config values violate a relational constraint |
 
 **Insights:**
 
@@ -312,23 +362,25 @@ inferadb-common-storage          (core abstractions, no external DB deps)
 
 **Recording Methods:**
 
-| Method                                                                                                       | Description                   |
-| ------------------------------------------------------------------------------------------------------------ | ----------------------------- |
-| `record_get(latency, organization)`                                                                             | Records get operation         |
-| `record_set(latency, organization)`                                                                             | Records set operation         |
-| `record_delete(latency, organization)`                                                                          | Records delete operation      |
-| `record_error(error)`                                                                                        | Records error by variant name |
-| `record_transaction`, `record_get_range`, `record_clear_range`, `record_health_check`, `record_set_with_ttl` | Other operation types         |
+| Method                                                                                                       | Description                     |
+| ------------------------------------------------------------------------------------------------------------ | ------------------------------- |
+| `record_get(duration)`                                                                                       | Records get operation timing    |
+| `record_set(duration)`                                                                                       | Records set operation timing    |
+| `record_delete(duration)`                                                                                    | Records delete operation timing |
+| `record_get_org(duration, organization)`, `record_set_org(...)`, `record_delete_org(...)`                    | Per-organization variants       |
+| `record_error()`                                                                                             | Increments global error counter |
+| `record_error_org(organization)`                                                                             | Per-organization error counter  |
+| `record_transaction`, `record_get_range`, `record_clear_range`, `record_health_check`, `record_set_with_ttl` | Other operation types           |
 
 **Retrieval Methods:**
 
-| Method                                              | Description                 |
-| --------------------------------------------------- | --------------------------- |
-| `get_count() -> u64`                                | Total get operations        |
-| `get_latency_percentiles() -> LatencyPercentiles`   | p50/p95/p99 in microseconds |
-| `error_counts() -> HashMap<String, u64>`            | Error counts by variant     |
-| `organization_metrics(ns) -> Option<OrganizationMetrics>` | Per-organization breakdown     |
-| (plus matching getters for all operation types)     |                             |
+| Method                                                    | Description                 |
+| --------------------------------------------------------- | --------------------------- |
+| `get_count() -> u64`                                      | Total get operations        |
+| `get_latency_percentiles() -> LatencyPercentiles`         | p50/p95/p99 in microseconds |
+| `error_counts() -> HashMap<String, u64>`                  | Error counts by variant     |
+| `organization_metrics(ns) -> Option<OrganizationMetrics>` | Per-organization breakdown  |
+| (plus matching getters for all operation types)           |                             |
 
 #### Struct: `LatencyPercentiles`
 
@@ -359,28 +411,27 @@ inferadb-common-storage          (core abstractions, no external DB deps)
 
 #### Struct: `TokenBucketLimiter`
 
-| Method                                           | Description                                              |
-| ------------------------------------------------ | -------------------------------------------------------- |
-| `new(config) -> Self`                            | Creates limiter                                          |
-| `check(organization, cost) -> Result<(), Duration>` | Checks if request allowed; returns retry-after on denial |
-| `set_enabled(enabled)`                           | Enables/disables globally                                |
+| Method                                   | Description                                                                    |
+| ---------------------------------------- | ------------------------------------------------------------------------------ |
+| `new(config) -> Self`                    | Creates limiter                                                                |
+| `check(key: &[u8]) -> StorageResult<()>` | Checks if request allowed; returns `StorageError::RateLimitExceeded` on denial |
 
 #### Struct: `RateLimitedBackend<B>`
 
-Wraps any `StorageBackend` and checks rate limit before each operation. **Transactions and health checks are exempt.**
+Wraps any `StorageBackend` and checks rate limit before each operation. **Transactions and health checks are exempt.** Extracts organization from key via optional `OrganizationExtractor`; falls through to global bucket when no extractor is set or extraction returns `None`.
 
 #### Trait: `OrganizationExtractor`
 
-| Method                                     | Description                                         |
-| ------------------------------------------ | --------------------------------------------------- |
-| `extract_organization(key) -> Option<String>` | Extracts organization from key for per-tenant limiting |
+| Method                                  | Description                                            |
+| --------------------------------------- | ------------------------------------------------------ |
+| `extract(key: &[u8]) -> Option<String>` | Extracts organization from key for per-tenant limiting |
 
 **Insights:**
 
 - `f64` tokens enable sub-second precision for fractional refills
 - `parking_lot::Mutex` for very short critical sections
 - Exempting transactions and health checks from rate limiting is correct
-- `NoopOrganizationExtractor` default enables simple global limiting
+- When no `OrganizationExtractor` is configured, all operations share a single global bucket
 
 ---
 
@@ -441,6 +492,101 @@ Wraps any `StorageBackend` and checks rate limit before each operation. **Transa
 
 ---
 
+### `src/cas_retry.rs` — CAS Retry Logic
+
+**Purpose:** Exponential backoff with jitter for CAS (compare-and-set) conflict resolution. Moved from `storage-ledger` to the base storage crate for reuse across all backends.
+
+#### Struct: `CasRetryConfig`
+
+| Field         | Default | Description                |
+| ------------- | ------- | -------------------------- |
+| `max_retries` | 5       | Maximum CAS retry attempts |
+| `base_delay`  | 50ms    | Base delay for jitter      |
+
+**Constants:** `DEFAULT_MAX_CAS_RETRIES = 5`, `DEFAULT_CAS_RETRY_BASE_DELAY = 50ms`
+
+#### Function: `with_cas_retry`
+
+```rust
+pub async fn with_cas_retry<F, Fut, T>(config: &CasRetryConfig, operation: F) -> StorageResult<T>
+```
+
+Retries only `StorageError::Conflict` errors with uniformly-distributed random jitter in `[0, base_delay * attempt]`. Returns `StorageError::CasRetriesExhausted` when attempts are exhausted. Uses `rand::rng().random_range()` for jitter.
+
+---
+
+### `src/instrumented.rs` — Instrumented Backend
+
+**Purpose:** Decorator that records per-operation timing and error counts via `Metrics`.
+
+#### Struct: `InstrumentedBackend<B>`
+
+| Method                         | Description                         |
+| ------------------------------ | ----------------------------------- |
+| `new(inner) -> Self`           | Creates with new `Metrics` instance |
+| `with_metrics(inner, metrics)` | Creates with shared `Metrics`       |
+| `inner() -> &B`                | Accessor for wrapped backend        |
+
+**Behavior:** Every `StorageBackend` method is delegated to the inner backend with timing instrumentation:
+
+- Records latency for each operation type (`record_get`, `record_set`, etc.)
+- Records `record_error()` on `Err` results
+- Records `record_conflict()` on `StorageError::Conflict` for CAS methods
+- Records `record_ttl_operation()` for `set_with_ttl` / `compare_and_set_with_ttl`
+- Health check: `record_health_check()` only (no timing)
+
+Implements `MetricsCollector` trait. `#[derive(Clone)]` where `B: Clone`.
+
+---
+
+### `src/buffered.rs` — Buffered Backend
+
+**Purpose:** Write-buffering wrapper for atomic multi-key commits.
+
+#### Struct: `BufferedBackend<S>`
+
+| Method                          | Description                                      |
+| ------------------------------- | ------------------------------------------------ |
+| `new(inner) -> Self`            | Creates write buffer over any `StorageBackend`   |
+| `commit() -> StorageResult<()>` | Flushes all buffered ops in a single transaction |
+
+**Behavior:**
+
+- Buffers all writes (set, delete, CAS, CAS with TTL) in memory
+- Read-your-writes semantics — buffer checked before inner backend
+- `commit()` applies all buffered operations atomically via a single transaction
+- `BufferedTransaction` type accumulates in parent buffer
+
+---
+
+### `src/cached.rs` — Cached Backend
+
+**Purpose:** Read-through cache wrapper using `moka` async cache.
+
+#### Struct: `CacheConfig`
+
+| Method                          | Description                    |
+| ------------------------------- | ------------------------------ |
+| `new(max_entries, ttl) -> Self` | Creates cache configuration    |
+| `disabled() -> Self`            | Pass-through mode (no caching) |
+
+#### Struct: `CachedBackend<S>`
+
+| Method                       | Description                                 |
+| ---------------------------- | ------------------------------------------- |
+| `new(inner, config) -> Self` | Creates read-through cache over any backend |
+| `cache_stats()`              | Returns cache hit/miss statistics           |
+| `clear_cache()`              | Invalidates all cached entries              |
+
+**Behavior:**
+
+- Caches `get()` results with configurable TTL and capacity
+- Pre-invalidation on writes (`set`, `delete`, `compare_and_set`)
+- Range queries bypass cache
+- Transactions pass through to inner backend
+
+---
+
 ### `src/types.rs` — Common Data Types
 
 **Purpose:** Shared types used across the storage layer.
@@ -469,30 +615,34 @@ All derive: `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `Hash`, `Serialize`, `D
 
 ### `src/conformance.rs` — Conformance Test Suite
 
-**Purpose:** 36 test functions that validate any `StorageBackend` implementation.
+**Purpose:** Conformance test functions that validate any `StorageBackend` implementation.
 
 #### Test Categories
 
-| Category        | Count | Examples                                                        |
-| --------------- | ----- | --------------------------------------------------------------- |
-| CRUD            | 8     | `crud_set_then_get_returns_value`, `crud_large_value_roundtrip` |
-| Range           | 5     | `range_results_are_ordered`, `range_exclusive_end`              |
-| TTL             | 4     | `ttl_key_expires`, `ttl_expired_keys_excluded_from_range`       |
-| Transaction     | 6     | `tx_read_your_writes`, `tx_cas_conflict_rejects_commit`         |
-| CAS             | 4     | `cas_insert_if_absent`, `cas_update_with_mismatched_value`      |
-| Concurrent      | 3     | `concurrent_cas_exactly_one_winner`                             |
-| Error Semantics | 4     | `health_check_returns_healthy`, `idempotent_delete`             |
+| Category        | Examples                                                           |
+| --------------- | ------------------------------------------------------------------ |
+| CRUD            | `crud_set_then_get_returns_value`, `crud_large_value_roundtrip`    |
+| Range           | `range_results_are_ordered`, `range_exclusive_end`                 |
+| TTL             | `ttl_key_expires`, `ttl_expired_keys_excluded_from_range`          |
+| Transaction     | `tx_read_your_writes`, `tx_cas_conflict_rejects_commit`            |
+| Transaction TTL | `tx_set_with_ttl_applies_on_commit`, `tx_compare_and_set_with_ttl` |
+| CAS             | `cas_insert_if_absent`, `cas_update_with_mismatched_value`         |
+| Concurrent      | `concurrent_cas_exactly_one_winner`                                |
+| Error Semantics | `health_check_returns_healthy`, `idempotent_delete`                |
+| BufferedBackend | Conformance tests for `BufferedBackend` wrapper                    |
+| CachedBackend   | Conformance tests for `CachedBackend` wrapper                      |
 
 #### Public Entry Point
 
 ```rust
-pub async fn run_all(backend: Arc<dyn StorageBackend>);
+pub async fn run_all<B: StorageBackend + 'static>(backend: Arc<B>);
 ```
 
 **Insights:**
 
 - Enables any new backend implementation to verify correctness with one function call
 - Each test independently callable for fine-grained debugging
+- Uses `to_storage_range()` throughout for `get_range`/`clear_range` calls
 
 ---
 
@@ -502,15 +652,15 @@ pub async fn run_all(backend: Arc<dyn StorageBackend>);
 
 #### Helper Functions
 
-| Function                   | Description                                              |
-| -------------------------- | -------------------------------------------------------- |
-| `make_key(prefix, i)`        | Generates deterministic test keys                        |
-| `make_value(prefix, i)`      | Generates deterministic test values                      |
-| `make_tagged_value(prefix)`  | Generates tagged test values                             |
-| `populated_backend(count)`   | Creates MemoryBackend with `count` pre-populated entries |
-| `is_conflict(err)`           | Checks if error is `Conflict` variant                    |
-| `is_not_found(err)`          | Checks if error is `NotFound` variant                    |
-| `is_timeout(err)`            | Checks if error is `Timeout` variant                     |
+| Function                    | Description                                              |
+| --------------------------- | -------------------------------------------------------- |
+| `make_key(prefix, i)`       | Generates deterministic test keys                        |
+| `make_value(prefix, i)`     | Generates deterministic test values                      |
+| `make_tagged_value(prefix)` | Generates tagged test values                             |
+| `populated_backend(count)`  | Creates MemoryBackend with `count` pre-populated entries |
+| `is_conflict(err)`          | Checks if error is `Conflict` variant                    |
+| `is_not_found(err)`         | Checks if error is `NotFound` variant                    |
+| `is_timeout(err)`           | Checks if error is `Timeout` variant                     |
 
 #### Assertion Macros
 
@@ -639,7 +789,7 @@ Tracks per-operation counts, latencies, error categorization, L3 cache metrics, 
 
 Thin wrapper running the conformance suite against `MemoryBackend`. One test function per conformance check plus `run_all_conformance_tests()`.
 
-#### `tests/concurrent_stress.rs` (10 tests, `#[ignore]`)
+#### `tests/concurrent_stress.rs` (`#[ignore]`)
 
 | Test                                      | Description                                       |
 | ----------------------------------------- | ------------------------------------------------- |
@@ -654,29 +804,135 @@ Thin wrapper running the conformance suite against `MemoryBackend`. One test fun
 | `high_concurrency_parallel_reads`         | 64 tasks x 500 reads — consistent                 |
 | `delete_while_reading`                    | 4 writers + 4 deleters + 8 readers                |
 
-#### `tests/partial_failure.rs` (8 tests)
+#### `tests/partial_failure.rs`
 
 Tests transaction atomicity under failure injection. Validates all-or-nothing commit when CAS fails, commit fails, or size limits are exceeded.
 
-#### `tests/range_edge_cases.rs` (22 tests)
+#### `tests/range_edge_cases.rs`
 
 Exhaustive range boundary testing: degenerate, single-key, unbounded, inclusive/exclusive combinations, large values, sorting.
 
-#### `tests/tracing_spans.rs` (8 tests)
+#### `tests/tracing_spans.rs`
 
 Validates `#[instrument]` annotations produce expected spans for each `StorageBackend` method.
 
-#### `tests/transaction_edge_cases.rs` (20+ tests)
+#### `tests/transaction_edge_cases.rs`
 
 Transaction conflict detection, isolation, oversized batch splitting, empty transactions, mixed CAS + unconditional ops, abort isolation.
 
-#### `tests/ttl_boundary.rs` (13 tests)
+#### `tests/ttl_boundary.rs`
 
 Zero TTL, large TTL (100 years), overflow (`Duration::MAX`), expiration boundaries, TTL clearing/replacement, background cleanup.
 
-#### `tests/failpoint_tests.rs` (4 tests)
+#### `tests/failpoint_tests.rs`
 
 Fail-point injection for `batch-before-commit` and `health-check` failpoints.
+
+---
+
+## Crate: `inferadb-common-ratelimit`
+
+**Path:** `crates/ratelimit/`
+**Purpose:** Distributed fixed-window rate limiter using `StorageBackend`. Provides application-level rate limiting (e.g., login attempts per IP, API key call counts) — distinct from the token-bucket `RateLimitedBackend` in `inferadb-common-storage` which throttles storage operations themselves.
+
+### Key Dependencies
+
+| Dependency                | Purpose                                                  |
+| ------------------------- | -------------------------------------------------------- |
+| `inferadb-common-storage` | `StorageBackend` trait + `StorageResult` for persistence |
+| `thiserror`               | Error derivation (reserved for future use)               |
+
+---
+
+### `src/lib.rs` — Crate Root (Single-File Crate)
+
+**Purpose:** All types and logic in a single module. Lints: `#![deny(unsafe_code)]`, `#![warn(missing_docs)]`.
+
+**Re-exports:** `AppRateLimiter`, `RateLimitPolicy`, `RateLimitWindow`, `RateLimitOutcome`
+
+#### Key Format
+
+Rate limit counters stored at:
+
+```
+rate_limit:{category}:{identifier}:{window_start}
+```
+
+Where `window_start` is Unix timestamp truncated to the window boundary. TTL drives automatic cleanup.
+
+#### Enum: `RateLimitWindow`
+
+| Variant            | Description                    |
+| ------------------ | ------------------------------ |
+| `Hour`             | Per-hour window (3600 seconds) |
+| `Day`              | Per-day window (86400 seconds) |
+| `Custom(Duration)` | Arbitrary duration window      |
+
+| Method             | Description                        |
+| ------------------ | ---------------------------------- |
+| `seconds() -> u64` | Returns window duration in seconds |
+
+#### Struct: `RateLimitPolicy`
+
+| Field          | Type              | Description                            |
+| -------------- | ----------------- | -------------------------------------- |
+| `max_requests` | `u32`             | Maximum allowed requests within window |
+| `window`       | `RateLimitWindow` | Time window duration                   |
+
+| Constructor                      | Description                  |
+| -------------------------------- | ---------------------------- |
+| `new(max_requests, window)`      | General constructor          |
+| `per_hour(max_requests)`         | Convenience: hourly window   |
+| `per_day(max_requests)`          | Convenience: daily window    |
+| `custom(max_requests, duration)` | Convenience: custom duration |
+
+#### Struct: `RateLimitOutcome`
+
+| Field         | Type   | Description                          |
+| ------------- | ------ | ------------------------------------ |
+| `allowed`     | `bool` | Whether the request is permitted     |
+| `remaining`   | `u32`  | Requests remaining in current window |
+| `reset_after` | `u64`  | Seconds until window resets          |
+
+#### Struct: `AppRateLimiter<S: StorageBackend>`
+
+| Method                                                                                 | Description                                               |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `new(storage) -> Self`                                                                 | Wraps a `StorageBackend`                                  |
+| `storage() -> &S`                                                                      | Accessor for underlying backend                           |
+| `check(category, identifier, policy) -> StorageResult<bool>`                           | Core rate-limit check; increments on allow, no-op on deny |
+| `remaining(category, identifier, policy) -> StorageResult<u32>`                        | Read-only remaining quota                                 |
+| `reset_after(policy) -> u64`                                                           | Seconds until current window resets                       |
+| `check_with_metadata(category, identifier, policy) -> StorageResult<RateLimitOutcome>` | Full outcome with remaining + reset_after                 |
+
+**Algorithm:** Get-then-set with TTL. Reads current counter, increments if under limit, writes back with `set_with_ttl` for automatic key expiration at window boundary. Non-atomic increment — under extreme concurrent load, the counter may briefly under-count (inherent fixed-window trade-off).
+
+**Insights:**
+
+- Counter encoding is UTF-8 decimal string — human-readable in storage backends
+- TTL drives cleanup — no background sweep needed, keys auto-expire after one window duration
+- Single-file crate — appropriate for the narrow scope
+- `thiserror` dependency is present but unused — reserved for a future `RateLimitError` type
+- All errors propagate as `StorageError` via `StorageResult`
+
+---
+
+### Tests
+
+| Test                                       | Description                                       |
+| ------------------------------------------ | ------------------------------------------------- |
+| `window_hour_seconds`                      | Hour window = 3600 seconds                        |
+| `window_day_seconds`                       | Day window = 86400 seconds                        |
+| `window_custom_seconds`                    | Custom duration conversion                        |
+| `window_start_rounds_down_to_boundary`     | Floor-division to window boundary                 |
+| `policy_constructors`                      | All three convenience constructors                |
+| `allows_requests_under_limit`              | Sequential calls succeed within limit             |
+| `blocks_requests_over_limit`               | Blocks after limit exceeded                       |
+| `isolates_identifiers`                     | Different identifiers have independent counters   |
+| `isolates_categories`                      | Different categories have independent counters    |
+| `remaining_count_decreases`                | `remaining()` decrements correctly                |
+| `check_with_metadata_returns_full_outcome` | Full outcome across allow/deny states             |
+| `reset_after_is_within_window`             | `reset_after()` returns value within window range |
 
 ---
 
@@ -768,36 +1024,36 @@ Re-exports: `AuthError`, `Result`, `JwtClaims`, `DEFAULT_MAX_IAT_AGE`, `ReplayDe
 
 #### Struct: `JwtClaims`
 
-| Field      | Type             | Description                             |
-| ---------- | ---------------- | --------------------------------------- |
-| `iss`      | `String`         | Issuer                                  |
-| `sub`      | `String`         | Subject                                 |
-| `aud`      | `String`         | Audience                                |
-| `exp`      | `u64`            | Expiration (Unix timestamp)             |
-| `iat`      | `u64`            | Issued-at                               |
-| `nbf`      | `Option<u64>`    | Not-before                              |
-| `jti`      | `Option<String>` | JWT ID (for replay detection)           |
-| `scope`    | `String`         | Space-delimited scopes                  |
-| `vault`    | `Option<String>` | Vault slug                              |
-| `org`      | `Option<String>` | Organization slug                       |
+| Field   | Type             | Description                   |
+| ------- | ---------------- | ----------------------------- |
+| `iss`   | `String`         | Issuer                        |
+| `sub`   | `String`         | Subject                       |
+| `aud`   | `String`         | Audience                      |
+| `exp`   | `u64`            | Expiration (Unix timestamp)   |
+| `iat`   | `u64`            | Issued-at                     |
+| `nbf`   | `Option<u64>`    | Not-before                    |
+| `jti`   | `Option<String>` | JWT ID (for replay detection) |
+| `scope` | `String`         | Space-delimited scopes        |
+| `vault` | `Option<String>` | Vault slug                    |
+| `org`   | `Option<String>` | Organization slug             |
 
-| Method               | Description                               |
-| -------------------- | ----------------------------------------- |
-| `require_org()`      | Returns org or `MissingTenantId` error    |
-| `parse_scopes()`     | Splits scope string into `Vec<String>`    |
-| `vault()`            | Returns vault if present                  |
-| `org()`              | Returns org clone                         |
+| Method           | Description                                |
+| ---------------- | ------------------------------------------ |
+| `require_org()`  | Returns org or `MissingClaim("org")` error |
+| `parse_scopes()` | Splits scope string into `Vec<String>`     |
+| `vault()`        | Returns vault if present                   |
+| `org()`          | Returns org clone                          |
 
 #### Functions
 
-| Function                                               | Description                                              |
-| ------------------------------------------------------ | -------------------------------------------------------- |
-| `decode_jwt_header(token)`                             | Extracts header without verification                     |
-| `decode_jwt_claims(token)`                             | Extracts claims without verification (for org lookup)    |
-| `validate_claims(claims, audience, max_iat_age)`       | Validates exp, nbf, aud, iat age                         |
-| `verify_signature(token, key, algorithm)`              | Cryptographic signature verification                     |
-| `verify_with_signing_key_cache(token, cache)`          | Full pipeline: header -> claims -> key lookup -> verify  |
-| `verify_with_replay_detection(token, cache, detector)` | Full pipeline + JTI replay check                         |
+| Function                                               | Description                                             |
+| ------------------------------------------------------ | ------------------------------------------------------- |
+| `decode_jwt_header(token)`                             | Extracts header without verification                    |
+| `decode_jwt_claims(token)`                             | Extracts claims without verification (for org lookup)   |
+| `validate_claims(claims, audience, max_iat_age)`       | Validates exp, nbf, aud, iat age                        |
+| `verify_signature(token, key, algorithm)`              | Cryptographic signature verification                    |
+| `verify_with_signing_key_cache(token, cache)`          | Full pipeline: header -> claims -> key lookup -> verify |
+| `verify_with_replay_detection(token, cache, detector)` | Full pipeline + JTI replay check                        |
 
 **Verification Flow:**
 
@@ -839,7 +1095,7 @@ Re-exports: `AuthError`, `Result`, `JwtClaims`, `DEFAULT_MAX_IAT_AGE`, `ReplayDe
 
 - Two-phase algorithm check: forbidden then accepted (clear error messages for each)
 - Kid validation prevents: path traversal (`../`), null bytes, colon injection (cache key safety)
-- RS256 documented as future work in comments
+- RS256 intentionally excluded — described as "not currently supported end-to-end" in source comments
 
 ---
 
@@ -859,13 +1115,13 @@ L3: Fallback cache (moka, default 1 hour TTL, 10K capacity)
 
 #### Struct: `SigningKeyCache`
 
-| Method                                                          | Description                               |
-| --------------------------------------------------------------- | ----------------------------------------- |
-| `new(key_store, ttl)`                                           | Creates cache with default capacity       |
-| `with_capacity(key_store, ttl, max_capacity)`                   | Custom L1 capacity                        |
-| `with_fallback_ttl(key_store, ttl, max_capacity, fallback_ttl)` | Custom L3 TTL                             |
-| `with_thresholds(self, warn, critical)`                         | L3 capacity alert thresholds              |
-| `with_refresh_interval(self: Arc<Self>, interval)`              | Starts background key refresh             |
+| Method                                                          | Description                                  |
+| --------------------------------------------------------------- | -------------------------------------------- |
+| `new(key_store, ttl)`                                           | Creates cache with default capacity          |
+| `with_capacity(key_store, ttl, max_capacity)`                   | Custom L1 capacity                           |
+| `with_fallback_ttl(key_store, ttl, max_capacity, fallback_ttl)` | Custom L3 TTL                                |
+| `with_thresholds(self, warn, critical)`                         | L3 capacity alert thresholds                 |
+| `with_refresh_interval(self: Arc<Self>, interval)`              | Starts background key refresh                |
 | `get_decoding_key(org_slug, kid)`                               | Main API: L1 -> L2 -> L3 fallback            |
 | `invalidate(org_slug, kid)`                                     | Removes from L1, bumps generation counter    |
 | `clear_all()`                                                   | Clears all caches                            |
@@ -873,7 +1129,7 @@ L3: Fallback cache (moka, default 1 hour TTL, 10K capacity)
 | `entry_count()`                                                 | Returns L1 cache entry count                 |
 | `fallback_entry_count()`                                        | Returns L3 fallback cache entry count        |
 | `fallback_capacity()`                                           | Returns L3 fallback cache max capacity       |
-| `fallback_fill_percentage()`                                    | Returns L3 fill ratio (for alert thresholds) |
+| `fallback_fill_pct()`                                           | Returns L3 fill ratio (for alert thresholds) |
 
 **Graceful Degradation:**
 
@@ -919,14 +1175,14 @@ Uses `moka::future::Cache` with per-entry TTL matching token expiration. LRU evi
 
 ### `src/testutil.rs` — Test Utilities (feature-gated)
 
-| Function                                              | Description                                                         |
-| ----------------------------------------------------- | ------------------------------------------------------------------- |
-| `generate_test_keypair()`                             | Generates Ed25519 keypair; returns `(pkcs8_der, public_key_b64url)` |
-| `create_signed_jwt(pkcs8, kid, org)`                  | Creates valid signed JWT                                            |
-| `create_signed_jwt_with_jti(pkcs8, kid, org, jti)`    | Signed JWT with JTI                                                 |
-| `craft_raw_jwt(header, payload)`                      | Crafts raw JWT for attack testing                                   |
-| `create_test_signing_key(kid)`                        | Creates keypair + `PublicSigningKey`                                |
-| `create_test_signing_key_with_pubkey(kid, pubkey)`    | Custom public key                                                   |
+| Function                                           | Description                                                         |
+| -------------------------------------------------- | ------------------------------------------------------------------- |
+| `generate_test_keypair()`                          | Generates Ed25519 keypair; returns `(pkcs8_der, public_key_b64url)` |
+| `create_signed_jwt(pkcs8, kid, org)`               | Creates valid signed JWT                                            |
+| `create_signed_jwt_with_jti(pkcs8, kid, org, jti)` | Signed JWT with JTI                                                 |
+| `craft_raw_jwt(header, payload)`                   | Crafts raw JWT for attack testing                                   |
+| `create_test_signing_key(kid)`                     | Creates keypair + `PublicSigningKey`                                |
+| `create_test_signing_key_with_pubkey(kid, pubkey)` | Custom public key                                                   |
 
 **Macro:** `assert_auth_error!(result, variant)` — Asserts error variant match.
 
@@ -934,7 +1190,7 @@ Uses `moka::future::Cache` with per-entry TTL matching token expiration. LRU evi
 
 ### Test Files
 
-#### `tests/security.rs` (24 tests)
+#### `tests/security.rs`
 
 | Category               | Tests                                          |
 | ---------------------- | ---------------------------------------------- |
@@ -942,13 +1198,13 @@ Uses `moka::future::Cache` with per-entry TTL matching token expiration. LRU evi
 | Algorithm confusion    | HS256/384/512 with EdDSA pubkey as HMAC secret |
 | Token expiration       | 1-second boundary precision                    |
 | Future `nbf`           | Rejected when in future                        |
-| Organization isolation    | Cross-organization key reuse prevented            |
+| Organization isolation | Cross-organization key reuse prevented         |
 | Key rotation           | Revoked key rejects in-flight tokens           |
 | Malformed JWT          | Missing segments, bad base64, not JSON, empty  |
 | RS256 boundary         | Rejected as not accepted                       |
 | All forbidden algs     | Comprehensive rejection test                   |
 
-#### `tests/failpoint_tests.rs` (2 tests)
+#### `tests/failpoint_tests.rs`
 
 Tests `cache-before-l2-fetch` failpoint activation and deactivation.
 
@@ -973,11 +1229,15 @@ Raw UTF-8 byte fuzzing for JWT parsing. Complements structured fuzzing for edge 
 | ------------------------- | ---------------------------------------------------------------------- |
 | `inferadb-ledger-sdk`     | Ledger gRPC client                                                     |
 | `inferadb-common-storage` | Core traits (`StorageBackend`, `Transaction`, `PublicSigningKeyStore`) |
-| `tokio`                   | Async runtime, timeouts                                                |
+| `async-trait`             | Async trait support                                                    |
 | `bon`                     | Builder pattern                                                        |
+| `bytes`                   | Zero-copy byte buffers                                                 |
+| `chrono`                  | DateTime handling for signing keys                                     |
+| `hex`                     | Key encoding/decoding                                                  |
 | `parking_lot`             | High-performance locks                                                 |
-| `rand`                    | Jitter for backoff                                                     |
+| `serde` / `serde_json`    | Serialization for signing keys                                         |
 | `thiserror`               | Error derivation                                                       |
+| `tokio` / `tokio-util`    | Async runtime, timeouts, cancellation tokens                           |
 | `tracing`                 | Distributed tracing                                                    |
 
 ### Features
@@ -989,7 +1249,7 @@ Raw UTF-8 byte fuzzing for JWT parsing. Complements structured fuzzing for edge 
 
 ### `src/lib.rs` — Crate Root
 
-Comprehensive crate-level docs with architecture diagram, quick start, key mapping table, and tracing integration guide. Re-exports all primary types plus SDK config types (`ClientConfig`, `ReadConsistency`, `ServerSource`, `TraceConfig`).
+Comprehensive crate-level docs with architecture diagram, quick start, key mapping table, and tracing integration guide. Re-exports all primary types plus SDK config types (`ClientConfig`, `ReadConsistency`, `Region`, `ServerSource`, `TraceConfig`) and CAS retry types from the base storage crate (`CasRetryConfig`, `DEFAULT_CAS_RETRY_BASE_DELAY`, `DEFAULT_MAX_CAS_RETRIES`).
 
 ---
 
@@ -999,21 +1259,22 @@ Comprehensive crate-level docs with architecture diagram, quick start, key mappi
 
 #### Struct: `LedgerBackend`
 
-| Method                                              | Description                          |
-| --------------------------------------------------- | ------------------------------------ |
-| `new(config) -> Result<Self>`                       | Creates from `LedgerBackendConfig`   |
-| `from_client(client, organization, vault, consistency)` | Creates from existing `LedgerClient` |
-| `shutdown()`                                        | Signals graceful shutdown            |
-| `is_shutting_down() -> bool`                        | Checks shutdown state                |
-| `organization()`                                       | Returns the configured organization slug |
-| `vault()`                                           | Returns the configured vault slug    |
-| `client()`                                          | Returns reference to `LedgerClient`  |
-| `client_arc()`                                      | Returns `Arc<LedgerClient>` clone    |
-| `page_size()`                                       | Returns pagination page size         |
-| `max_range_results()`                               | Returns range result safety limit    |
-| `circuit_breaker_metrics()`                         | Returns circuit breaker counters     |
-| `circuit_breaker_state()`                           | Returns current circuit state        |
-| `storage_metrics()`                                 | Returns storage metrics              |
+| Method                                                    | Description                                           |
+| --------------------------------------------------------- | ----------------------------------------------------- |
+| `new(config) -> Result<Self>`                             | Creates from `LedgerBackendConfig`                    |
+| `from_client(client, organization, vault, consistency)`   | Creates from existing `LedgerClient`                  |
+| `from_endpoint(endpoint, client_id, organization, vault)` | Convenience constructor for single-server deployments |
+| `shutdown()`                                              | Signals graceful shutdown                             |
+| `is_shutting_down() -> bool`                              | Checks shutdown state                                 |
+| `organization()`                                          | Returns the configured organization slug              |
+| `vault()`                                                 | Returns the configured vault slug                     |
+| `client()`                                                | Returns reference to `LedgerClient`                   |
+| `client_arc()`                                            | Returns `Arc<LedgerClient>` clone                     |
+| `page_size()`                                             | Returns pagination page size                          |
+| `max_range_results()`                                     | Returns range result safety limit                     |
+| `circuit_breaker_metrics()`                               | Returns circuit breaker counters                      |
+| `circuit_breaker_state()`                                 | Returns current circuit state                         |
+| `storage_metrics()`                                       | Returns storage metrics                               |
 
 **Key Implementation Details:**
 
@@ -1042,11 +1303,12 @@ Comprehensive crate-level docs with architecture diagram, quick start, key mappi
 
 #### Struct: `LedgerTransaction`
 
-| Internal State    | Description                                  |
-| ----------------- | -------------------------------------------- |
-| `pending_sets`    | `HashMap<String, Vec<u8>>` — buffered writes |
-| `pending_deletes` | `HashSet<String>` — buffered deletes         |
-| `pending_cas`     | `Vec<CasOperation>` — buffered CAS ops       |
+| Internal State    | Description                                            |
+| ----------------- | ------------------------------------------------------ |
+| `pending_sets`    | `HashMap<String, Vec<u8>>` — buffered writes           |
+| `pending_deletes` | `HashSet<String>` — buffered deletes                   |
+| `pending_ttls`    | `HashMap<String, Duration>` — TTLs for buffered writes |
+| `pending_cas`     | `Vec<CasOperation>` — buffered CAS ops                 |
 
 **Commit:** Single SDK `write()` call with CAS conditions first, then sets, then deletes.
 
@@ -1129,20 +1391,7 @@ Closed --[threshold failures]--> Open --[recovery timeout]--> HalfOpen
 
 **Purpose:** Validated configuration structs with builder patterns.
 
-#### Struct: `RetryConfig`
-
-| Field             | Default | Description              |
-| ----------------- | ------- | ------------------------ |
-| `max_retries`     | 3       | Maximum retry attempts   |
-| `initial_backoff` | 100ms   | First backoff duration   |
-| `max_backoff`     | 5s      | Maximum backoff duration |
-
-#### Struct: `CasRetryConfig`
-
-| Field         | Default | Description           |
-| ------------- | ------- | --------------------- |
-| `max_retries` | 5       | CAS retry attempts    |
-| `base_delay`  | 50ms    | Base delay for jitter |
+**Note:** `CasRetryConfig` is defined in `inferadb-common-storage` (see `src/cas_retry.rs`) and re-exported via this crate's `lib.rs`. Transient error retries are handled by the Ledger SDK's built-in retry logic — no `RetryConfig` struct exists in this crate.
 
 #### Struct: `TimeoutConfig`
 
@@ -1220,23 +1469,15 @@ Optional: `vault`, `read_consistency`, `page_size`, `max_range_results`, `retry_
 
 ---
 
-### `src/retry.rs` — Retry Logic
+### `src/retry.rs` — CAS Retry Re-export
 
-**Purpose:** Exponential backoff with jitter and timeout support.
+**Purpose:** Re-exports `with_cas_retry` from the base storage crate for internal use.
 
-| Function                                                           | Description                                        |
-| ------------------------------------------------------------------ | -------------------------------------------------- |
-| `with_retry(config, metrics, op_name, operation)`                  | Retries transient errors with exponential backoff  |
-| `with_retry_timeout(config, timeout, metrics, op_name, operation)` | Wraps `with_retry` with overall wall-clock timeout |
-| `with_cas_retry(config, operation)`                                | Retries only `Conflict` errors with uniform jitter |
+```rust
+pub(crate) use inferadb_common_storage::with_cas_retry;
+```
 
-**Implementation Details:**
-
-- `Arc<Mutex<RetryState>>` survives `tokio::time::timeout` future cancellation
-- `TimeoutContext` captures attempt count, backoff state, and last error at timeout
-- Separate retry logic for CAS vs transient errors (different semantics)
-- Failpoints: `retry-before-sleep`, `cas-retry-before-sleep` for deterministic testing
-- Internal `compute_backoff()` implements exponential backoff with full jitter
+This is a thin re-export file. The actual CAS retry implementation (including `CasRetryConfig`, jitter, and `CasRetriesExhausted` error) lives in `inferadb-common-storage/src/cas_retry.rs`. Transient error retries are handled by the Ledger SDK's built-in retry mechanism — there is no `with_retry` or `with_retry_timeout` in this crate.
 
 ---
 
@@ -1245,6 +1486,7 @@ Optional: `vault`, `read_consistency`, `page_size`, `max_range_results`, `retry_
 | Function                                           | Description                           |
 | -------------------------------------------------- | ------------------------------------- |
 | `test_client_config(server)`                       | Creates config for `MockLedgerServer` |
+| `test_client_config_with_id(server, client_id)`    | Config with custom client ID          |
 | `create_test_backend(server)`                      | Default test backend                  |
 | `create_paginated_backend(server, page_size, max)` | Custom pagination settings            |
 
@@ -1267,7 +1509,7 @@ Real Ledger cluster tests (gated by `RUN_LEDGER_INTEGRATION_TESTS=1`). Tests act
 ### Strengths
 
 1. **Well-designed trait abstraction** — `StorageBackend` is comprehensive yet focused; enables testing with `MemoryBackend` and production with `LedgerBackend`
-2. **Layered decorator pattern** — `RateLimitedBackend<B>`, `AuditedKeyStore<S, L>` add cross-cutting concerns without modifying core logic
+2. **Layered decorator pattern** — `RateLimitedBackend<B>`, `InstrumentedBackend<B>`, `CachedBackend<S>`, `BufferedBackend<S>`, `AuditedKeyStore<S, L>` add cross-cutting concerns without modifying core logic
 3. **Security-first authentication** — Algorithm validation before key lookup, kid validation before cache access, organization isolation, zeroized key material
 4. **Production resilience** — Three-tier cache with bounded staleness, circuit breaker, retry with backoff, per-operation timeouts, graceful shutdown
 5. **Exceptional testing** — Conformance suite, stress tests, property tests, fuzz tests, security tests, failpoint injection
@@ -1288,13 +1530,13 @@ Real Ledger cluster tests (gated by `RUN_LEDGER_INTEGRATION_TESTS=1`). Tests act
 
 ### Security Assessment
 
-| Threat                              | Mitigation                             | Status    |
-| ----------------------------------- | -------------------------------------- | --------- |
-| `alg: "none"` bypass                | Algorithm validation before key lookup | Mitigated |
-| HS256 algorithm confusion           | Symmetric algorithms always rejected   | Mitigated |
-| Token replay                        | JTI tracking with per-token TTL        | Mitigated |
-| Cross-organization key reuse           | `org` claim to `OrganizationSlug` scoping | Mitigated |
-| Kid path traversal                  | Allowlist validation `[a-zA-Z0-9._-]`  | Mitigated |
-| Cache poisoning during invalidation | Generation counter (AtomicU64)         | Mitigated |
-| Stale keys during outage            | L3 fallback with bounded TTL           | Bounded   |
-| Memory exhaustion                   | Capacity limits on all caches          | Mitigated |
+| Threat                              | Mitigation                                | Status    |
+| ----------------------------------- | ----------------------------------------- | --------- |
+| `alg: "none"` bypass                | Algorithm validation before key lookup    | Mitigated |
+| HS256 algorithm confusion           | Symmetric algorithms always rejected      | Mitigated |
+| Token replay                        | JTI tracking with per-token TTL           | Mitigated |
+| Cross-organization key reuse        | `org` claim to `OrganizationSlug` scoping | Mitigated |
+| Kid path traversal                  | Allowlist validation `[a-zA-Z0-9._-]`     | Mitigated |
+| Cache poisoning during invalidation | Generation counter (AtomicU64)            | Mitigated |
+| Stale keys during outage            | L3 fallback with bounded TTL              | Bounded   |
+| Memory exhaustion                   | Capacity limits on all caches             | Mitigated |

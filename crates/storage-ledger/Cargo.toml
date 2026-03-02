@@ -35,7 +35,6 @@ tokio-util.workspace = true
 tonic.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
-rand.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

@@ -34,7 +34,9 @@ use std::{
 };
 
 use bytes::Bytes;
-use inferadb_common_storage::{HealthProbe, OrganizationSlug, StorageBackend, VaultSlug};
+use inferadb_common_storage::{
+    HealthProbe, OrganizationSlug, StorageBackend, VaultSlug, to_storage_range,
+};
 use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
 use inferadb_ledger_sdk::{ClientConfig, ServerSource};
 use tokio::time::sleep;
@@ -257,7 +259,7 @@ async fn test_real_ledger_range_query() {
 
     // Range query
     let results = backend
-        .get_range(b"range:item:".to_vec()..b"range:item:~".to_vec())
+        .get_range(to_storage_range(b"range:item:".to_vec()..b"range:item:~".to_vec()))
         .await
         .expect("range should succeed");
 
@@ -302,7 +304,7 @@ async fn test_real_ledger_clear_range() {
 
     // Clear the clear: prefix
     backend
-        .clear_range(b"clear:".to_vec()..b"clear:~".to_vec())
+        .clear_range(to_storage_range(b"clear:".to_vec()..b"clear:~".to_vec()))
         .await
         .expect("clear should succeed");
 
@@ -715,7 +717,7 @@ async fn test_real_ledger_many_keys() {
 
     // Range query should find all
     let results = backend
-        .get_range(b"many:key:".to_vec()..b"many:key:~".to_vec())
+        .get_range(to_storage_range(b"many:key:".to_vec()..b"many:key:~".to_vec()))
         .await
         .expect("range should succeed");
 

@@ -21,7 +21,6 @@
 //! ```
 
 use std::{
-    ops::RangeBounds,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -33,7 +32,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 
 use crate::{
-    StorageBackend,
+    StorageBackend, StorageRange,
     error::{StorageError, StorageResult},
     health::{HealthProbe, HealthStatus},
     memory::MemoryBackend,
@@ -610,15 +609,12 @@ impl<B: StorageBackend> StorageBackend for FailingBackend<B> {
         self.inner.delete(key).await
     }
 
-    async fn get_range<R: RangeBounds<Vec<u8>> + Send>(
-        &self,
-        range: R,
-    ) -> StorageResult<Vec<KeyValue>> {
+    async fn get_range(&self, range: StorageRange) -> StorageResult<Vec<KeyValue>> {
         self.check_failure(Operation::GetRange)?;
         self.inner.get_range(range).await
     }
 
-    async fn clear_range<R: RangeBounds<Vec<u8>> + Send>(&self, range: R) -> StorageResult<()> {
+    async fn clear_range(&self, range: StorageRange) -> StorageResult<()> {
         self.check_failure(Operation::ClearRange)?;
         self.inner.clear_range(range).await
     }
@@ -638,6 +634,7 @@ impl<B: StorageBackend> StorageBackend for FailingBackend<B> {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::to_storage_range;
 
     #[test]
     fn test_make_key_format() {
@@ -857,7 +854,7 @@ mod tests {
         backend.set(b"a".to_vec(), b"va".to_vec()).await.expect("set");
 
         // get_range fails.
-        assert!(backend.get_range(b"a".to_vec()..b"z".to_vec()).await.is_err());
+        assert!(backend.get_range(to_storage_range(b"a".to_vec()..b"z".to_vec())).await.is_err());
 
         // get works (not targeted).
         assert!(backend.get(b"a").await.is_ok());
@@ -869,7 +866,7 @@ mod tests {
             .with_operations(vec![Operation::ClearRange]);
         let backend = failing_backend(config);
 
-        assert!(backend.clear_range(b"a".to_vec()..b"z".to_vec()).await.is_err());
+        assert!(backend.clear_range(to_storage_range(b"a".to_vec()..b"z".to_vec())).await.is_err());
     }
 
     #[tokio::test]

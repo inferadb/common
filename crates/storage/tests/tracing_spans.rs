@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use inferadb_common_storage::{HealthProbe, MemoryBackend, StorageBackend};
+use inferadb_common_storage::{HealthProbe, MemoryBackend, StorageBackend, to_storage_range};
 use tracing::Subscriber;
 use tracing_subscriber::{layer::SubscriberExt, registry::LookupSpan};
 
@@ -128,7 +128,7 @@ async fn memory_backend_get_range_creates_span() {
     let _guard = tracing::subscriber::set_default(subscriber);
 
     let backend = MemoryBackend::new();
-    let _ = backend.get_range(b"a".to_vec()..b"z".to_vec()).await;
+    let _ = backend.get_range(to_storage_range(b"a".to_vec()..b"z".to_vec())).await;
 
     let recorded = spans.lock().expect("lock poisoned");
     assert!(
@@ -146,7 +146,10 @@ async fn memory_backend_clear_range_creates_span() {
     let _guard = tracing::subscriber::set_default(subscriber);
 
     let backend = MemoryBackend::new();
-    backend.clear_range(b"a".to_vec()..b"z".to_vec()).await.expect("clear_range should succeed");
+    backend
+        .clear_range(to_storage_range(b"a".to_vec()..b"z".to_vec()))
+        .await
+        .expect("clear_range should succeed");
 
     let recorded = spans.lock().expect("lock poisoned");
     assert!(
@@ -169,8 +172,8 @@ async fn all_crud_operations_produce_distinct_spans() {
     backend.set(b"k".to_vec(), b"v".to_vec()).await.expect("set");
     let _ = backend.get(b"k").await;
     backend.delete(b"k").await.expect("delete");
-    let _ = backend.get_range(b"a".to_vec()..b"z".to_vec()).await;
-    backend.clear_range(b"a".to_vec()..b"z".to_vec()).await.expect("clear_range");
+    let _ = backend.get_range(to_storage_range(b"a".to_vec()..b"z".to_vec())).await;
+    backend.clear_range(to_storage_range(b"a".to_vec()..b"z".to_vec())).await.expect("clear_range");
     let _ = backend.transaction().await;
     let _ = backend.health_check(HealthProbe::Readiness).await;
 

@@ -63,7 +63,7 @@ use std::{collections::HashMap, future::Future, sync::Arc, time::Instant};
 use async_trait::async_trait;
 use chrono::Utc;
 use inferadb_common_storage::{
-    OrganizationSlug, StorageError, StorageResult,
+    CasRetryConfig, OrganizationSlug, StorageError, StorageResult,
     auth::{
         PublicSigningKey, PublicSigningKeyStore, SIGNING_KEY_PREFIX, SigningKeyErrorKind,
         SigningKeyMetrics,
@@ -74,7 +74,7 @@ use inferadb_ledger_sdk::{
 };
 use tonic::Code;
 
-use crate::{LedgerStorageError, config::CasRetryConfig};
+use crate::LedgerStorageError;
 
 /// Ledger-backed implementation of [`PublicSigningKeyStore`].
 ///

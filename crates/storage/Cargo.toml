@@ -25,6 +25,7 @@ chrono.workspace = true
 fail.workspace = true
 moka.workspace = true
 parking_lot.workspace = true
+rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -35,7 +36,6 @@ zeroize.workspace = true
 [dev-dependencies]
 criterion = { version = "0.8", features = ["async_tokio", "html_reports"] }
 proptest.workspace = true
-rand.workspace = true
 rstest.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
 tracing-subscriber.workspace = true

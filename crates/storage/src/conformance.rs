@@ -38,7 +38,7 @@ use bytes::Bytes;
 
 use crate::{
     BufferedBackend, CacheConfig, CachedBackend, MemoryBackend, assert_storage_error,
-    backend::StorageBackend, error::StorageError,
+    backend::StorageBackend, error::StorageError, to_storage_range,
 };
 
 // ============================================================================
@@ -116,7 +116,10 @@ pub async fn range_results_are_ordered<B: StorageBackend>(backend: &B) {
     for key in [b"r:c", b"r:a", b"r:b"] {
         backend.set(key.to_vec(), b"v".to_vec()).await.expect("set");
     }
-    let results = backend.get_range(b"r:".to_vec()..b"r:~".to_vec()).await.expect("get_range");
+    let results = backend
+        .get_range(to_storage_range(b"r:".to_vec()..b"r:~".to_vec()))
+        .await
+        .expect("get_range");
     let keys: Vec<&[u8]> = results.iter().map(|kv| kv.key.as_ref()).collect();
     assert_eq!(keys, vec![b"r:a".as_slice(), b"r:b", b"r:c"], "range results must be sorted");
 }
@@ -126,8 +129,10 @@ pub async fn range_exclusive_end<B: StorageBackend>(backend: &B) {
     for (k, v) in [(b"e:a", b"1"), (b"e:b", b"2"), (b"e:c", b"3")] {
         backend.set(k.to_vec(), v.to_vec()).await.expect("set");
     }
-    let results =
-        backend.get_range(b"e:a".to_vec()..b"e:c".to_vec()).await.expect("get_range exclusive");
+    let results = backend
+        .get_range(to_storage_range(b"e:a".to_vec()..b"e:c".to_vec()))
+        .await
+        .expect("get_range exclusive");
     let keys: Vec<&[u8]> = results.iter().map(|kv| kv.key.as_ref()).collect();
     assert_eq!(keys, vec![b"e:a".as_slice(), b"e:b"], "exclusive end must not include boundary");
 }
@@ -137,8 +142,10 @@ pub async fn range_inclusive_end<B: StorageBackend>(backend: &B) {
     for (k, v) in [(b"i:a", b"1"), (b"i:b", b"2"), (b"i:c", b"3")] {
         backend.set(k.to_vec(), v.to_vec()).await.expect("set");
     }
-    let results =
-        backend.get_range(b"i:a".to_vec()..=b"i:b".to_vec()).await.expect("get_range inclusive");
+    let results = backend
+        .get_range(to_storage_range(b"i:a".to_vec()..=b"i:b".to_vec()))
+        .await
+        .expect("get_range inclusive");
     let keys: Vec<&[u8]> = results.iter().map(|kv| kv.key.as_ref()).collect();
     assert_eq!(keys, vec![b"i:a".as_slice(), b"i:b"], "inclusive end must include boundary");
 }
@@ -147,8 +154,10 @@ pub async fn range_inclusive_end<B: StorageBackend>(backend: &B) {
 pub async fn range_empty_range_returns_empty<B: StorageBackend>(backend: &B) {
     backend.set(b"x:a".to_vec(), b"v".to_vec()).await.expect("set");
     // Exclusive range where start == end → empty
-    let results =
-        backend.get_range(b"x:a".to_vec()..b"x:a".to_vec()).await.expect("get_range empty");
+    let results = backend
+        .get_range(to_storage_range(b"x:a".to_vec()..b"x:a".to_vec()))
+        .await
+        .expect("get_range empty");
     assert!(results.is_empty(), "start==end exclusive range should be empty");
 }
 
@@ -158,11 +167,16 @@ pub async fn range_clear_range_removes_keys<B: StorageBackend>(backend: &B) {
         let key = format!("cr:{i:02}");
         backend.set(key.into_bytes(), b"v".to_vec()).await.expect("set");
     }
-    backend.clear_range(b"cr:01".to_vec()..b"cr:04".to_vec()).await.expect("clear_range");
+    backend
+        .clear_range(to_storage_range(b"cr:01".to_vec()..b"cr:04".to_vec()))
+        .await
+        .expect("clear_range");
 
     // Keys 00 and 04 should survive; 01, 02, 03 should be gone.
-    let remaining =
-        backend.get_range(b"cr:".to_vec()..b"cr:~".to_vec()).await.expect("get_range after clear");
+    let remaining = backend
+        .get_range(to_storage_range(b"cr:".to_vec()..b"cr:~".to_vec()))
+        .await
+        .expect("get_range after clear");
     let keys: Vec<&[u8]> = remaining.iter().map(|kv| kv.key.as_ref()).collect();
     assert_eq!(
         keys,
@@ -233,7 +247,10 @@ pub async fn ttl_expired_keys_excluded_from_range<B: StorageBackend>(backend: &B
 
     tokio::time::sleep(Duration::from_millis(150)).await;
 
-    let results = backend.get_range(b"tr:".to_vec()..b"tr:~".to_vec()).await.expect("get_range");
+    let results = backend
+        .get_range(to_storage_range(b"tr:".to_vec()..b"tr:~".to_vec()))
+        .await
+        .expect("get_range");
     let keys: Vec<&[u8]> = results.iter().map(|kv| kv.key.as_ref()).collect();
     assert_eq!(keys, vec![b"tr:a".as_slice(), b"tr:c"], "expired key must not appear in range");
 }
@@ -519,7 +536,8 @@ pub async fn get_deleted_key_returns_none_not_error<B: StorageBackend>(backend: 
 
 /// `clear_range` on a range with no keys is a no-op.
 pub async fn clear_range_on_empty_range_is_noop<B: StorageBackend>(backend: &B) {
-    let result = backend.clear_range(b"noop:a".to_vec()..b"noop:z".to_vec()).await;
+    let result =
+        backend.clear_range(to_storage_range(b"noop:a".to_vec()..b"noop:z".to_vec())).await;
     assert!(result.is_ok(), "clear_range on empty range should succeed: {result:?}");
 }
 

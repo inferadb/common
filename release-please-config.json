@@ -42,6 +42,11 @@
         },
         {
           "type": "toml",
+          "path": "crates/ratelimit/Cargo.toml",
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
           "path": "crates/storage-ledger/Cargo.toml",
           "jsonpath": "$.package.version"
         }

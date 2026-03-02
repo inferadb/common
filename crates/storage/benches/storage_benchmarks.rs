@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use inferadb_common_storage::{HealthProbe, MemoryBackend, StorageBackend};
+use inferadb_common_storage::{HealthProbe, MemoryBackend, StorageBackend, to_storage_range};
 use tokio::runtime::Runtime;
 
 // ---------------------------------------------------------------------------
@@ -203,7 +203,8 @@ fn get_range_operations(c: &mut Criterion) {
                 let s = start.clone();
                 let e = end.clone();
                 async move {
-                    let results = be.get_range(s..e).await.expect("get_range failed");
+                    let results =
+                        be.get_range(to_storage_range(s..e)).await.expect("get_range failed");
                     assert!(!results.is_empty());
                 }
             });
@@ -220,7 +221,8 @@ fn get_range_operations(c: &mut Criterion) {
                 let s = b"pfx:".to_vec();
                 let e = b"pfx:\xff".to_vec();
                 async move {
-                    let results = be.get_range(s..e).await.expect("get_range failed");
+                    let results =
+                        be.get_range(to_storage_range(s..e)).await.expect("get_range failed");
                     assert_eq!(results.len(), 500);
                 }
             });
@@ -255,7 +257,7 @@ fn clear_range_operations(c: &mut Criterion) {
                     // Measure the clear
                     let start = make_key(b"clear:", 0);
                     let end = make_key(b"clear:", cnt);
-                    be.clear_range(start..end).await.expect("clear_range failed");
+                    be.clear_range(to_storage_range(start..end)).await.expect("clear_range failed");
                 }
             });
         });

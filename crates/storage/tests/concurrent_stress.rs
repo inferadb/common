@@ -13,7 +13,9 @@
 use std::{collections::HashSet, time::Duration};
 
 use bytes::Bytes;
-use inferadb_common_storage::{MemoryBackend, StorageBackend, error::StorageError};
+use inferadb_common_storage::{
+    MemoryBackend, StorageBackend, error::StorageError, to_storage_range,
+};
 use tokio::task::JoinSet;
 
 /// Number of concurrent tasks for most tests.
@@ -198,7 +200,7 @@ async fn mixed_read_write_workload() {
                     3 => {
                         let start = make_key("pre", 0);
                         let end = make_key("pre", 10);
-                        let _ = backend.get_range(start..end).await;
+                        let _ = backend.get_range(to_storage_range(start..end)).await;
                     },
                     // Set with TTL
                     _ => {
@@ -260,8 +262,10 @@ async fn concurrent_range_scans_during_writes() {
             for _ in 0..OPS_PER_TASK {
                 let start = b"scan-key:".to_vec();
                 let end = b"scan-key:\xff".to_vec();
-                let results =
-                    backend.get_range(start..end).await.expect("range scan should succeed");
+                let results = backend
+                    .get_range(to_storage_range(start..end))
+                    .await
+                    .expect("range scan should succeed");
 
                 // Results must be sorted by key.
                 for window in results.windows(2) {
@@ -423,7 +427,7 @@ async fn concurrent_clear_range_during_writes() {
             for _ in 0..20 {
                 let start = b"clear-test:".to_vec();
                 let end = b"clear-test:\xff".to_vec();
-                let _ = backend.clear_range(start..end).await;
+                let _ = backend.clear_range(to_storage_range(start..end)).await;
                 tokio::task::yield_now().await;
             }
         });
@@ -437,7 +441,10 @@ async fn concurrent_clear_range_during_writes() {
     // the backend is in a consistent state by performing a range scan.
     let start = b"clear-test:".to_vec();
     let end = b"clear-test:\xff".to_vec();
-    let results = backend.get_range(start..end).await.expect("final range scan should succeed");
+    let results = backend
+        .get_range(to_storage_range(start..end))
+        .await
+        .expect("final range scan should succeed");
 
     // Results must be sorted if any remain.
     for window in results.windows(2) {

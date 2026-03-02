@@ -1116,17 +1116,14 @@ mod tests {
             self.inner.delete(key).await
         }
 
-        async fn get_range<R>(&self, range: R) -> StorageResult<Vec<crate::KeyValue>>
-        where
-            R: std::ops::RangeBounds<Vec<u8>> + Send,
-        {
+        async fn get_range(
+            &self,
+            range: crate::StorageRange,
+        ) -> StorageResult<Vec<crate::KeyValue>> {
             self.inner.get_range(range).await
         }
 
-        async fn clear_range<R>(&self, range: R) -> StorageResult<()>
-        where
-            R: std::ops::RangeBounds<Vec<u8>> + Send,
-        {
+        async fn clear_range(&self, range: crate::StorageRange) -> StorageResult<()> {
             self.inner.clear_range(range).await
         }
 

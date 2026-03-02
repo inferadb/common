@@ -14,7 +14,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use inferadb_common_storage::{
     HealthMetadata, HealthProbe, HealthStatus, KeyValue, Metrics, OrganizationSlug, SizeLimits,
-    StorageBackend, StorageError, StorageResult, Transaction, VaultSlug, validate_sizes,
+    StorageBackend, StorageError, StorageRange, StorageResult, Transaction, VaultSlug,
+    validate_sizes,
 };
 use inferadb_ledger_sdk::{
     LedgerClient, ListEntitiesOpts, Operation, ReadConsistency, SetCondition,
@@ -229,6 +230,77 @@ impl LedgerBackend {
             metrics: Metrics::new(),
             cancellation_token: None,
         }
+    }
+
+    /// Creates a backend connected to a single Ledger endpoint.
+    ///
+    /// This is a convenience constructor for simple deployments where a
+    /// single Ledger server is used with default settings (linearizable
+    /// reads, default pagination, no circuit breaker).
+    ///
+    /// For more control over the configuration, use
+    /// [`LedgerBackendConfig::builder`] directly.
+    ///
+    /// # Arguments
+    ///
+    /// * `endpoint` — The Ledger server URL (e.g., `"http://localhost:50051"`)
+    /// * `client_id` — Unique identifier for this client instance
+    /// * `organization` — Organization scope for all keys
+    /// * `vault` — Optional vault scope within the organization
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the client configuration is invalid or the
+    /// connection cannot be established.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use inferadb_common_storage_ledger::LedgerBackend;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Without vault
+    /// let backend = LedgerBackend::from_endpoint(
+    ///     "http://localhost:50051",
+    ///     "my-service",
+    ///     1u64,
+    ///     None::<u64>,
+    /// ).await?;
+    ///
+    /// // With vault
+    /// let backend = LedgerBackend::from_endpoint(
+    ///     "http://localhost:50051",
+    ///     "my-service",
+    ///     1u64,
+    ///     Some(100u64),
+    /// ).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn from_endpoint(
+        endpoint: &str,
+        client_id: &str,
+        organization: impl Into<OrganizationSlug>,
+        vault: Option<impl Into<VaultSlug>>,
+    ) -> Result<Self> {
+        use inferadb_ledger_sdk::{ClientConfig, ServerSource};
+
+        use crate::config::LedgerBackendConfig;
+
+        let client_config = ClientConfig::builder()
+            .servers(ServerSource::from_static([endpoint]))
+            .client_id(client_id)
+            .build()
+            .map_err(LedgerStorageError::from)?;
+
+        let config = LedgerBackendConfig::builder()
+            .client(client_config)
+            .organization(organization)
+            .maybe_vault(vault.map(Into::into))
+            .build()
+            .map_err(|e| LedgerStorageError::config(e.to_string()))?;
+
+        Self::new(config).await
     }
 
     /// Returns the organization ID.
@@ -529,10 +601,7 @@ impl StorageBackend for LedgerBackend {
 
     /// Scans a key range with server-side pagination and prefix optimization.
     #[tracing::instrument(skip(self, range))]
-    async fn get_range<R>(&self, range: R) -> StorageResult<Vec<KeyValue>>
-    where
-        R: RangeBounds<Vec<u8>> + Send,
-    {
+    async fn get_range(&self, range: StorageRange) -> StorageResult<Vec<KeyValue>> {
         self.check_cancelled()?;
         self.check_circuit()?;
         let start = std::time::Instant::now();
@@ -665,10 +734,7 @@ impl StorageBackend for LedgerBackend {
 
     /// Deletes all keys in a range using a two-phase get-then-delete approach.
     #[tracing::instrument(skip(self, range))]
-    async fn clear_range<R>(&self, range: R) -> StorageResult<()>
-    where
-        R: RangeBounds<Vec<u8>> + Send,
-    {
+    async fn clear_range(&self, range: StorageRange) -> StorageResult<()> {
         self.check_cancelled()?;
         self.check_circuit()?;
         let start = std::time::Instant::now();

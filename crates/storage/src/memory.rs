@@ -57,6 +57,7 @@ use parking_lot::RwLock;
 use tokio::{select, sync::watch, time::sleep};
 
 use crate::{
+    StorageRange,
     backend::StorageBackend,
     error::{StorageError, StorageResult},
     health::{HealthMetadata, HealthProbe, HealthStatus},
@@ -310,10 +311,7 @@ impl StorageBackend for MemoryBackend {
     }
 
     #[tracing::instrument(skip(self, range))]
-    async fn get_range<R>(&self, range: R) -> StorageResult<Vec<KeyValue>>
-    where
-        R: RangeBounds<Vec<u8>> + Send,
-    {
+    async fn get_range(&self, range: StorageRange) -> StorageResult<Vec<KeyValue>> {
         let data = self.data.read();
 
         let start = match range.start_bound() {
@@ -338,10 +336,7 @@ impl StorageBackend for MemoryBackend {
     }
 
     #[tracing::instrument(skip(self, range))]
-    async fn clear_range<R>(&self, range: R) -> StorageResult<()>
-    where
-        R: RangeBounds<Vec<u8>> + Send,
-    {
+    async fn clear_range(&self, range: StorageRange) -> StorageResult<()> {
         // Phase 1: Collect keys to remove under a read lock, allowing concurrent
         // reads and writes to proceed during the scan.
         let keys_to_remove: Vec<Vec<u8>> = {
@@ -617,7 +612,7 @@ impl Transaction for MemoryTransaction {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::assert_storage_error;
+    use crate::{StorageBackendExt, assert_storage_error, to_storage_range};
 
     #[tokio::test]
     async fn test_basic_operations() {
@@ -642,7 +637,8 @@ mod tests {
         backend.set(b"b".to_vec(), b"2".to_vec()).await.unwrap();
         backend.set(b"c".to_vec(), b"3".to_vec()).await.unwrap();
 
-        let range = backend.get_range(b"a".to_vec()..b"c".to_vec()).await.unwrap();
+        let range =
+            backend.get_range(to_storage_range(b"a".to_vec()..b"c".to_vec())).await.unwrap();
         assert_eq!(range.len(), 2);
         assert_eq!(range[0].key, Bytes::from("a"));
         assert_eq!(range[1].key, Bytes::from("b"));
@@ -656,7 +652,7 @@ mod tests {
         backend.set(b"b".to_vec(), b"2".to_vec()).await.unwrap();
         backend.set(b"c".to_vec(), b"3".to_vec()).await.unwrap();
 
-        backend.clear_range(b"a".to_vec()..b"c".to_vec()).await.unwrap();
+        backend.clear_range(to_storage_range(b"a".to_vec()..b"c".to_vec())).await.unwrap();
 
         assert_eq!(backend.get(b"a").await.unwrap(), None);
         assert_eq!(backend.get(b"b").await.unwrap(), None);
@@ -1328,7 +1324,7 @@ mod tests {
                     };
 
                     let results = backend
-                        .get_range(start_key.clone()..end_key.clone())
+                        .get_range(to_storage_range(start_key.clone()..end_key.clone()))
                         .await
                         .unwrap();
 
@@ -1362,7 +1358,7 @@ mod tests {
 
                     // start == end (exclusive) => empty range
                     let results = backend
-                        .get_range(boundary.clone()..boundary.clone())
+                        .get_range(to_storage_range(boundary.clone()..boundary.clone()))
                         .await
                         .unwrap();
                     prop_assert!(results.is_empty(), "start==end should return empty");
@@ -1397,7 +1393,7 @@ mod tests {
                         (b, a)
                     };
 
-                    let results = backend.get_range(start.clone()..end.clone()).await.unwrap();
+                    let results = backend.get_range(to_storage_range(start.clone()..end.clone())).await.unwrap();
                     let expected_count = keys
                         .iter()
                         .filter(|k| **k >= start && **k < end)
@@ -1433,7 +1429,7 @@ mod tests {
                         (b, a)
                     };
 
-                    let results = backend.get_range(start..end).await.unwrap();
+                    let results = backend.get_range(to_storage_range(start..end)).await.unwrap();
                     for pair in results.windows(2) {
                         prop_assert!(pair[0].key <= pair[1].key);
                     }

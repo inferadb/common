@@ -8,7 +8,9 @@
 use std::{ops::Bound, time::Duration};
 
 use bytes::Bytes;
-use inferadb_common_storage::{HealthProbe, StorageBackend, StorageError, VaultSlug};
+use inferadb_common_storage::{
+    HealthProbe, StorageBackend, StorageError, VaultSlug, to_storage_range,
+};
 use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig, TraceConfig};
 use inferadb_ledger_sdk::{ClientConfig, ServerSource, mock::MockLedgerServer};
 use tokio_util::sync::CancellationToken;
@@ -190,8 +192,10 @@ async fn test_get_range_empty() {
     let backend = create_test_backend(&server).await;
 
     // No keys set, range should return empty
-    let result =
-        backend.get_range(b"a".to_vec()..b"z".to_vec()).await.expect("range should succeed");
+    let result = backend
+        .get_range(to_storage_range(b"a".to_vec()..b"z".to_vec()))
+        .await
+        .expect("range should succeed");
     assert!(result.is_empty());
 }
 
@@ -207,8 +211,10 @@ async fn test_get_range_with_data() {
     backend.set(b"other:1".to_vec(), b"other".to_vec()).await.unwrap();
 
     // Range should include key:1, key:2, key:3
-    let result =
-        backend.get_range(b"key:".to_vec()..b"key:~".to_vec()).await.expect("range should succeed");
+    let result = backend
+        .get_range(to_storage_range(b"key:".to_vec()..b"key:~".to_vec()))
+        .await
+        .expect("range should succeed");
 
     assert_eq!(result.len(), 3);
 }
@@ -247,7 +253,10 @@ async fn test_clear_range() {
     backend.set(b"keep:1".to_vec(), b"keep".to_vec()).await.unwrap();
 
     // Clear the del: prefix
-    backend.clear_range(b"del:".to_vec()..b"del:~".to_vec()).await.expect("clear should succeed");
+    backend
+        .clear_range(to_storage_range(b"del:".to_vec()..b"del:~".to_vec()))
+        .await
+        .expect("clear should succeed");
 
     // del: keys should be gone
     assert_eq!(backend.get(b"del:1").await.unwrap(), None);
@@ -263,7 +272,8 @@ async fn test_clear_range_empty() {
     let backend = create_test_backend(&server).await;
 
     // Clearing an empty range should succeed
-    let result = backend.clear_range(b"nothing:".to_vec()..b"nothing:~".to_vec()).await;
+    let result =
+        backend.clear_range(to_storage_range(b"nothing:".to_vec()..b"nothing:~".to_vec())).await;
     assert!(result.is_ok());
 }
 
@@ -493,7 +503,8 @@ async fn test_key_ordering_preserved() {
     backend.set(b"bbb".to_vec(), b"3".to_vec()).await.unwrap();
 
     // Range query should respect ordering
-    let results = backend.get_range(b"aa".to_vec()..b"ab".to_vec()).await.unwrap();
+    let results =
+        backend.get_range(to_storage_range(b"aa".to_vec()..b"ab".to_vec())).await.unwrap();
 
     // Should only include aaa and aab (not bbb)
     assert_eq!(results.len(), 2);
@@ -1301,7 +1312,10 @@ async fn test_get_range_paginates_across_multiple_pages() {
     }
 
     // Range query should return all 10 across multiple pages
-    let results = backend.get_range(vec![b'k', 0]..=vec![b'k', 9]).await.expect("get_range");
+    let results = backend
+        .get_range(to_storage_range(vec![b'k', 0]..=vec![b'k', 9]))
+        .await
+        .expect("get_range");
     assert_eq!(results.len(), 10, "should return all 10 keys across multiple pages");
 
     // Verify ordering
@@ -1324,7 +1338,7 @@ async fn test_get_range_exceeds_safety_limit() {
     }
 
     // Range query should fail because we exceed max_range_results
-    let result = backend.get_range(vec![b'k', 0]..=vec![b'k', 9]).await;
+    let result = backend.get_range(to_storage_range(vec![b'k', 0]..=vec![b'k', 9])).await;
     assert!(result.is_err(), "should error when exceeding safety limit");
 
     let err = result.unwrap_err();
@@ -1348,7 +1362,10 @@ async fn test_get_range_within_safety_limit() {
     }
 
     // Exactly at the limit should succeed (we use > not >=)
-    let results = backend.get_range(vec![b'k', 0]..=vec![b'k', 9]).await.expect("get_range");
+    let results = backend
+        .get_range(to_storage_range(vec![b'k', 0]..=vec![b'k', 9]))
+        .await
+        .expect("get_range");
     assert_eq!(results.len(), 10, "should succeed when exactly at the safety limit");
 }
 
@@ -1366,10 +1383,16 @@ async fn test_clear_range_with_pagination() {
     }
 
     // Clear the range — should paginate internally
-    backend.clear_range(vec![b'k', 0]..=vec![b'k', 9]).await.expect("clear_range should succeed");
+    backend
+        .clear_range(to_storage_range(vec![b'k', 0]..=vec![b'k', 9]))
+        .await
+        .expect("clear_range should succeed");
 
     // Verify all keys are deleted
-    let results = backend.get_range(vec![b'k', 0]..=vec![b'k', 9]).await.expect("get_range");
+    let results = backend
+        .get_range(to_storage_range(vec![b'k', 0]..=vec![b'k', 9]))
+        .await
+        .expect("get_range");
     assert!(results.is_empty(), "all keys should be deleted after clear_range");
 }
 
@@ -1636,7 +1659,7 @@ async fn test_ledger_range_degenerate_exclusive() {
     populate_range_test_backend(&backend).await;
 
     let results = backend
-        .get_range(b"c".to_vec()..b"c".to_vec())
+        .get_range(to_storage_range(b"c".to_vec()..b"c".to_vec()))
         .await
         .expect("degenerate exclusive range should succeed");
     assert!(
@@ -1654,7 +1677,7 @@ async fn test_ledger_range_single_key_inclusive() {
     populate_range_test_backend(&backend).await;
 
     let results = backend
-        .get_range(b"c".to_vec()..=b"c".to_vec())
+        .get_range(to_storage_range(b"c".to_vec()..=b"c".to_vec()))
         .await
         .expect("single key inclusive range should succeed");
     assert_eq!(results.len(), 1, "should return exactly the one matching key");
@@ -1670,7 +1693,7 @@ async fn test_ledger_range_single_key_nonexistent() {
     populate_range_test_backend(&backend).await;
 
     let results = backend
-        .get_range(b"z".to_vec()..=b"z".to_vec())
+        .get_range(to_storage_range(b"z".to_vec()..=b"z".to_vec()))
         .await
         .expect("nonexistent single key range should succeed");
     assert!(results.is_empty(), "nonexistent key should return empty vec");
@@ -1683,8 +1706,10 @@ async fn test_ledger_range_unbounded_start() {
     let backend = create_test_backend(&server).await;
     populate_range_test_backend(&backend).await;
 
-    let results =
-        backend.get_range(..b"c".to_vec()).await.expect("unbounded start range should succeed");
+    let results = backend
+        .get_range(to_storage_range(..b"c".to_vec()))
+        .await
+        .expect("unbounded start range should succeed");
     assert_eq!(results.len(), 2, "should return keys a, b");
     assert_eq!(results[0].key, Bytes::from("a"));
     assert_eq!(results[1].key, Bytes::from("b"));
@@ -1713,7 +1738,10 @@ async fn test_ledger_range_unbounded_end() {
 
     // start = [1], unbounded end — prefix "01" matches [1, 0], [1, 1], [1, 2]
     // but not [2] (hex "02").
-    let results = backend.get_range(vec![1]..).await.expect("unbounded end range should succeed");
+    let results = backend
+        .get_range(to_storage_range(vec![1]..))
+        .await
+        .expect("unbounded end range should succeed");
     assert_eq!(results.len(), 3, "should return 3 keys with prefix [1]");
     assert_eq!(results[0].key.as_ref(), &[1, 0]);
     assert_eq!(results[1].key.as_ref(), &[1, 1]);
@@ -1728,7 +1756,7 @@ async fn test_ledger_range_fully_unbounded() {
     populate_range_test_backend(&backend).await;
 
     let results = backend
-        .get_range::<std::ops::RangeFull>(..)
+        .get_range(to_storage_range(..))
         .await
         .expect("fully unbounded range should succeed");
     assert_eq!(results.len(), 5, "should return all 5 keys");
@@ -1778,7 +1806,7 @@ async fn test_ledger_range_between_keys() {
     backend.set(b"z".to_vec(), b"vz".to_vec()).await.expect("set");
 
     let results = backend
-        .get_range(b"m".to_vec()..b"n".to_vec())
+        .get_range(to_storage_range(b"m".to_vec()..b"n".to_vec()))
         .await
         .expect("range between keys should succeed");
     assert!(results.is_empty(), "no keys exist in [m, n)");
@@ -1795,8 +1823,10 @@ async fn test_ledger_range_results_sorted() {
         backend.set(key.to_vec(), b"v".to_vec()).await.expect("set");
     }
 
-    let results =
-        backend.get_range(b"a".to_vec()..=b"e".to_vec()).await.expect("range should succeed");
+    let results = backend
+        .get_range(to_storage_range(b"a".to_vec()..=b"e".to_vec()))
+        .await
+        .expect("range should succeed");
 
     for window in results.windows(2) {
         assert!(
@@ -1895,7 +1925,7 @@ async fn test_get_range_after_shutdown_returns_shutting_down() {
 
     backend.shutdown();
 
-    let result = backend.get_range(b"a".to_vec()..b"z".to_vec()).await;
+    let result = backend.get_range(to_storage_range(b"a".to_vec()..b"z".to_vec())).await;
     assert!(matches!(result, Err(StorageError::ShuttingDown { .. })));
 }
 
@@ -1908,7 +1938,7 @@ async fn test_clear_range_after_shutdown_returns_shutting_down() {
 
     backend.shutdown();
 
-    let result = backend.clear_range(b"a".to_vec()..b"z".to_vec()).await;
+    let result = backend.clear_range(to_storage_range(b"a".to_vec()..b"z".to_vec())).await;
     assert!(matches!(result, Err(StorageError::ShuttingDown { .. })));
 }
 

@@ -592,6 +592,44 @@ impl StorageError {
             _ => self.to_string(),
         }
     }
+
+    /// Returns `true` if this is a [`NotFound`](Self::NotFound) error.
+    #[must_use = "returns a classification without side effects"]
+    pub fn is_not_found(&self) -> bool {
+        matches!(self, Self::NotFound { .. })
+    }
+
+    /// Returns `true` if this is a [`Conflict`](Self::Conflict) error.
+    #[must_use = "returns a classification without side effects"]
+    pub fn is_conflict(&self) -> bool {
+        matches!(self, Self::Conflict { .. })
+    }
+
+    /// Returns the suggested HTTP status code for this error.
+    ///
+    /// Maps each error variant to the most appropriate HTTP status code:
+    ///
+    /// | Variant | Code | Reason |
+    /// |---------|------|--------|
+    /// | `NotFound` | 404 | Resource does not exist |
+    /// | `Conflict` / `CasRetriesExhausted` | 409 | Write conflict |
+    /// | `RateLimitExceeded` | 429 | Too many requests |
+    /// | `SizeLimitExceeded` / `Serialization` | 400 | Bad request |
+    /// | `CircuitOpen` / `Connection` / `ShuttingDown` | 503 | Service unavailable |
+    /// | `Timeout` | 504 | Gateway timeout |
+    /// | `Internal` | 500 | Internal server error |
+    #[must_use = "returns a status code without side effects"]
+    pub fn suggested_status_code(&self) -> u16 {
+        match self {
+            Self::NotFound { .. } => 404,
+            Self::Conflict { .. } | Self::CasRetriesExhausted { .. } => 409,
+            Self::RateLimitExceeded { .. } => 429,
+            Self::SizeLimitExceeded { .. } | Self::Serialization { .. } => 400,
+            Self::CircuitOpen { .. } | Self::Connection { .. } | Self::ShuttingDown { .. } => 503,
+            Self::Timeout { .. } => 504,
+            Self::Internal { .. } => 500,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -854,6 +892,45 @@ mod tests {
             "{:?} should{} be transient",
             std::mem::discriminant(&err),
             if expected { "" } else { " NOT" },
+        );
+    }
+
+    #[test]
+    fn is_not_found_classification() {
+        assert!(StorageError::not_found("key").is_not_found());
+        assert!(!StorageError::conflict().is_not_found());
+        assert!(!StorageError::internal("oops").is_not_found());
+    }
+
+    #[test]
+    fn is_conflict_classification() {
+        assert!(StorageError::conflict().is_conflict());
+        assert!(!StorageError::not_found("key").is_conflict());
+        assert!(!StorageError::internal("oops").is_conflict());
+    }
+
+    #[rstest]
+    #[case::not_found(StorageError::not_found("key"), 404)]
+    #[case::conflict(StorageError::conflict(), 409)]
+    #[case::cas_exhausted(StorageError::cas_retries_exhausted(3), 409)]
+    #[case::rate_limit(
+        StorageError::rate_limit_exceeded(std::time::Duration::from_millis(100)),
+        429
+    )]
+    #[case::size_limit(StorageError::size_limit_exceeded("key", 1024, 512), 400)]
+    #[case::serialization(StorageError::serialization("bad"), 400)]
+    #[case::circuit_open(StorageError::circuit_open(), 503)]
+    #[case::connection(StorageError::connection("net down"), 503)]
+    #[case::shutting_down(StorageError::shutting_down(), 503)]
+    #[case::timeout(StorageError::timeout(), 504)]
+    #[case::internal(StorageError::internal("oops"), 500)]
+    fn suggested_status_code_mapping(#[case] err: StorageError, #[case] expected: u16) {
+        assert_eq!(
+            err.suggested_status_code(),
+            expected,
+            "{:?} should map to HTTP {}",
+            std::mem::discriminant(&err),
+            expected,
         );
     }
 

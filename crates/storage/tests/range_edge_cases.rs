@@ -9,7 +9,7 @@ use std::ops::Bound;
 
 use bytes::Bytes;
 use inferadb_common_storage::{
-    MemoryBackend, StorageBackend, assert_kv_pair, assert_range_results,
+    MemoryBackend, StorageBackend, assert_kv_pair, assert_range_results, to_storage_range,
 };
 
 /// Helper: populate backend with keys "a", "b", "c", "d", "e".
@@ -44,7 +44,7 @@ async fn test_degenerate_exclusive_range_start_equals_end() {
 
     // start..end where start == end => empty range (exclusive end means nothing matches)
     let results = backend
-        .get_range(b"c".to_vec()..b"c".to_vec())
+        .get_range(to_storage_range(b"c".to_vec()..b"c".to_vec()))
         .await
         .expect("degenerate exclusive range should succeed");
     assert!(
@@ -64,7 +64,7 @@ async fn test_single_key_inclusive_range() {
     let backend = populated_backend().await;
 
     let results = backend
-        .get_range(b"c".to_vec()..=b"c".to_vec())
+        .get_range(to_storage_range(b"c".to_vec()..=b"c".to_vec()))
         .await
         .expect("single key inclusive range should succeed");
     assert_range_results!(results, [("c", "vc")]);
@@ -76,7 +76,7 @@ async fn test_single_key_inclusive_range_nonexistent() {
     let backend = populated_backend().await;
 
     let results = backend
-        .get_range(b"z".to_vec()..=b"z".to_vec())
+        .get_range(to_storage_range(b"z".to_vec()..=b"z".to_vec()))
         .await
         .expect("range on nonexistent key should succeed");
     assert!(results.is_empty(), "nonexistent key should return empty vec");
@@ -91,8 +91,10 @@ async fn test_single_key_inclusive_range_nonexistent() {
 async fn test_unbounded_start_exclusive_end() {
     let backend = populated_backend().await;
 
-    let results =
-        backend.get_range(..b"c".to_vec()).await.expect("unbounded start range should succeed");
+    let results = backend
+        .get_range(to_storage_range(..b"c".to_vec()))
+        .await
+        .expect("unbounded start range should succeed");
     assert_range_results!(results, [("a", "va"), ("b", "vb")]);
 }
 
@@ -102,7 +104,7 @@ async fn test_unbounded_start_inclusive_end() {
     let backend = populated_backend().await;
 
     let results = backend
-        .get_range(..=b"c".to_vec())
+        .get_range(to_storage_range(..=b"c".to_vec()))
         .await
         .expect("unbounded start inclusive end should succeed");
     assert_range_results!(results, [("a", "va"), ("b", "vb"), ("c", "vc")]);
@@ -117,8 +119,10 @@ async fn test_unbounded_start_inclusive_end() {
 async fn test_unbounded_end_inclusive_start() {
     let backend = populated_backend().await;
 
-    let results =
-        backend.get_range(b"c".to_vec()..).await.expect("unbounded end range should succeed");
+    let results = backend
+        .get_range(to_storage_range(b"c".to_vec()..))
+        .await
+        .expect("unbounded end range should succeed");
     assert_range_results!(results, [("c", "vc"), ("d", "vd"), ("e", "ve")]);
 }
 
@@ -132,7 +136,7 @@ async fn test_fully_unbounded_range() {
     let backend = populated_backend().await;
 
     let results = backend
-        .get_range::<std::ops::RangeFull>(..)
+        .get_range(to_storage_range(..))
         .await
         .expect("fully unbounded range should succeed");
     assert_eq!(results.len(), 5, "should return all 5 keys");
@@ -146,7 +150,7 @@ async fn test_fully_unbounded_empty_backend() {
     let backend = MemoryBackend::new();
 
     let results = backend
-        .get_range::<std::ops::RangeFull>(..)
+        .get_range(to_storage_range(..))
         .await
         .expect("unbounded range on empty backend should succeed");
     assert!(results.is_empty());
@@ -275,7 +279,7 @@ async fn test_boundary_between_existing_keys() {
 
     // "ba" doesn't exist, but "b" should be included with Included start
     let results = backend
-        .get_range(b"b".to_vec()..b"ba".to_vec())
+        .get_range(to_storage_range(b"b".to_vec()..b"ba".to_vec()))
         .await
         .expect("range with boundary between keys should succeed");
     assert_range_results!(results, [("b", "vb")]);
@@ -296,7 +300,7 @@ async fn test_large_values_in_range() {
     backend.set(b"other:1".to_vec(), b"small".to_vec()).await.expect("set small value");
 
     let results = backend
-        .get_range(b"large:".to_vec()..b"large:~".to_vec())
+        .get_range(to_storage_range(b"large:".to_vec()..b"large:~".to_vec()))
         .await
         .expect("range with large values should succeed");
 
@@ -320,8 +324,10 @@ async fn test_range_results_sorted() {
         backend.set(key.to_vec(), b"v".to_vec()).await.expect("set");
     }
 
-    let results =
-        backend.get_range(b"a".to_vec()..=b"e".to_vec()).await.expect("range should succeed");
+    let results = backend
+        .get_range(to_storage_range(b"a".to_vec()..=b"e".to_vec()))
+        .await
+        .expect("range should succeed");
 
     for window in results.windows(2) {
         assert!(
@@ -347,7 +353,7 @@ async fn test_range_between_keys_returns_empty() {
 
     // Range "m".."n" — no keys exist in this range
     let results = backend
-        .get_range(b"m".to_vec()..b"n".to_vec())
+        .get_range(to_storage_range(b"m".to_vec()..b"n".to_vec()))
         .await
         .expect("range between keys should succeed");
     assert!(results.is_empty(), "no keys exist in [m, n)");
@@ -363,14 +369,12 @@ async fn test_clear_range_fully_unbounded() {
     let backend = populated_backend().await;
 
     backend
-        .clear_range::<std::ops::RangeFull>(..)
+        .clear_range(to_storage_range(..))
         .await
         .expect("fully unbounded clear_range should succeed");
 
-    let results = backend
-        .get_range::<std::ops::RangeFull>(..)
-        .await
-        .expect("range after clear should succeed");
+    let results =
+        backend.get_range(to_storage_range(..)).await.expect("range after clear should succeed");
     assert!(results.is_empty(), "all keys should be deleted");
 }
 
@@ -380,7 +384,7 @@ async fn test_clear_range_single_key() {
     let backend = populated_backend().await;
 
     backend
-        .clear_range(b"c".to_vec()..=b"c".to_vec())
+        .clear_range(to_storage_range(b"c".to_vec()..=b"c".to_vec()))
         .await
         .expect("single key clear_range should succeed");
 

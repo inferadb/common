@@ -1,0 +1,20 @@
+[package]
+name = "inferadb-common-ratelimit"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Distributed fixed-window rate limiter using StorageBackend"
+keywords = ["ratelimit", "rate-limit", "distributed"]
+categories = ["asynchronous"]
+
+[lints]
+workspace = true
+
+[dependencies]
+inferadb-common-storage = { path = "../storage", version = ">=0.1.0-0" }
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }

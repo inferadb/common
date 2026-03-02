@@ -141,17 +141,14 @@ impl StorageBackend for FailingBackend {
         self.inner.delete(key).await
     }
 
-    async fn get_range<R>(&self, range: R) -> StorageResult<Vec<KeyValue>>
-    where
-        R: std::ops::RangeBounds<Vec<u8>> + Send,
-    {
+    async fn get_range(
+        &self,
+        range: inferadb_common_storage::StorageRange,
+    ) -> StorageResult<Vec<KeyValue>> {
         self.inner.get_range(range).await
     }
 
-    async fn clear_range<R>(&self, range: R) -> StorageResult<()>
-    where
-        R: std::ops::RangeBounds<Vec<u8>> + Send,
-    {
+    async fn clear_range(&self, range: inferadb_common_storage::StorageRange) -> StorageResult<()> {
         self.inner.clear_range(range).await
     }
 

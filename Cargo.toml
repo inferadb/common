@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/authn",
+    "crates/ratelimit",
     "crates/storage",
     "crates/storage-ledger",
 ]

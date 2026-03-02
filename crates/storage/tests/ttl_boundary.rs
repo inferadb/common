@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use inferadb_common_storage::{MemoryBackend, StorageBackend};
+use inferadb_common_storage::{MemoryBackend, StorageBackend, to_storage_range};
 
 // ============================================================================
 // Zero TTL
@@ -47,8 +47,10 @@ async fn test_zero_ttl_excluded_from_range() {
         .expect("set_with_ttl");
     backend.set(b"range:c".to_vec(), b"also-permanent".to_vec()).await.expect("set");
 
-    let results =
-        backend.get_range(b"range:".to_vec()..b"range:~".to_vec()).await.expect("get_range");
+    let results = backend
+        .get_range(to_storage_range(b"range:".to_vec()..b"range:~".to_vec()))
+        .await
+        .expect("get_range");
 
     assert_eq!(results.len(), 2, "zero-TTL key should be filtered from range results");
     assert_eq!(results[0].value, Bytes::from("permanent"));

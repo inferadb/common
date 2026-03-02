@@ -30,14 +30,14 @@
 //! If any operation fails (or `commit()` is never called), nothing is
 //! persisted — the buffer is simply dropped.
 
-use std::{ops::RangeBounds, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::Mutex;
 
 use crate::{
-    StorageBackend,
+    StorageBackend, StorageRange,
     error::StorageResult,
     health::{HealthProbe, HealthStatus},
     transaction::Transaction,
@@ -170,17 +170,11 @@ impl<S: StorageBackend + Clone + 'static> StorageBackend for BufferedBackend<S> 
         Ok(())
     }
 
-    async fn get_range<R>(&self, range: R) -> StorageResult<Vec<KeyValue>>
-    where
-        R: RangeBounds<Vec<u8>> + Send,
-    {
+    async fn get_range(&self, range: StorageRange) -> StorageResult<Vec<KeyValue>> {
         self.inner.get_range(range).await
     }
 
-    async fn clear_range<R>(&self, range: R) -> StorageResult<()>
-    where
-        R: RangeBounds<Vec<u8>> + Send,
-    {
+    async fn clear_range(&self, range: StorageRange) -> StorageResult<()> {
         self.inner.clear_range(range).await
     }
 

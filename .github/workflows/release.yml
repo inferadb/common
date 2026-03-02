@@ -164,6 +164,12 @@ jobs:
         run: |
           cargo publish --package inferadb-common-authn --token "$CARGO_REGISTRY_TOKEN"
 
+      - name: Publish inferadb-common-ratelimit
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          cargo publish --package inferadb-common-ratelimit --token "$CARGO_REGISTRY_TOKEN"
+
       - name: Publish inferadb-common-storage-ledger
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

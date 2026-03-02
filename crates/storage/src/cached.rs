@@ -33,7 +33,7 @@
 //! # }
 //! ```
 
-use std::{ops::RangeBounds, time::Duration};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -41,7 +41,7 @@ use moka::future::Cache;
 use tracing::trace;
 
 use crate::{
-    ConfigError, StorageBackend,
+    ConfigError, StorageBackend, StorageRange,
     error::StorageResult,
     health::{HealthProbe, HealthStatus},
     transaction::Transaction,
@@ -247,17 +247,11 @@ impl<S: StorageBackend + Clone> StorageBackend for CachedBackend<S> {
         self.inner.delete(key).await
     }
 
-    async fn get_range<R>(&self, range: R) -> StorageResult<Vec<KeyValue>>
-    where
-        R: RangeBounds<Vec<u8>> + Send,
-    {
+    async fn get_range(&self, range: StorageRange) -> StorageResult<Vec<KeyValue>> {
         self.inner.get_range(range).await
     }
 
-    async fn clear_range<R>(&self, range: R) -> StorageResult<()>
-    where
-        R: RangeBounds<Vec<u8>> + Send,
-    {
+    async fn clear_range(&self, range: StorageRange) -> StorageResult<()> {
         if let Some(cache) = &self.cache {
             cache.invalidate_all();
         }
@@ -309,7 +303,7 @@ impl<S: StorageBackend + Clone> StorageBackend for CachedBackend<S> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::MemoryBackend;
+    use crate::{MemoryBackend, to_storage_range};
 
     fn test_config() -> CacheConfig {
         CacheConfig::builder().max_entries(100).ttl(Duration::from_secs(60)).build().unwrap()
@@ -397,7 +391,7 @@ mod tests {
         cached.get(b"a").await.unwrap();
         cached.get(b"b").await.unwrap();
 
-        cached.clear_range(b"a".to_vec()..b"c".to_vec()).await.unwrap();
+        cached.clear_range(to_storage_range(b"a".to_vec()..b"c".to_vec())).await.unwrap();
 
         // After clear_range, the cache should have been invalidated.
         // Mutate inner directly to verify cache no longer serves stale data.
