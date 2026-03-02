@@ -219,3 +219,46 @@ async fn idempotent_delete() {
 async fn run_all_conformance_tests() {
     conformance::run_all(Arc::new(MemoryBackend::new())).await;
 }
+
+// ============================================================================
+// BufferedBackend wrapper conformance (4 tests)
+// ============================================================================
+
+#[tokio::test]
+async fn buffered_backend_conformance() {
+    conformance::buffered_backend_conformance().await;
+}
+
+#[tokio::test]
+async fn buffered_read_your_writes() {
+    conformance::buffered_read_your_writes().await;
+}
+
+#[tokio::test]
+async fn buffered_commit_atomicity() {
+    conformance::buffered_commit_atomicity().await;
+}
+
+#[tokio::test]
+async fn buffered_transaction_accumulation() {
+    conformance::buffered_transaction_accumulation().await;
+}
+
+// ============================================================================
+// CachedBackend wrapper conformance (3 tests)
+// ============================================================================
+
+#[tokio::test]
+async fn cached_backend_conformance() {
+    conformance::cached_backend_conformance().await;
+}
+
+#[tokio::test]
+async fn cached_invalidation_on_write() {
+    conformance::cached_invalidation_on_write().await;
+}
+
+#[tokio::test]
+async fn cached_invalidation_on_delete() {
+    conformance::cached_invalidation_on_delete().await;
+}

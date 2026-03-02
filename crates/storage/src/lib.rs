@@ -98,6 +98,10 @@ pub mod auth;
 pub mod backend;
 /// Batched write operations with automatic transaction splitting.
 pub mod batch;
+/// Write-buffering wrapper for atomic multi-key commits.
+pub mod buffered;
+/// Read-through cache wrapper for storage backends.
+pub mod cached;
 /// Conformance test suite for validating [`StorageBackend`] implementations.
 #[cfg(any(test, feature = "testutil"))]
 #[allow(clippy::expect_used, clippy::panic)]
@@ -126,6 +130,8 @@ pub mod types;
 // Re-export primary types at crate root for convenience
 pub use backend::StorageBackend;
 pub use batch::{BatchConfig, BatchFlushStats, BatchOperation, BatchResult, BatchWriter};
+pub use buffered::BufferedBackend;
+pub use cached::{CacheConfig, CachedBackend};
 pub use error::{BoxError, ConfigError, StorageError, StorageResult, TimeoutContext};
 pub use health::{HealthMetadata, HealthProbe, HealthStatus};
 pub use memory::MemoryBackend;

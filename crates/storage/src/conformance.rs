@@ -36,7 +36,10 @@ use std::{sync::Arc, time::Duration};
 
 use bytes::Bytes;
 
-use crate::{assert_storage_error, backend::StorageBackend, error::StorageError};
+use crate::{
+    BufferedBackend, CacheConfig, CachedBackend, MemoryBackend, assert_storage_error,
+    backend::StorageBackend, error::StorageError,
+};
 
 // ============================================================================
 // CRUD — Basic get/set/delete semantics (8 tests)
@@ -604,4 +607,132 @@ pub async fn run_all<B: StorageBackend + 'static>(backend: Arc<B>) {
     get_deleted_key_returns_none_not_error(backend.as_ref()).await;
     clear_range_on_empty_range_is_noop(backend.as_ref()).await;
     idempotent_delete(backend.as_ref()).await;
+}
+
+// ============================================================================
+// BufferedBackend — wrapper-specific conformance (4 tests)
+// ============================================================================
+
+/// Basic operations work through a `BufferedBackend` after commit.
+pub async fn buffered_backend_conformance() {
+    let inner = MemoryBackend::new();
+    let buffered = BufferedBackend::new(inner.clone());
+
+    buffered.set(b"k1".to_vec(), b"v1".to_vec()).await.expect("set");
+    buffered.set(b"k2".to_vec(), b"v2".to_vec()).await.expect("set");
+    buffered.commit().await.expect("commit");
+
+    assert_eq!(inner.get(b"k1").await.expect("get"), Some(Bytes::from("v1")));
+    assert_eq!(inner.get(b"k2").await.expect("get"), Some(Bytes::from("v2")));
+}
+
+/// Writes are visible through the buffer before commit (read-your-writes).
+pub async fn buffered_read_your_writes() {
+    let inner = MemoryBackend::new();
+    let buffered = BufferedBackend::new(inner.clone());
+
+    buffered.set(b"key".to_vec(), b"value".to_vec()).await.expect("set");
+
+    // Visible through the buffer
+    assert_eq!(buffered.get(b"key").await.expect("get"), Some(Bytes::from("value")));
+
+    // NOT visible on inner
+    assert_eq!(inner.get(b"key").await.expect("get"), None);
+}
+
+/// Multiple writes flush atomically via a single inner transaction.
+pub async fn buffered_commit_atomicity() {
+    let inner = MemoryBackend::new();
+    let buffered = BufferedBackend::new(inner.clone());
+
+    buffered.set(b"a".to_vec(), b"1".to_vec()).await.expect("set");
+    buffered.set(b"b".to_vec(), b"2".to_vec()).await.expect("set");
+    buffered.delete(b"a").await.expect("delete");
+    buffered.set(b"c".to_vec(), b"3".to_vec()).await.expect("set");
+
+    // Before commit — inner is empty
+    assert_eq!(inner.get(b"a").await.expect("get"), None);
+    assert_eq!(inner.get(b"b").await.expect("get"), None);
+    assert_eq!(inner.get(b"c").await.expect("get"), None);
+
+    buffered.commit().await.expect("commit");
+
+    // After commit — all applied atomically
+    assert_eq!(inner.get(b"a").await.expect("get"), None, "deleted key should be gone");
+    assert_eq!(inner.get(b"b").await.expect("get"), Some(Bytes::from("2")));
+    assert_eq!(inner.get(b"c").await.expect("get"), Some(Bytes::from("3")));
+}
+
+/// Multiple transaction commits accumulate in the parent buffer.
+pub async fn buffered_transaction_accumulation() {
+    let inner = MemoryBackend::new();
+    let buffered = BufferedBackend::new(inner.clone());
+
+    let mut txn1 = buffered.transaction().await.expect("transaction");
+    txn1.set(b"user:1".to_vec(), b"alice".to_vec());
+    txn1.commit().await.expect("txn commit");
+
+    let mut txn2 = buffered.transaction().await.expect("transaction");
+    txn2.set(b"email:1".to_vec(), b"alice@test.com".to_vec());
+    txn2.commit().await.expect("txn commit");
+
+    // Both visible through buffer, neither on inner
+    assert_eq!(buffered.get(b"user:1").await.expect("get"), Some(Bytes::from("alice")));
+    assert_eq!(buffered.get(b"email:1").await.expect("get"), Some(Bytes::from("alice@test.com")));
+    assert_eq!(inner.get(b"user:1").await.expect("get"), None);
+
+    buffered.commit().await.expect("commit");
+
+    assert_eq!(inner.get(b"user:1").await.expect("get"), Some(Bytes::from("alice")));
+    assert_eq!(inner.get(b"email:1").await.expect("get"), Some(Bytes::from("alice@test.com")));
+}
+
+// ============================================================================
+// CachedBackend — wrapper-specific conformance (3 tests)
+// ============================================================================
+
+fn default_cache_config() -> CacheConfig {
+    CacheConfig::builder()
+        .max_entries(1_000)
+        .ttl(Duration::from_secs(60))
+        .build()
+        .expect("valid config")
+}
+
+/// Basic operations work correctly through a `CachedBackend`.
+pub async fn cached_backend_conformance() {
+    let inner = MemoryBackend::new();
+    let cached = CachedBackend::new(inner, default_cache_config());
+
+    cached.set(b"k1".to_vec(), b"v1".to_vec()).await.expect("set");
+    assert_eq!(cached.get(b"k1").await.expect("get"), Some(Bytes::from("v1")));
+
+    cached.delete(b"k1").await.expect("delete");
+    assert_eq!(cached.get(b"k1").await.expect("get"), None);
+}
+
+/// Writes invalidate the cache so subsequent reads see the new value.
+pub async fn cached_invalidation_on_write() {
+    let inner = MemoryBackend::new();
+    let cached = CachedBackend::new(inner, default_cache_config());
+
+    cached.set(b"key".to_vec(), b"v1".to_vec()).await.expect("set");
+    let _ = cached.get(b"key").await.expect("get"); // populate cache
+
+    cached.set(b"key".to_vec(), b"v2".to_vec()).await.expect("set");
+    let val = cached.get(b"key").await.expect("get");
+    assert_eq!(val, Some(Bytes::from("v2")), "cache should be invalidated on write");
+}
+
+/// Delete invalidates the cache so subsequent reads return `None`.
+pub async fn cached_invalidation_on_delete() {
+    let inner = MemoryBackend::new();
+    let cached = CachedBackend::new(inner, default_cache_config());
+
+    cached.set(b"key".to_vec(), b"v1".to_vec()).await.expect("set");
+    let _ = cached.get(b"key").await.expect("get"); // populate cache
+
+    cached.delete(b"key").await.expect("delete");
+    let val = cached.get(b"key").await.expect("get");
+    assert_eq!(val, None, "cache should be invalidated on delete");
 }

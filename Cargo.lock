@@ -1808,6 +1808,7 @@ dependencies = [
  "criterion",
  "fail",
  "inferadb-ledger-types",
+ "moka",
  "parking_lot",
  "proptest",
  "rand 0.10.0",
