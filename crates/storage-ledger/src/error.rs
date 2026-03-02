@@ -291,6 +291,26 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
             tracing::warn!(endpoint = %endpoint, "Circuit breaker open");
             StorageError::connection_with_source(format!("Circuit open for {endpoint}"), err)
         },
+
+        // Regional data residency — org/user is migrating between regions
+        SdkError::OrganizationMigrating { source_region, target_region, retry_after } => {
+            tracing::warn!(
+                %source_region,
+                %target_region,
+                retry_after_ms = retry_after.as_millis() as u64,
+                "Organization migrating between regions"
+            );
+            StorageError::connection_with_source("Organization migrating", err)
+        },
+        SdkError::UserMigrating { source_region, target_region, retry_after } => {
+            tracing::warn!(
+                %source_region,
+                %target_region,
+                retry_after_ms = retry_after.as_millis() as u64,
+                "User migrating between regions"
+            );
+            StorageError::connection_with_source("User migrating", err)
+        },
     }
 }
 
@@ -548,6 +568,34 @@ mod tests {
 
         assert!(matches!(storage_err, StorageError::Internal { .. }));
         assert!(storage_err.source().is_some());
+    }
+
+    #[test]
+    fn test_organization_migrating_error_mapping() {
+        let sdk_err = SdkError::OrganizationMigrating {
+            source_region: inferadb_ledger_sdk::Region::US_EAST_VA,
+            target_region: inferadb_ledger_sdk::Region::IE_EAST_DUBLIN,
+            retry_after: std::time::Duration::from_secs(30),
+        };
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Connection { .. }));
+        assert!(storage_err.source().is_some());
+        assert!(storage_err.is_transient());
+    }
+
+    #[test]
+    fn test_user_migrating_error_mapping() {
+        let sdk_err = SdkError::UserMigrating {
+            source_region: inferadb_ledger_sdk::Region::US_EAST_VA,
+            target_region: inferadb_ledger_sdk::Region::IE_EAST_DUBLIN,
+            retry_after: std::time::Duration::from_secs(30),
+        };
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::Connection { .. }));
+        assert!(storage_err.source().is_some());
+        assert!(storage_err.is_transient());
     }
 
     #[test]

@@ -244,14 +244,10 @@ impl LedgerSigningKeyStore {
         organization: OrganizationSlug,
         key: &str,
     ) -> Result<Option<Vec<u8>>, LedgerStorageError> {
-        let result = match self.read_consistency {
-            ReadConsistency::Linearizable => {
-                self.client.read_consistent(organization, None, key).await
-            },
-            ReadConsistency::Eventual => self.client.read(organization, None, key).await,
-        };
-
-        result.map_err(LedgerStorageError::from)
+        self.client
+            .read_with_consistency(organization, None, key, self.read_consistency)
+            .await
+            .map_err(LedgerStorageError::from)
     }
 
     /// Deserializes a key from stored bytes.
@@ -285,25 +281,20 @@ impl LedgerSigningKeyStore {
         new_value: Vec<u8>,
         expected_value: Vec<u8>,
     ) -> StorageResult<()> {
-        use inferadb_ledger_sdk::SdkError;
-
         match self
             .client
-            .write(
+            .set_entity_if(
                 organization,
                 None,
-                vec![Operation::set_entity_if(
-                    storage_key,
-                    new_value,
-                    SetCondition::ValueEquals(expected_value),
-                )],
+                storage_key,
+                new_value,
+                SetCondition::ValueEquals(expected_value),
+                None,
             )
             .await
         {
             Ok(_) => Ok(()),
-            Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
-                Err(StorageError::conflict())
-            },
+            Err(e) if e.is_cas_conflict() => Err(StorageError::conflict()),
             Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
         }
     }
@@ -320,8 +311,6 @@ impl LedgerSigningKeyStore {
         storage_key: String,
         expected_value: Vec<u8>,
     ) -> StorageResult<()> {
-        use inferadb_ledger_sdk::SdkError;
-
         match self
             .client
             .write(
@@ -341,9 +330,7 @@ impl LedgerSigningKeyStore {
             .await
         {
             Ok(_) => Ok(()),
-            Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
-                Err(StorageError::conflict())
-            },
+            Err(e) if e.is_cas_conflict() => Err(StorageError::conflict()),
             Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
         }
     }
@@ -403,11 +390,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
         let result = self
             .client
-            .write(
-                organization,
-                None, // No vault - keys are organization-level
-                vec![Operation::set_entity(storage_key, value)],
-            )
+            .set_entity(organization, None, storage_key, value, None)
             .await
             .map(|_| ())
             .map_err(|e| {

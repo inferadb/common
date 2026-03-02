@@ -21,10 +21,9 @@ use inferadb_ledger_sdk::{
 };
 
 use crate::{
-    config::{LedgerBackendConfig, RetryConfig, TimeoutConfig},
+    config::{LedgerBackendConfig, TimeoutConfig},
     error::{LedgerStorageError, Result},
     keys::{decode_key, encode_key},
-    retry::{with_retry, with_retry_timeout},
     transaction::LedgerTransaction,
 };
 
@@ -105,9 +104,6 @@ pub struct LedgerBackend {
     /// Maximum total results from a single range query.
     max_range_results: usize,
 
-    /// Retry configuration for transient failures.
-    retry_config: RetryConfig,
-
     /// Per-operation timeout configuration.
     timeout_config: TimeoutConfig,
 
@@ -175,7 +171,6 @@ impl LedgerBackend {
         let read_consistency = config.read_consistency();
         let page_size = config.page_size();
         let max_range_results = config.max_range_results();
-        let retry_config = config.retry_config().clone();
         let timeout_config = config.timeout_config().clone();
         let size_limits = config.size_limits();
         let circuit_breaker = config
@@ -195,7 +190,6 @@ impl LedgerBackend {
             read_consistency,
             page_size,
             max_range_results,
-            retry_config,
             timeout_config,
             size_limits,
             circuit_breaker,
@@ -229,7 +223,6 @@ impl LedgerBackend {
             read_consistency,
             page_size: DEFAULT_PAGE_SIZE,
             max_range_results: DEFAULT_MAX_RANGE_RESULTS,
-            retry_config: RetryConfig::default(),
             timeout_config: TimeoutConfig::default(),
             size_limits: None,
             circuit_breaker: None,
@@ -373,14 +366,10 @@ impl LedgerBackend {
 
     /// Performs a read with the configured consistency level.
     async fn do_read(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, LedgerStorageError> {
-        let result = match self.read_consistency {
-            ReadConsistency::Linearizable => {
-                self.client.read_consistent(self.organization, self.vault, key).await
-            },
-            ReadConsistency::Eventual => self.client.read(self.organization, self.vault, key).await,
-        };
-
-        result.map_err(LedgerStorageError::from)
+        self.client
+            .read_with_consistency(self.organization, self.vault, key, self.read_consistency)
+            .await
+            .map_err(LedgerStorageError::from)
     }
 
     /// Computes the expiration timestamp by adding `ttl` to the current
@@ -423,20 +412,15 @@ impl StorageBackend for LedgerBackend {
         let start = std::time::Instant::now();
         let encoded_key = encode_key(key);
 
-        let result = with_retry_timeout(
-            &self.retry_config,
-            self.timeout_config.read_timeout,
-            None,
-            "get",
-            || async {
-                match self.do_read(&encoded_key).await {
-                    Ok(Some(value)) => Ok(Some(Bytes::from(value))),
-                    Ok(None) => Ok(None),
-                    Err(e) => Err(StorageError::from(e)),
-                }
-            },
-        )
-        .await;
+        let result = tokio::time::timeout(self.timeout_config.read_timeout, async {
+            match self.do_read(&encoded_key).await {
+                Ok(Some(value)) => Ok(Some(Bytes::from(value))),
+                Ok(None) => Ok(None),
+                Err(e) => Err(StorageError::from(e)),
+            }
+        })
+        .await
+        .unwrap_or_else(|_| Err(StorageError::timeout()));
         self.record_circuit_result(&result);
         self.metrics.record_get_org(start.elapsed(), &self.org_str());
         if result.is_err() {
@@ -454,24 +438,15 @@ impl StorageBackend for LedgerBackend {
         let start = std::time::Instant::now();
         let encoded_key = encode_key(&key);
 
-        let result = with_retry_timeout(
-            &self.retry_config,
-            self.timeout_config.write_timeout,
-            None,
-            "set",
-            || async {
-                self.client
-                    .write(
-                        self.organization,
-                        self.vault,
-                        vec![Operation::set_entity(encoded_key.clone(), value.clone())],
-                    )
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
-            },
-        )
-        .await;
+        let result = tokio::time::timeout(self.timeout_config.write_timeout, async {
+            self.client
+                .set_entity(self.organization, self.vault, encoded_key, value, None)
+                .await
+                .map(|_| ())
+                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+        })
+        .await
+        .unwrap_or_else(|_| Err(StorageError::timeout()));
         self.record_circuit_result(&result);
         self.metrics.record_set_org(start.elapsed(), &self.org_str());
         if result.is_err() {
@@ -480,7 +455,7 @@ impl StorageBackend for LedgerBackend {
         result
     }
 
-    /// Performs a compare-and-set operation, retrying on transient errors.
+    /// Performs a compare-and-set operation.
     ///
     /// Conflict errors (`FailedPrecondition`) are **not** retried — they propagate
     /// immediately as [`StorageError::Conflict`].
@@ -497,42 +472,28 @@ impl StorageBackend for LedgerBackend {
         let start = std::time::Instant::now();
         let encoded_key = encode_key(key);
 
-        let condition = match expected {
-            None => SetCondition::NotExists,
-            Some(expected_value) => SetCondition::ValueEquals(expected_value.to_vec()),
-        };
+        let condition = SetCondition::from_expected(expected.map(|v| v.to_vec()));
 
-        use inferadb_ledger_sdk::SdkError;
-        use tonic::Code;
-
-        let result = with_retry_timeout(
-            &self.retry_config,
-            self.timeout_config.write_timeout,
-            None,
-            "compare_and_set",
-            || async {
-                match self
-                    .client
-                    .write(
-                        self.organization,
-                        self.vault,
-                        vec![Operation::set_entity_if(
-                            encoded_key.clone(),
-                            new_value.clone(),
-                            condition.clone(),
-                        )],
-                    )
-                    .await
-                {
-                    Ok(_) => Ok(()),
-                    Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
-                        Err(StorageError::conflict())
-                    },
-                    Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
-                }
-            },
-        )
-        .await;
+        let result = tokio::time::timeout(self.timeout_config.write_timeout, async {
+            match self
+                .client
+                .set_entity_if(
+                    self.organization,
+                    self.vault,
+                    encoded_key,
+                    new_value,
+                    condition,
+                    None,
+                )
+                .await
+            {
+                Ok(_) => Ok(()),
+                Err(e) if e.is_cas_conflict() => Err(StorageError::conflict()),
+                Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
+            }
+        })
+        .await
+        .unwrap_or_else(|_| Err(StorageError::timeout()));
         self.record_circuit_result(&result);
         self.metrics.record_set_org(start.elapsed(), &self.org_str());
         if result.is_err() {
@@ -549,24 +510,15 @@ impl StorageBackend for LedgerBackend {
         let start = std::time::Instant::now();
         let encoded_key = encode_key(key);
 
-        let result = with_retry_timeout(
-            &self.retry_config,
-            self.timeout_config.write_timeout,
-            None,
-            "delete",
-            || async {
-                self.client
-                    .write(
-                        self.organization,
-                        self.vault,
-                        vec![Operation::delete_entity(encoded_key.clone())],
-                    )
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
-            },
-        )
-        .await;
+        let result = tokio::time::timeout(self.timeout_config.write_timeout, async {
+            self.client
+                .delete_entity(self.organization, self.vault, encoded_key)
+                .await
+                .map(|_| ())
+                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+        })
+        .await
+        .unwrap_or_else(|_| Err(StorageError::timeout()));
         self.record_circuit_result(&result);
         self.metrics.record_delete_org(start.elapsed(), &self.org_str());
         if result.is_err() {
@@ -627,23 +579,21 @@ impl StorageBackend for LedgerBackend {
                 let current_page_token = page_token.take();
                 let prefix_clone = prefix.clone();
 
-                let result = with_retry(&self.retry_config, None, "get_range_page", || async {
-                    let opts = ListEntitiesOpts {
-                        key_prefix: prefix_clone.clone(),
-                        at_height: None,
-                        include_expired: false,
-                        limit: self.page_size,
-                        page_token: current_page_token.clone(),
-                        consistency: self.read_consistency,
-                        vault: self.vault,
-                    };
+                let opts = ListEntitiesOpts {
+                    key_prefix: prefix_clone,
+                    at_height: None,
+                    include_expired: false,
+                    limit: self.page_size,
+                    page_token: current_page_token,
+                    consistency: self.read_consistency,
+                    vault: self.vault,
+                };
 
-                    self.client
-                        .list_entities(self.organization, opts)
-                        .await
-                        .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
-                })
-                .await?;
+                let result = self
+                    .client
+                    .list_entities(self.organization, opts)
+                    .await
+                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
                 // Pre-allocate on the first page to reduce reallocations
                 if all_key_values.is_empty() {
@@ -736,21 +686,16 @@ impl StorageBackend for LedgerBackend {
             .map(|kv| Operation::delete_entity(encode_key(&kv.key)))
             .collect();
 
-        // Execute as batch delete with retry and timeout
-        let result = with_retry_timeout(
-            &self.retry_config,
-            self.timeout_config.list_timeout,
-            None,
-            "clear_range",
-            || async {
-                self.client
-                    .write(self.organization, self.vault, operations.clone())
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
-            },
-        )
-        .await;
+        // Execute as batch delete with timeout
+        let result = tokio::time::timeout(self.timeout_config.list_timeout, async {
+            self.client
+                .write(self.organization, self.vault, operations)
+                .await
+                .map(|_| ())
+                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+        })
+        .await
+        .unwrap_or_else(|_| Err(StorageError::timeout()));
         self.record_circuit_result(&result);
         self.metrics.record_clear_range_org(start.elapsed(), &self.org_str());
         if result.is_err() {
@@ -762,7 +707,7 @@ impl StorageBackend for LedgerBackend {
     /// Stores a key-value pair with automatic expiration.
     ///
     /// Computes an absolute Unix timestamp by adding the `ttl` duration to the
-    /// current system time. The Ledger SDK's `set_entity_with_expiry`
+    /// current system time. The Ledger SDK's `set_entity` with `expires_at`
     /// interprets this value as an absolute expiration timestamp in seconds
     /// since the Unix epoch. Sub-second precision in `ttl` is truncated.
     ///
@@ -779,28 +724,15 @@ impl StorageBackend for LedgerBackend {
         let encoded_key = encode_key(&key);
         let expires_at = Self::compute_expiration_timestamp(ttl)?;
 
-        let result = with_retry_timeout(
-            &self.retry_config,
-            self.timeout_config.write_timeout,
-            None,
-            "set_with_ttl",
-            || async {
-                self.client
-                    .write(
-                        self.organization,
-                        self.vault,
-                        vec![Operation::set_entity_with_expiry(
-                            encoded_key.clone(),
-                            value.clone(),
-                            expires_at,
-                        )],
-                    )
-                    .await
-                    .map(|_| ())
-                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
-            },
-        )
-        .await;
+        let result = tokio::time::timeout(self.timeout_config.write_timeout, async {
+            self.client
+                .set_entity(self.organization, self.vault, encoded_key, value, Some(expires_at))
+                .await
+                .map(|_| ())
+                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+        })
+        .await
+        .unwrap_or_else(|_| Err(StorageError::timeout()));
         self.record_circuit_result(&result);
         self.metrics.record_set_org(start.elapsed(), &self.org_str());
         if result.is_err() {
@@ -809,7 +741,7 @@ impl StorageBackend for LedgerBackend {
         result
     }
 
-    /// Performs a compare-and-set operation with TTL, retrying on transient errors.
+    /// Performs a compare-and-set operation with TTL.
     ///
     /// Combines CAS precondition checking with automatic key expiration.
     /// Conflict errors (`FailedPrecondition`) are **not** retried.
@@ -828,43 +760,28 @@ impl StorageBackend for LedgerBackend {
         let encoded_key = encode_key(key);
         let expires_at = Self::compute_expiration_timestamp(ttl)?;
 
-        let condition = match expected {
-            None => SetCondition::NotExists,
-            Some(expected_value) => SetCondition::ValueEquals(expected_value.to_vec()),
-        };
+        let condition = SetCondition::from_expected(expected.map(|v| v.to_vec()));
 
-        use inferadb_ledger_sdk::SdkError;
-        use tonic::Code;
-
-        let result = with_retry_timeout(
-            &self.retry_config,
-            self.timeout_config.write_timeout,
-            None,
-            "compare_and_set_with_ttl",
-            || async {
-                match self
-                    .client
-                    .write(
-                        self.organization,
-                        self.vault,
-                        vec![Operation::SetEntity {
-                            key: encoded_key.clone(),
-                            value: new_value.clone(),
-                            expires_at: Some(expires_at),
-                            condition: Some(condition.clone()),
-                        }],
-                    )
-                    .await
-                {
-                    Ok(_) => Ok(()),
-                    Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
-                        Err(StorageError::conflict())
-                    },
-                    Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
-                }
-            },
-        )
-        .await;
+        let result = tokio::time::timeout(self.timeout_config.write_timeout, async {
+            match self
+                .client
+                .set_entity_if(
+                    self.organization,
+                    self.vault,
+                    encoded_key,
+                    new_value,
+                    condition,
+                    Some(expires_at),
+                )
+                .await
+            {
+                Ok(_) => Ok(()),
+                Err(e) if e.is_cas_conflict() => Err(StorageError::conflict()),
+                Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
+            }
+        })
+        .await
+        .unwrap_or_else(|_| Err(StorageError::timeout()));
         self.record_circuit_result(&result);
         self.metrics.record_set_org(start.elapsed(), &self.org_str());
         if result.is_err() {
@@ -906,20 +823,15 @@ impl StorageBackend for LedgerBackend {
                 // Readiness/Startup: probe the ledger connection.
                 // Health checks bypass the circuit breaker — they are used to probe
                 // backend health and should always attempt a real connection.
-                let result = with_retry_timeout(
-                    &self.retry_config,
-                    self.timeout_config.read_timeout,
-                    None,
-                    "health_check",
-                    || async {
-                        self.client
-                            .health_check()
-                            .await
-                            .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
-                        Ok(())
-                    },
-                )
-                .await;
+                let result = tokio::time::timeout(self.timeout_config.read_timeout, async {
+                    self.client
+                        .health_check()
+                        .await
+                        .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
+                    Ok(())
+                })
+                .await
+                .unwrap_or_else(|_| Err(StorageError::timeout()));
                 self.record_circuit_result(&result);
 
                 let check_duration = start.elapsed();

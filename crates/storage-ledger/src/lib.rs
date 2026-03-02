@@ -149,16 +149,15 @@ pub use circuit_breaker::{
 };
 /// Configuration types and default constants for the Ledger backend.
 pub use config::{
-    CasRetryConfig, DEFAULT_CAS_RETRY_BASE_DELAY, DEFAULT_INITIAL_BACKOFF, DEFAULT_LIST_TIMEOUT,
-    DEFAULT_MAX_BACKOFF, DEFAULT_MAX_CAS_RETRIES, DEFAULT_MAX_RANGE_RESULTS, DEFAULT_MAX_RETRIES,
-    DEFAULT_PAGE_SIZE, DEFAULT_READ_TIMEOUT, DEFAULT_WRITE_TIMEOUT, LedgerBackendConfig,
-    RetryConfig, TimeoutConfig,
+    CasRetryConfig, DEFAULT_CAS_RETRY_BASE_DELAY, DEFAULT_LIST_TIMEOUT, DEFAULT_MAX_CAS_RETRIES,
+    DEFAULT_MAX_RANGE_RESULTS, DEFAULT_PAGE_SIZE, DEFAULT_READ_TIMEOUT, DEFAULT_WRITE_TIMEOUT,
+    LedgerBackendConfig, TimeoutConfig,
 };
 /// Ledger-specific error types and result alias.
 pub use error::{LedgerStorageError, Result};
 /// Configuration validation error type.
 pub use inferadb_common_storage::ConfigError;
 /// Re-exported SDK types needed to build [`LedgerBackendConfig`].
-pub use inferadb_ledger_sdk::{ClientConfig, ReadConsistency, ServerSource, TraceConfig};
+pub use inferadb_ledger_sdk::{ClientConfig, ReadConsistency, Region, ServerSource, TraceConfig};
 /// Ledger-backed transaction implementation.
 pub use transaction::LedgerTransaction;

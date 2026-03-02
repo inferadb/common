@@ -164,14 +164,10 @@ impl LedgerTransaction {
 
     /// Performs a read with the configured consistency level.
     async fn do_read(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, LedgerStorageError> {
-        let result = match self.read_consistency {
-            ReadConsistency::Linearizable => {
-                self.client.read_consistent(self.organization, self.vault, key).await
-            },
-            ReadConsistency::Eventual => self.client.read(self.organization, self.vault, key).await,
-        };
-
-        result.map_err(LedgerStorageError::from)
+        self.client
+            .read_with_consistency(self.organization, self.vault, key, self.read_consistency)
+            .await
+            .map_err(LedgerStorageError::from)
     }
 }
 
@@ -295,10 +291,7 @@ impl Transaction for LedgerTransaction {
 
         // Add CAS operations first (they typically have ordering requirements)
         for cas in self.pending_cas {
-            let condition = match cas.expected {
-                None => SetCondition::NotExists,
-                Some(expected_value) => SetCondition::ValueEquals(expected_value),
-            };
+            let condition = SetCondition::from_expected(cas.expected);
             let expires_at =
                 cas.ttl.map(crate::LedgerBackend::compute_expiration_timestamp).transpose()?;
             operations.push(Operation::SetEntity {
@@ -326,15 +319,9 @@ impl Transaction for LedgerTransaction {
 
         // Submit all operations atomically
         // If any CAS condition fails, the whole transaction fails
-        use inferadb_ledger_sdk::SdkError;
-        use tonic::Code;
-
         match self.client.write(organization, vault, operations).await {
             Ok(_) => Ok(()),
-            Err(SdkError::Rpc { code: Code::FailedPrecondition, .. }) => {
-                // CAS condition failed
-                Err(StorageError::conflict())
-            },
+            Err(e) if e.is_cas_conflict() => Err(StorageError::conflict()),
             Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
         }
     }

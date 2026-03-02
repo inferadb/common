@@ -8,7 +8,7 @@ use bytes::Bytes;
 // These replace the previous `OrganizationId` and `VaultId` newtypes,
 // aligning our public API with the Ledger SDK's terminology where
 // "slugs" are the external (public API) identifiers.
-pub use inferadb_ledger_types::{OrganizationSlug, VaultSlug};
+pub use inferadb_ledger_types::{OrganizationSlug, UserSlug, VaultSlug};
 
 /// Key-value pair returned from range queries.
 ///

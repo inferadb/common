@@ -18,15 +18,6 @@ pub const DEFAULT_PAGE_SIZE: u32 = 10_000;
 /// across all pages.
 pub const DEFAULT_MAX_RANGE_RESULTS: usize = 100_000;
 
-/// Default maximum number of retry attempts for transient failures.
-pub const DEFAULT_MAX_RETRIES: u32 = 3;
-
-/// Default initial backoff duration between retries.
-pub const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_millis(100);
-
-/// Default maximum backoff duration between retries.
-pub const DEFAULT_MAX_BACKOFF: Duration = Duration::from_secs(5);
-
 /// Default timeout for read operations (get, health_check).
 pub const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -35,117 +26,6 @@ pub const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Default timeout for list operations (get_range, clear_range).
 pub const DEFAULT_LIST_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Retry policy for transient Ledger failures with exponential backoff.
-///
-/// When a storage operation fails with a transient error (connection,
-/// timeout, rate limiting), the operation is retried with exponential
-/// backoff. Non-transient errors (conflict, serialization, not-found)
-/// are returned immediately without retry.
-///
-/// # Backoff Strategy
-///
-/// Each retry doubles the backoff duration, starting from
-/// `initial_backoff`, up to `max_backoff`. Random jitter (0–50% of
-/// the computed delay) is added to prevent thundering-herd effects.
-///
-/// # Validation
-///
-/// - `initial_backoff` must be positive (`> Duration::ZERO`)
-/// - `max_backoff` must be `>= initial_backoff`
-///
-/// Set `max_retries` to `0` to disable retries entirely.
-///
-/// # Examples
-///
-/// ```no_run
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// use std::time::Duration;
-///
-/// use inferadb_common_storage_ledger::RetryConfig;
-///
-/// let config = RetryConfig::builder()
-///     .max_retries(5)
-///     .initial_backoff(Duration::from_millis(200))
-///     .max_backoff(Duration::from_secs(10))
-///     .build()?;
-///
-/// assert_eq!(config.max_retries(), 5);
-/// # Ok(())
-/// # }
-/// ```
-#[derive(Debug, Clone)]
-pub struct RetryConfig {
-    /// Maximum number of retry attempts. Set to `0` to disable retries.
-    pub(crate) max_retries: u32,
-
-    /// Initial backoff duration. Doubles with each subsequent attempt.
-    pub(crate) initial_backoff: Duration,
-
-    /// Upper bound on the backoff duration.
-    pub(crate) max_backoff: Duration,
-}
-
-#[bon::bon]
-impl RetryConfig {
-    /// Creates a new retry configuration.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConfigError`] if:
-    /// - `initial_backoff` is zero
-    /// - `max_backoff < initial_backoff`
-    #[builder]
-    pub fn new(
-        #[builder(default = DEFAULT_MAX_RETRIES)] max_retries: u32,
-        #[builder(default = DEFAULT_INITIAL_BACKOFF)] initial_backoff: Duration,
-        #[builder(default = DEFAULT_MAX_BACKOFF)] max_backoff: Duration,
-    ) -> Result<Self, ConfigError> {
-        if initial_backoff.is_zero() {
-            return Err(ConfigError::MustBePositive {
-                field: "initial_backoff",
-                value: format!("{initial_backoff:?}"),
-            });
-        }
-        if max_backoff < initial_backoff {
-            return Err(ConfigError::InvalidRelation {
-                field_a: "initial_backoff",
-                value_a: format!("{initial_backoff:?}"),
-                field_b: "max_backoff",
-                value_b: format!("{max_backoff:?}"),
-            });
-        }
-        Ok(Self { max_retries, initial_backoff, max_backoff })
-    }
-
-    /// Returns the configured maximum number of retry attempts.
-    #[must_use = "returns the configured value without side effects"]
-    pub fn max_retries(&self) -> u32 {
-        self.max_retries
-    }
-
-    /// Returns the configured initial backoff duration.
-    #[must_use = "returns the configured value without side effects"]
-    pub fn initial_backoff(&self) -> Duration {
-        self.initial_backoff
-    }
-
-    /// Returns the configured maximum backoff duration.
-    #[must_use = "returns the configured value without side effects"]
-    pub fn max_backoff(&self) -> Duration {
-        self.max_backoff
-    }
-}
-
-impl Default for RetryConfig {
-    fn default() -> Self {
-        Self {
-            max_retries: DEFAULT_MAX_RETRIES,
-            initial_backoff: DEFAULT_INITIAL_BACKOFF,
-            max_backoff: DEFAULT_MAX_BACKOFF,
-        }
-    }
-}
 
 /// Default maximum number of CAS retry attempts on conflict.
 pub const DEFAULT_MAX_CAS_RETRIES: u32 = 5;
@@ -158,14 +38,13 @@ pub const DEFAULT_CAS_RETRY_BASE_DELAY: Duration = Duration::from_millis(50);
 
 /// Retry policy for compare-and-set (CAS) conflicts.
 ///
-/// Unlike [`RetryConfig`], which handles transient network errors, CAS
-/// retries handle semantic conflicts where concurrent writes race.
-///
 /// CAS conflicts occur when a concurrent writer modifies the same key
-/// between a read and a conditional write. Unlike transient errors
-/// (handled by [`RetryConfig`]), CAS conflicts require re-reading the
-/// current value before retrying — the entire read-modify-write cycle
-/// must be repeated.
+/// between a read and a conditional write. CAS conflicts require
+/// re-reading the current value before retrying — the entire
+/// read-modify-write cycle must be repeated.
+///
+/// Transient network errors (connection, timeout) are handled by the
+/// SDK's built-in retry logic and are not retried at this layer.
 ///
 /// # Backoff Strategy
 ///
@@ -232,8 +111,9 @@ impl Default for CasRetryConfig {
 ///
 /// Provides separate timeout durations for reads, writes, and list
 /// operations, reflecting their different expected latency profiles.
-/// The timeout bounds the total wall-clock time of an operation,
-/// including all retry attempts.
+/// The timeout bounds the total wall-clock time of an operation.
+/// Transient error retries are handled by the SDK's built-in retry
+/// logic within this timeout window.
 ///
 /// # Validation
 ///
@@ -400,18 +280,11 @@ pub struct LedgerBackendConfig {
     /// truncating. Defaults to `100_000`.
     pub(crate) max_range_results: usize,
 
-    /// Retry configuration for transient failures.
-    ///
-    /// When set, transient errors (connection, timeout) trigger automatic
-    /// retry with exponential backoff. Non-transient errors are returned
-    /// immediately. Defaults to 3 retries with 100ms initial backoff.
-    pub(crate) retry_config: RetryConfig,
-
     /// Per-operation timeout configuration.
     ///
-    /// Bounds the total wall-clock time of each storage operation,
-    /// including all retry attempts. Defaults to 5s reads, 10s writes,
-    /// 30s list operations.
+    /// Bounds the total wall-clock time of each storage operation.
+    /// Transient error retries are handled by the SDK within this
+    /// window. Defaults to 5s reads, 10s writes, 30s list operations.
     pub(crate) timeout_config: TimeoutConfig,
 
     /// Optional key/value size limits.
@@ -452,7 +325,6 @@ impl LedgerBackendConfig {
     /// * `read_consistency` — Read consistency level (default: Linearizable).
     /// * `page_size` — Number of entities per page for range queries (default: 10,000).
     /// * `max_range_results` — Safety cap on total range results (default: 100,000).
-    /// * `retry_config` — Retry policy for transient failures (default: 3 retries, 100ms backoff).
     /// * `timeout_config` — Per-operation timeouts (default: 5s read, 10s write, 30s list).
     /// * `size_limits` — Key/value size validation (default: none).
     /// * `circuit_breaker_config` — Circuit breaker for fail-fast during outages (default: none).
@@ -469,7 +341,6 @@ impl LedgerBackendConfig {
         #[builder(default = ReadConsistency::Linearizable)] read_consistency: ReadConsistency,
         #[builder(default = DEFAULT_PAGE_SIZE)] page_size: u32,
         #[builder(default = DEFAULT_MAX_RANGE_RESULTS)] max_range_results: usize,
-        #[builder(default)] retry_config: RetryConfig,
         #[builder(default)] timeout_config: TimeoutConfig,
         size_limits: Option<SizeLimits>,
         circuit_breaker_config: Option<crate::circuit_breaker::CircuitBreakerConfig>,
@@ -496,7 +367,6 @@ impl LedgerBackendConfig {
             read_consistency,
             page_size,
             max_range_results,
-            retry_config,
             timeout_config,
             size_limits,
             circuit_breaker_config,
@@ -538,12 +408,6 @@ impl LedgerBackendConfig {
     #[must_use = "returns the configured value without side effects"]
     pub fn max_range_results(&self) -> usize {
         self.max_range_results
-    }
-
-    /// Returns the configured retry policy.
-    #[must_use = "returns the configured value without side effects"]
-    pub fn retry_config(&self) -> &RetryConfig {
-        &self.retry_config
     }
 
     /// Returns the configured timeout policy.
@@ -590,51 +454,6 @@ mod tests {
             .client_id("test-client")
             .build()
             .unwrap()
-    }
-
-    // ── RetryConfig validation ──────────────────────────────────────
-
-    #[test]
-    fn retry_config_defaults_pass_validation() {
-        let config = RetryConfig::builder().build().unwrap();
-        assert_eq!(config.max_retries(), DEFAULT_MAX_RETRIES);
-        assert_eq!(config.initial_backoff(), DEFAULT_INITIAL_BACKOFF);
-        assert_eq!(config.max_backoff(), DEFAULT_MAX_BACKOFF);
-    }
-
-    #[test]
-    fn retry_config_zero_initial_backoff_rejected() {
-        let err = RetryConfig::builder().initial_backoff(Duration::ZERO).build().unwrap_err();
-        assert!(err.to_string().contains("initial_backoff"), "error should name the field: {err}");
-    }
-
-    #[test]
-    fn retry_config_max_backoff_below_initial_rejected() {
-        let err = RetryConfig::builder()
-            .initial_backoff(Duration::from_secs(5))
-            .max_backoff(Duration::from_secs(1))
-            .build()
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("initial_backoff") && err.to_string().contains("max_backoff"),
-            "error should name both fields: {err}"
-        );
-    }
-
-    #[test]
-    fn retry_config_zero_max_retries_allowed() {
-        let config = RetryConfig::builder().max_retries(0).build().unwrap();
-        assert_eq!(config.max_retries(), 0);
-    }
-
-    #[test]
-    fn retry_config_equal_backoffs_allowed() {
-        let config = RetryConfig::builder()
-            .initial_backoff(Duration::from_secs(1))
-            .max_backoff(Duration::from_secs(1))
-            .build()
-            .unwrap();
-        assert_eq!(config.initial_backoff(), config.max_backoff());
     }
 
     // ── TimeoutConfig validation ────────────────────────────────────
