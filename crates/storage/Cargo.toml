@@ -12,6 +12,7 @@ categories = ["database", "asynchronous"]
 [features]
 testutil = []
 failpoints = ["fail/failpoints"]
+stress = []
 
 [lints]
 workspace = true
@@ -34,7 +35,6 @@ tracing.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-criterion = { version = "0.8", features = ["async_tokio", "html_reports"] }
 proptest.workspace = true
 rstest.workspace = true
 tokio = { workspace = true, features = ["full", "test-util"] }
@@ -52,6 +52,6 @@ required-features = ["testutil"]
 name = "failpoint_tests"
 required-features = ["failpoints"]
 
-[[bench]]
-name = "storage_benchmarks"
-harness = false
+[[test]]
+name = "concurrent_stress"
+required-features = ["stress"]

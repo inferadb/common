@@ -1,7 +1,7 @@
 //! Integration tests for the Ledger storage backend with a real Ledger cluster.
 //!
-//! These tests require a running Ledger server and are marked `#[ignore]` so
-//! they do not run during normal `cargo test`. To run them:
+//! These tests require a running Ledger server and are gated behind the
+//! `integration` feature to avoid running during normal `cargo test`. To run them:
 //!
 //! ```bash
 //! # Start a Ledger server (single-node mode)
@@ -10,9 +10,10 @@
 //! INFERADB__LEDGER__DATA_DIR=/tmp/ledger-test \
 //! ledger
 //!
-//! # Run all ignored tests in this file, single-threaded
+//! # Run integration tests (single-threaded for determinism)
 //! LEDGER_ENDPOINT=http://localhost:50051 \
-//! cargo test --test real_ledger_integration -- --include-ignored --test-threads=1
+//! cargo +1.92 test -p inferadb-common-storage-ledger --features integration \
+//!     --test real_ledger_integration -- --test-threads=1
 //! ```
 //!
 //! Or use Docker Compose:
@@ -101,7 +102,6 @@ async fn create_backend_with_vault(vault: VaultSlug) -> LedgerBackend {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_get_nonexistent_key() {
     let backend = create_test_backend().await;
     let result = backend.get(b"nonexistent-key-12345").await;
@@ -111,7 +111,6 @@ async fn test_real_ledger_get_nonexistent_key() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_set_and_get() {
     let backend = create_test_backend().await;
 
@@ -124,7 +123,6 @@ async fn test_real_ledger_set_and_get() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_overwrite() {
     let backend = create_test_backend().await;
 
@@ -140,7 +138,6 @@ async fn test_real_ledger_overwrite() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_delete() {
     let backend = create_test_backend().await;
 
@@ -154,7 +151,6 @@ async fn test_real_ledger_delete() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_delete_nonexistent() {
     let backend = create_test_backend().await;
 
@@ -168,7 +164,6 @@ async fn test_real_ledger_delete_nonexistent() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_binary_keys() {
     let backend = create_test_backend().await;
 
@@ -183,7 +178,6 @@ async fn test_real_ledger_binary_keys() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_large_value() {
     let backend = create_test_backend().await;
 
@@ -202,7 +196,6 @@ async fn test_real_ledger_large_value() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_range_query() {
     let backend = create_test_backend().await;
 
@@ -227,7 +220,6 @@ async fn test_real_ledger_range_query() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_range_query_inclusive_bounds() {
     let backend = create_test_backend().await;
 
@@ -245,7 +237,6 @@ async fn test_real_ledger_range_query_inclusive_bounds() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_clear_range() {
     let backend = create_test_backend().await;
 
@@ -273,7 +264,6 @@ async fn test_real_ledger_clear_range() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_ttl() {
     let backend = create_test_backend().await;
 
@@ -298,7 +288,6 @@ async fn test_real_ledger_ttl() {
 /// Verifies that `set_with_ttl` computes the correct `expires_at` timestamp on the
 /// underlying Ledger entity, using `list_entities` to inspect the raw metadata.
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_ttl_sets_correct_expires_at() {
     let backend = create_test_backend().await;
     let ttl = Duration::from_secs(60);
@@ -348,7 +337,6 @@ async fn test_real_ledger_ttl_sets_correct_expires_at() {
 /// runs every 60 seconds, so a 2-second TTL followed by a 3-second sleep
 /// leaves the entity expired but physically present.
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_ttl_visible_with_include_expired() {
     let backend = create_test_backend().await;
 
@@ -394,7 +382,6 @@ async fn test_real_ledger_ttl_visible_with_include_expired() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_transaction_commit() {
     let backend = create_test_backend().await;
 
@@ -418,7 +405,6 @@ async fn test_real_ledger_transaction_commit() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_transaction_delete() {
     let backend = create_test_backend().await;
 
@@ -439,7 +425,6 @@ async fn test_real_ledger_transaction_delete() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_transaction_set_delete_set() {
     let backend = create_test_backend().await;
 
@@ -458,7 +443,6 @@ async fn test_real_ledger_transaction_set_delete_set() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_empty_transaction() {
     let backend = create_test_backend().await;
 
@@ -473,7 +457,6 @@ async fn test_real_ledger_empty_transaction() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_vault_isolation() {
     let vault_a = unique_vault_slug();
     let vault_b = unique_vault_slug();
@@ -500,7 +483,6 @@ async fn test_real_ledger_vault_isolation() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_concurrent_writes() {
     // Each spawned task creates its own backend with unique vault for isolation
     // Spawn multiple concurrent writers
@@ -524,7 +506,6 @@ async fn test_real_ledger_concurrent_writes() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_concurrent_writes_same_key() {
     let base_vault = unique_vault_slug();
 
@@ -555,7 +536,6 @@ async fn test_real_ledger_concurrent_writes_same_key() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_reconnection_after_idle() {
     let backend = create_test_backend().await;
 
@@ -588,7 +568,6 @@ async fn test_real_ledger_reconnection_after_idle() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_health_check() {
     let backend = create_test_backend().await;
 
@@ -602,7 +581,6 @@ async fn test_real_ledger_health_check() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_many_keys() {
     let backend = create_test_backend().await;
 
@@ -634,7 +612,6 @@ async fn test_real_ledger_many_keys() {
 /// one will succeed and the other will receive `StorageError::Conflict`. If they
 /// serialize naturally (one completes before the other reads), both may succeed.
 #[tokio::test]
-#[ignore]
 async fn test_real_ledger_concurrent_revoke_conflict() {
     use std::sync::Arc;
 

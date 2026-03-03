@@ -1762,8 +1762,8 @@ mod tests {
 
     /// Stress test: 100 concurrent readers + 1 writer performing key rotation.
     /// No stale reads should be observed after invalidation completes.
+    #[cfg(feature = "stress")]
     #[tokio::test]
-    #[ignore] // Run explicitly with `cargo test -- --ignored`
     async fn test_stress_concurrent_readers_with_writer() {
         let store = Arc::new(DelayingStore::new());
         store.set_delay(Duration::from_millis(1));

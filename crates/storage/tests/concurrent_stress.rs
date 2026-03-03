@@ -2,10 +2,10 @@
 //!
 //! These tests exercise the storage backend under realistic multi-threaded
 //! workloads to detect data races, deadlocks, and lost updates. They are
-//! gated behind the `stress_tests` cfg flag for CI runtime control:
+//! gated behind the `stress` feature to avoid slowing normal CI:
 //!
 //! ```bash
-//! cargo test -p inferadb-common-storage --test concurrent_stress -- --ignored
+//! cargo +1.92 test -p inferadb-common-storage --features stress --test concurrent_stress
 //! ```
 
 #![allow(clippy::expect_used, clippy::panic)]
@@ -47,7 +47,6 @@ fn make_value(task: usize, i: usize) -> Vec<u8> {
 /// times. After all tasks complete, the key must hold a valid value written by
 /// one of the tasks — no corruption, no partial writes.
 #[tokio::test]
-#[ignore] // Run with --ignored or RUSTFLAGS='--cfg stress_tests'
 async fn parallel_writers_same_key() {
     let backend = MemoryBackend::new();
     let key = b"shared-key".to_vec();
@@ -84,7 +83,6 @@ async fn parallel_writers_same_key() {
 /// known value and `CONCURRENCY` tasks race to CAS it. Exactly one task must
 /// succeed; all others must receive `StorageError::Conflict`.
 #[tokio::test]
-#[ignore]
 async fn cas_exactly_one_winner_per_round() {
     let backend = MemoryBackend::new();
     let key = b"cas-key".to_vec();
@@ -126,7 +124,6 @@ async fn cas_exactly_one_winner_per_round() {
 /// Multiple tasks race to insert a key that does not yet exist using
 /// `compare_and_set(key, None, value)`. Exactly one should win.
 #[tokio::test]
-#[ignore]
 async fn cas_insert_if_absent_one_winner() {
     let backend = MemoryBackend::new();
 
@@ -164,7 +161,6 @@ async fn cas_insert_if_absent_one_winner() {
 /// range scans concurrently on overlapping key spaces. Verifies no panics,
 /// deadlocks, or data corruption.
 #[tokio::test]
-#[ignore]
 async fn mixed_read_write_workload() {
     let backend = MemoryBackend::new();
 
@@ -235,7 +231,6 @@ async fn mixed_read_write_workload() {
 /// that range scan results are always internally consistent: keys are sorted
 /// and each key's value is well-formed.
 #[tokio::test]
-#[ignore]
 async fn concurrent_range_scans_during_writes() {
     let backend = MemoryBackend::new();
     let writers = 8;
@@ -295,7 +290,6 @@ async fn concurrent_range_scans_during_writes() {
 /// Verifies that reads either return the value or `None` (after expiration),
 /// never an error or corrupted data.
 #[tokio::test]
-#[ignore]
 async fn ttl_expiration_concurrent_with_reads() {
     let backend = MemoryBackend::new();
     let key_count = 50;
@@ -354,7 +348,6 @@ async fn ttl_expiration_concurrent_with_reads() {
 /// concurrently. Each commit either succeeds or returns `Conflict` due to
 /// the CAS precondition failing at commit time.
 #[tokio::test]
-#[ignore]
 async fn concurrent_transactions_cas_on_same_key() {
     let backend = MemoryBackend::new();
     let key = b"txn-cas-key".to_vec();
@@ -402,7 +395,6 @@ async fn concurrent_transactions_cas_on_same_key() {
 /// Writers insert keys while another task clears ranges. Verifies no deadlock
 /// or panic under this contention pattern.
 #[tokio::test]
-#[ignore]
 async fn concurrent_clear_range_during_writes() {
     let backend = MemoryBackend::new();
 
@@ -459,7 +451,6 @@ async fn concurrent_clear_range_during_writes() {
 /// Many tasks read the same key concurrently. Verifies reads are consistent
 /// and never return corrupted data under high read contention.
 #[tokio::test]
-#[ignore]
 async fn high_concurrency_parallel_reads() {
     let backend = MemoryBackend::new();
     let key = b"hot-key".to_vec();
@@ -497,7 +488,6 @@ async fn high_concurrency_parallel_reads() {
 /// Writers set keys, deleters remove them, readers check them — all concurrently.
 /// Reads must return `Some(valid_value)` or `None`, never an error.
 #[tokio::test]
-#[ignore]
 async fn delete_while_reading() {
     let backend = MemoryBackend::new();
     let key_space = 20;

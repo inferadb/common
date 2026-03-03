@@ -23,7 +23,6 @@ This workspace provides the storage abstraction layer and JWT authentication lib
 - [Usage](#usage)
 - [Development](#development)
 - [Testing](#testing)
-- [Benchmarks](#benchmarks)
 - [Contributing](#contributing)
 - [Community](#community)
 - [License](#license)
@@ -230,111 +229,45 @@ Error enums use `#[non_exhaustive]` and constructor methods:
 ### Unit Tests
 
 ```bash
-# Run all tests
-just test
-
-# Run tests for a specific crate
-cargo +1.92 test -p inferadb-common-storage
-cargo +1.92 test -p inferadb-common-authn
-cargo +1.92 test -p inferadb-common-storage-ledger
-```
-
-### Property-Based Tests
-
-The workspace uses `proptest` for property-based testing (key encoding round-trips, range bound normalization, size limit enforcement):
-
-```bash
-# Property tests run as part of the normal test suite
 just test
 ```
+
+Property-based tests (`proptest`) run as part of the normal test suite.
 
 ### Fuzz Tests
 
-JWT parsing fuzz targets live in `crates/authn/fuzz/`:
+JWT parsing fuzz targets live in `crates/authn/fuzz/`. Requires `cargo-fuzz` and nightly:
 
 ```bash
-# Install cargo-fuzz
 cargo install cargo-fuzz
-
-# Run JWT parsing fuzzer
-cd crates/authn
-cargo +nightly fuzz run fuzz_jwt_parsing -- -max_total_time=60
-
-# Run JWT claims fuzzer
-cargo +nightly fuzz run fuzz_jwt_claims -- -max_total_time=60
+just fuzz         # 60 seconds per target (default)
+just fuzz 300     # 5 minutes per target
 ```
 
 ### Fail-Point Tests
 
-Deterministic fault injection tests are gated behind the `failpoints` feature:
+Deterministic fault injection tests (gated behind the `failpoints` feature):
 
 ```bash
-cargo +1.92 test -p inferadb-common-storage --features failpoints
-cargo +1.92 test -p inferadb-common-authn --features failpoints,testutil
+just test-failpoints
 ```
 
 ### Stress Tests
 
-Concurrency stress tests are `#[ignore]`-gated to avoid slowing CI:
+Concurrency stress tests (gated behind the `stress` feature):
 
 ```bash
-# Run stress tests explicitly
-cargo +1.92 test --all -- --ignored
+just test-stress
 ```
 
 ### Integration Tests (Real Ledger)
 
-Tests in `crates/storage-ledger/tests/real_ledger_integration.rs` require a running Ledger instance and are `#[ignore]`-gated:
+Requires a running Ledger instance (gated behind the `integration` feature):
 
 ```bash
 # Start a local Ledger instance first, then:
-cargo +1.92 test -p inferadb-common-storage-ledger -- --ignored
+just test-integration
 ```
-
-## Benchmarks
-
-The `inferadb-common-storage` crate includes Criterion benchmarks:
-
-```bash
-# Run all benchmarks
-cargo bench -p inferadb-common-storage
-
-# Run a specific benchmark group
-cargo bench -p inferadb-common-storage -- get_operations
-
-# Save a baseline for comparison
-cargo bench -p inferadb-common-storage -- --save-baseline main
-
-# Compare against a baseline
-cargo bench -p inferadb-common-storage -- --baseline main
-```
-
-### Benchmark Groups
-
-| Group                    | Description                                             |
-| ------------------------ | ------------------------------------------------------- |
-| `get_operations`         | Single key lookups (existing, missing, varying sizes)   |
-| `set_operations`         | Single key writes (new, overwrite, varying value sizes) |
-| `delete_operations`      | Key deletion (existing, missing)                        |
-| `get_range_operations`   | Range scans with varying result sizes                   |
-| `clear_range_operations` | Range deletion with varying sizes                       |
-| `transaction_operations` | Transaction commit with single/multiple operations      |
-| `concurrent_operations`  | Parallel read/write workloads                           |
-| `ttl_operations`         | Time-to-live key operations                             |
-| `health_check`           | Backend health check overhead                           |
-
-### Interpreting Results
-
-```text
-get_operations/get_existing_key
-                        time:   [1.234 us 1.256 us 1.278 us]
-                        change: [-2.34% +0.12% +2.56%] (p = 0.89 > 0.05)
-                        No change in performance detected.
-```
-
-- **time**: [lower bound, estimate, upper bound] at 95% confidence
-- **change**: percentage change from baseline
-- **p-value**: p < 0.05 indicates statistically significant change
 
 ## Contributing
 
@@ -350,10 +283,10 @@ just check
 
 This runs:
 
-1. `cargo +1.92 build --all-targets` — compilation
-2. `cargo +1.92 clippy --all-targets -- -D warnings` — lints (zero warnings)
-3. `cargo +1.92 test --all` — all tests pass
-4. `cargo +nightly fmt --check` — formatting
+1. `cargo +1.92 build --workspace --all-targets` — compilation
+2. `cargo +1.92 clippy --workspace --all-targets -- -D warnings` — lints (zero warnings)
+3. `cargo +1.92 test --workspace` — all tests pass
+4. `cargo +nightly fmt --all -- --check` — formatting
 
 ## Community
 

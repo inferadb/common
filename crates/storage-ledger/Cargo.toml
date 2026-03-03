@@ -12,6 +12,7 @@ categories = ["database", "asynchronous"]
 
 [features]
 testutil = ["inferadb-common-storage/testutil"]
+integration = []
 
 [lints]
 workspace = true
@@ -48,3 +49,4 @@ path = "tests/integration.rs"
 [[test]]
 name = "real_ledger_integration"
 path = "tests/real_ledger_integration.rs"
+required-features = ["integration"]

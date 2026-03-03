@@ -13,6 +13,7 @@ categories = ["authentication", "asynchronous"]
 [features]
 testutil = ["inferadb-common-storage/testutil", "dep:rand_core"]
 failpoints = ["fail/failpoints", "inferadb-common-storage/failpoints"]
+stress = []
 
 [lints]
 workspace = true
