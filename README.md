@@ -134,7 +134,7 @@ The workspace uses newtype wrappers for identifiers to prevent accidental mixing
 ### In-Memory Backend (Testing)
 
 ```rust
-use inferadb_common_storage::{StorageBackend, MemoryBackend};
+use inferadb_common_storage::{MemoryBackend, StorageBackend, to_storage_range};
 
 let backend = MemoryBackend::new();
 
@@ -144,7 +144,9 @@ let value = backend.get(b"key").await?;
 backend.delete(b"key").await?;
 
 // Range queries
-let entries = backend.get_range(b"prefix:".to_vec()..b"prefix:\xff".to_vec()).await?;
+let entries = backend
+    .get_range(to_storage_range(b"prefix:".to_vec()..b"prefix:\xff".to_vec()))
+    .await?;
 
 // Transactions
 let mut tx = backend.transaction().await?;
@@ -160,10 +162,18 @@ backend.compare_and_set(b"counter", Some(b"1".as_slice()), b"2".to_vec()).await?
 ### Ledger Backend (Production)
 
 ```rust
-use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
+use inferadb_common_storage_ledger::{
+    ClientConfig, LedgerBackend, LedgerBackendConfig, ServerSource,
+};
+
+let client = ClientConfig::builder()
+    .servers(ServerSource::from_static(["http://ledger.example.com:50051"]))
+    .client_id("my-service")
+    .build()?;
 
 let config = LedgerBackendConfig::builder()
-    .servers(["http://ledger.example.com:50051"])
+    .client(client)
+    .organization(1)
     .build()?;
 
 let backend = LedgerBackend::new(config).await?;
@@ -172,20 +182,16 @@ let backend = LedgerBackend::new(config).await?;
 ### JWT Validation
 
 ```rust
-use inferadb_common_authn::{verify_with_signing_key_cache, SigningKeyCache};
+use std::sync::Arc;
+use std::time::Duration;
+use inferadb_common_authn::{SigningKeyCache, jwt::verify_with_signing_key_cache};
+use inferadb_common_storage::auth::MemorySigningKeyStore;
 
-// Set up signing key cache with your key store
-let cache = SigningKeyCache::new(key_store, l1_ttl, l3_capacity);
+let store = Arc::new(MemorySigningKeyStore::new());
+let cache = SigningKeyCache::new(store, Duration::from_secs(300));
 
-// Validate a JWT
-let claims = verify_with_signing_key_cache(
-    &token,
-    &cache,
-    &expected_audience,
-    &expected_issuer,
-).await?;
-
-println!("org: {}, vault: {}", claims.org, claims.vault);
+let claims = verify_with_signing_key_cache(token, &cache).await?;
+println!("org: {}", claims.org.unwrap_or_default());
 ```
 
 ## Development
