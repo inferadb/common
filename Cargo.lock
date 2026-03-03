@@ -254,9 +254,9 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.16.0"
+version = "1.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9a7b350e3bb1767102698302bc37256cbd48422809984b98d292c40e2579aa9"
+checksum = "94bffc006df10ac2a68c83692d734a465f8ee6c5b384d8545a636f81d858f4bf"
 dependencies = [
  "aws-lc-sys",
  "untrusted 0.7.1",
@@ -265,9 +265,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.37.1"
+version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b092fe214090261288111db7a2b2c2118e5a7f30dc2569f1732c4069a6840549"
+checksum = "4321e568ed89bb5a7d291a7f37997c2c0df89809d7b6d12062c81ddb54aa782e"
 dependencies = [
  "cc",
  "cmake",
@@ -1781,6 +1781,7 @@ dependencies = [
  "chrono",
  "ed25519-dalek",
  "fail",
+ "inferadb-common-authn",
  "inferadb-common-storage",
  "jsonwebtoken",
  "moka",
@@ -1802,7 +1803,6 @@ name = "inferadb-common-ratelimit"
 version = "0.1.0"
 dependencies = [
  "inferadb-common-storage",
- "thiserror 2.0.18",
  "tokio",
 ]
 
@@ -1839,9 +1839,9 @@ dependencies = [
  "bon",
  "bytes",
  "chrono",
- "fail",
  "hex",
  "inferadb-common-storage",
+ "inferadb-common-storage-ledger",
  "inferadb-ledger-sdk",
  "parking_lot",
  "proptest",
@@ -1858,9 +1858,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-proto"
-version = "0.1.0-dev.20260302.81"
+version = "0.1.0-dev.20260302.82"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3aba0a03350983642555b56a3b75d973e9c8bbad0ac9c9b771ca5010da047ed"
+checksum = "401931afb83647375cb7b398c1fd089b3cb027c49929808c17149dfc62c248cb"
 dependencies = [
  "chrono",
  "inferadb-ledger-types",
@@ -1876,9 +1876,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-raft"
-version = "0.1.0-dev.20260302.81"
+version = "0.1.0-dev.20260302.82"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9c9be61f903960cca3c6bed7d68e457549d7e52e6ac977a1d506154ae624dc8"
+checksum = "0baa7fe95eace31052087e12db01dce88a300ca976fecaec90abce05bf8786ea"
 dependencies = [
  "arc-swap",
  "async-compression",
@@ -1924,9 +1924,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-sdk"
-version = "0.1.0-dev.20260302.81"
+version = "0.1.0-dev.20260302.82"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "695ba44002ed6e4e124f00cf077890b3c83b9bfc49ebf3e8c3d4a9f9f764c542"
+checksum = "a0eed5c68b927428f146c7647ef7af5f532be1df4f2a80ef394dffc3124378e0"
 dependencies = [
  "backon",
  "bon",
@@ -1959,9 +1959,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-state"
-version = "0.1.0-dev.20260302.81"
+version = "0.1.0-dev.20260302.82"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0be351527aeda7ee43edfa6cb7d906e70e858f1f22938a06c7cf51b4af34b425"
+checksum = "f0fa5ebb36e7ec634ad5a3e8938cf7326e897ba16884c074f1dd5b556129d7b6"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1986,9 +1986,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-store"
-version = "0.1.0-dev.20260302.81"
+version = "0.1.0-dev.20260302.82"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc50e2fc0f044bf95804e47131148d9493c56034f344d52b02559f6d4d5af319"
+checksum = "cb34751a6a50d71a07ad2ad005984153ee5c25b64be90133948cedb50c7e9c70"
 dependencies = [
  "aes-gcm",
  "aes-kw",
@@ -2010,9 +2010,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-types"
-version = "0.1.0-dev.20260302.81"
+version = "0.1.0-dev.20260302.82"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "760f56c18d7ffc3c6abbbe5940062bb0a9e41711135e5ed40cef7e6410c7f8c9"
+checksum = "a781dce48236900eecbbc9eb572a6bf619575f904405d63b592969b587a3e42e"
 dependencies = [
  "bon",
  "chrono",
@@ -2054,9 +2054,9 @@ dependencies = [
 
 [[package]]
 name = "ipnet"
-version = "2.11.0"
+version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "469fb0b9cefa57e3ef31275ee7cacb78f2fdca44e4765491884a2b119d4eb130"
+checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
 
 [[package]]
 name = "iri-string"

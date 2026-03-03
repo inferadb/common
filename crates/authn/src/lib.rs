@@ -84,6 +84,4 @@ pub use signing_key_cache::{
     DEFAULT_FALLBACK_CRITICAL_THRESHOLD, DEFAULT_FALLBACK_TTL, DEFAULT_FALLBACK_WARN_THRESHOLD,
     SigningKeyCache,
 };
-pub use validation::{
-    ACCEPTED_ALGORITHMS, FORBIDDEN_ALGORITHMS, MAX_KID_LENGTH, validate_algorithm, validate_kid,
-};
+pub use validation::{MAX_KID_LENGTH, validate_algorithm, validate_kid};

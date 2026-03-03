@@ -40,6 +40,7 @@ zeroize.workspace = true
 rand_core = { version = "0.6", features = ["getrandom"], optional = true }
 
 [dev-dependencies]
+inferadb-common-authn = { path = ".", features = ["testutil"] }
 proptest.workspace = true
 rand_core = { version = "0.6", features = ["getrandom"] }
 rstest.workspace = true

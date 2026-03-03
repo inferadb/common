@@ -4,8 +4,7 @@
 //!
 //! - Operation counts (get, set, delete, range queries, transactions)
 //! - Operation latencies (cumulative microseconds and p50/p95/p99 percentiles)
-//! - Error rates by type
-//! - Cache hit/miss rates (for caching backends)
+//! - Error and conflict rates
 //!
 //! # Memory Ordering Strategy
 //!
@@ -106,12 +105,14 @@ const OTHER_BUCKET: &str = "_other";
 struct OrganizationCounters {
     get_count: u64,
     set_count: u64,
+    cas_count: u64,
     delete_count: u64,
     get_range_count: u64,
     clear_range_count: u64,
     transaction_count: u64,
     get_latency_us: u64,
     set_latency_us: u64,
+    cas_latency_us: u64,
     delete_latency_us: u64,
     get_range_latency_us: u64,
     clear_range_latency_us: u64,
@@ -131,6 +132,8 @@ pub struct OrganizationOperationSnapshot {
     pub get_count: u64,
     /// Total SET operations for this organization.
     pub set_count: u64,
+    /// Total CAS (compare-and-set) operations for this organization.
+    pub cas_count: u64,
     /// Total DELETE operations for this organization.
     pub delete_count: u64,
     /// Total GET_RANGE operations for this organization.
@@ -143,6 +146,8 @@ pub struct OrganizationOperationSnapshot {
     pub get_latency_us: u64,
     /// Total SET latency in microseconds for this organization.
     pub set_latency_us: u64,
+    /// Total CAS latency in microseconds for this organization.
+    pub cas_latency_us: u64,
     /// Total DELETE latency in microseconds for this organization.
     pub delete_latency_us: u64,
     /// Total GET_RANGE latency in microseconds for this organization.
@@ -161,6 +166,7 @@ impl OrganizationOperationSnapshot {
     pub fn total_operations(&self) -> u64 {
         self.get_count
             + self.set_count
+            + self.cas_count
             + self.delete_count
             + self.get_range_count
             + self.clear_range_count
@@ -218,12 +224,14 @@ impl OrganizationTracker {
                 organization: ns.clone(),
                 get_count: c.get_count,
                 set_count: c.set_count,
+                cas_count: c.cas_count,
                 delete_count: c.delete_count,
                 get_range_count: c.get_range_count,
                 clear_range_count: c.clear_range_count,
                 transaction_count: c.transaction_count,
                 get_latency_us: c.get_latency_us,
                 set_latency_us: c.set_latency_us,
+                cas_latency_us: c.cas_latency_us,
                 delete_latency_us: c.delete_latency_us,
                 get_range_latency_us: c.get_range_latency_us,
                 clear_range_latency_us: c.clear_range_latency_us,
@@ -345,6 +353,9 @@ pub struct MetricsSnapshot {
     /// Total TRANSACTION operations.
     #[builder(default)]
     pub transaction_count: u64,
+    /// Total CAS (compare-and-set) operations.
+    #[builder(default)]
+    pub cas_count: u64,
 
     /// Total GET latency in microseconds.
     #[builder(default)]
@@ -364,6 +375,9 @@ pub struct MetricsSnapshot {
     /// Total TRANSACTION latency in microseconds.
     #[builder(default)]
     pub transaction_latency_us: u64,
+    /// Total CAS latency in microseconds.
+    #[builder(default)]
+    pub cas_latency_us: u64,
 
     /// GET latency percentiles (p50/p95/p99) in microseconds.
     #[builder(default)]
@@ -383,33 +397,16 @@ pub struct MetricsSnapshot {
     /// TRANSACTION latency percentiles (p50/p95/p99) in microseconds.
     #[builder(default)]
     pub transaction_percentiles: LatencyPercentiles,
+    /// CAS latency percentiles (p50/p95/p99) in microseconds.
+    #[builder(default)]
+    pub cas_percentiles: LatencyPercentiles,
 
     /// Total errors.
     #[builder(default)]
     pub error_count: u64,
-    /// CLEAR_RANGE operation errors.
-    #[builder(default)]
-    pub clear_range_error_count: u64,
-    /// Transaction conflicts.
+    /// Transaction and CAS conflicts.
     #[builder(default)]
     pub conflict_count: u64,
-    /// Timeout errors.
-    #[builder(default)]
-    pub timeout_count: u64,
-
-    /// Cache hits (if caching enabled).
-    #[builder(default)]
-    pub cache_hits: u64,
-    /// Cache misses.
-    #[builder(default)]
-    pub cache_misses: u64,
-
-    /// Total retry attempts across all operations.
-    #[builder(default)]
-    pub retry_count: u64,
-    /// Operations where all retry attempts were exhausted.
-    #[builder(default)]
-    pub retry_exhausted_count: u64,
 
     /// TTL operations count.
     #[builder(default)]
@@ -479,13 +476,6 @@ impl MetricsSnapshot {
         }
     }
 
-    /// Returns the cache hit rate (0.0 - 1.0).
-    #[must_use = "returns a computed rate without side effects"]
-    pub fn cache_hit_rate(&self) -> f64 {
-        let total = self.cache_hits + self.cache_misses;
-        if total == 0 { 0.0 } else { self.cache_hits as f64 / total as f64 }
-    }
-
     /// Returns the error rate (0.0 - 1.0).
     #[must_use = "returns a computed rate without side effects"]
     pub fn error_rate(&self) -> f64 {
@@ -496,11 +486,8 @@ impl MetricsSnapshot {
     /// Returns the conflict rate (0.0 - 1.0).
     #[must_use = "returns a computed rate without side effects"]
     pub fn conflict_rate(&self) -> f64 {
-        if self.transaction_count == 0 {
-            0.0
-        } else {
-            self.conflict_count as f64 / self.transaction_count as f64
-        }
+        let denominator = self.cas_count + self.transaction_count;
+        if denominator == 0 { 0.0 } else { self.conflict_count as f64 / denominator as f64 }
     }
 
     /// Returns the total operation count.
@@ -512,6 +499,7 @@ impl MetricsSnapshot {
             + self.get_range_count
             + self.clear_range_count
             + self.transaction_count
+            + self.cas_count
     }
 }
 
@@ -532,6 +520,7 @@ struct MetricsInner {
     get_range_count: AtomicU64,
     clear_range_count: AtomicU64,
     transaction_count: AtomicU64,
+    cas_count: AtomicU64,
 
     // Latencies (cumulative microseconds)
     get_latency_us: AtomicU64,
@@ -540,6 +529,7 @@ struct MetricsInner {
     get_range_latency_us: AtomicU64,
     clear_range_latency_us: AtomicU64,
     transaction_latency_us: AtomicU64,
+    cas_latency_us: AtomicU64,
 
     // Latency histograms for percentile computation
     get_histogram: LatencyHistogram,
@@ -548,20 +538,11 @@ struct MetricsInner {
     get_range_histogram: LatencyHistogram,
     clear_range_histogram: LatencyHistogram,
     transaction_histogram: LatencyHistogram,
+    cas_histogram: LatencyHistogram,
 
     // Errors
     error_count: AtomicU64,
-    clear_range_error_count: AtomicU64,
     conflict_count: AtomicU64,
-    timeout_count: AtomicU64,
-
-    // Cache
-    cache_hits: AtomicU64,
-    cache_misses: AtomicU64,
-
-    // Retry
-    retry_count: AtomicU64,
-    retry_exhausted_count: AtomicU64,
 
     // Other
     ttl_operations: AtomicU64,
@@ -575,41 +556,7 @@ impl Metrics {
     /// Creates a new metrics collector.
     #[must_use = "constructing a metrics collector has no side effects"]
     pub fn new() -> Self {
-        Self {
-            inner: Arc::new(MetricsInner {
-                get_count: AtomicU64::new(0),
-                set_count: AtomicU64::new(0),
-                delete_count: AtomicU64::new(0),
-                get_range_count: AtomicU64::new(0),
-                clear_range_count: AtomicU64::new(0),
-                transaction_count: AtomicU64::new(0),
-                get_latency_us: AtomicU64::new(0),
-                set_latency_us: AtomicU64::new(0),
-                delete_latency_us: AtomicU64::new(0),
-                get_range_latency_us: AtomicU64::new(0),
-                clear_range_latency_us: AtomicU64::new(0),
-                transaction_latency_us: AtomicU64::new(0),
-                get_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
-                set_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
-                delete_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
-                get_range_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
-                clear_range_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
-                transaction_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
-                error_count: AtomicU64::new(0),
-                clear_range_error_count: AtomicU64::new(0),
-                conflict_count: AtomicU64::new(0),
-                timeout_count: AtomicU64::new(0),
-                cache_hits: AtomicU64::new(0),
-                cache_misses: AtomicU64::new(0),
-                retry_count: AtomicU64::new(0),
-                retry_exhausted_count: AtomicU64::new(0),
-                ttl_operations: AtomicU64::new(0),
-                health_check_count: AtomicU64::new(0),
-                organization_tracker: Mutex::new(OrganizationTracker::new(
-                    DEFAULT_MAX_TRACKED_ORGANIZATIONS,
-                )),
-            }),
-        }
+        Self { inner: Self::new_inner(DEFAULT_MAX_TRACKED_ORGANIZATIONS) }
     }
 
     /// Creates a new metrics collector with a custom organization cardinality limit.
@@ -619,41 +566,38 @@ impl Metrics {
     /// into the `"_other"` overflow bucket.
     #[must_use = "constructing a metrics collector has no side effects"]
     pub fn with_max_organizations(max_tracked_organizations: usize) -> Self {
-        Self {
-            inner: Arc::new(MetricsInner {
-                get_count: AtomicU64::new(0),
-                set_count: AtomicU64::new(0),
-                delete_count: AtomicU64::new(0),
-                get_range_count: AtomicU64::new(0),
-                clear_range_count: AtomicU64::new(0),
-                transaction_count: AtomicU64::new(0),
-                get_latency_us: AtomicU64::new(0),
-                set_latency_us: AtomicU64::new(0),
-                delete_latency_us: AtomicU64::new(0),
-                get_range_latency_us: AtomicU64::new(0),
-                clear_range_latency_us: AtomicU64::new(0),
-                transaction_latency_us: AtomicU64::new(0),
-                get_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
-                set_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
-                delete_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
-                get_range_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
-                clear_range_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
-                transaction_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
-                error_count: AtomicU64::new(0),
-                clear_range_error_count: AtomicU64::new(0),
-                conflict_count: AtomicU64::new(0),
-                timeout_count: AtomicU64::new(0),
-                cache_hits: AtomicU64::new(0),
-                cache_misses: AtomicU64::new(0),
-                retry_count: AtomicU64::new(0),
-                retry_exhausted_count: AtomicU64::new(0),
-                ttl_operations: AtomicU64::new(0),
-                health_check_count: AtomicU64::new(0),
-                organization_tracker: Mutex::new(OrganizationTracker::new(
-                    max_tracked_organizations,
-                )),
-            }),
-        }
+        Self { inner: Self::new_inner(max_tracked_organizations) }
+    }
+
+    fn new_inner(max_organizations: usize) -> Arc<MetricsInner> {
+        Arc::new(MetricsInner {
+            get_count: AtomicU64::new(0),
+            set_count: AtomicU64::new(0),
+            delete_count: AtomicU64::new(0),
+            get_range_count: AtomicU64::new(0),
+            clear_range_count: AtomicU64::new(0),
+            transaction_count: AtomicU64::new(0),
+            cas_count: AtomicU64::new(0),
+            get_latency_us: AtomicU64::new(0),
+            set_latency_us: AtomicU64::new(0),
+            delete_latency_us: AtomicU64::new(0),
+            get_range_latency_us: AtomicU64::new(0),
+            clear_range_latency_us: AtomicU64::new(0),
+            transaction_latency_us: AtomicU64::new(0),
+            cas_latency_us: AtomicU64::new(0),
+            get_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+            set_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+            delete_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+            get_range_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+            clear_range_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+            transaction_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+            cas_histogram: LatencyHistogram::new(DEFAULT_HISTOGRAM_WINDOW_SIZE),
+            error_count: AtomicU64::new(0),
+            conflict_count: AtomicU64::new(0),
+            ttl_operations: AtomicU64::new(0),
+            health_check_count: AtomicU64::new(0),
+            organization_tracker: Mutex::new(OrganizationTracker::new(max_organizations)),
+        })
     }
 
     /// Records a GET operation.
@@ -696,18 +640,20 @@ impl Metrics {
         self.inner.clear_range_histogram.record(us);
     }
 
-    /// Records a CLEAR_RANGE error.
-    pub fn record_clear_range_error(&self) {
-        self.inner.clear_range_error_count.fetch_add(1, Ordering::Relaxed);
-        self.inner.error_count.fetch_add(1, Ordering::Relaxed);
-    }
-
     /// Records a TRANSACTION operation.
     pub fn record_transaction(&self, duration: Duration) {
         let us = duration.as_micros() as u64;
         self.inner.transaction_count.fetch_add(1, Ordering::Relaxed);
         self.inner.transaction_latency_us.fetch_add(us, Ordering::Relaxed);
         self.inner.transaction_histogram.record(us);
+    }
+
+    /// Records a CAS (compare-and-set) operation.
+    pub fn record_cas(&self, duration: Duration) {
+        let us = duration.as_micros() as u64;
+        self.inner.cas_count.fetch_add(1, Ordering::Relaxed);
+        self.inner.cas_latency_us.fetch_add(us, Ordering::Relaxed);
+        self.inner.cas_histogram.record(us);
     }
 
     /// Records a general error.
@@ -720,21 +666,6 @@ impl Metrics {
         self.inner.conflict_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Records a timeout error.
-    pub fn record_timeout(&self) {
-        self.inner.timeout_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Records a cache hit.
-    pub fn record_cache_hit(&self) {
-        self.inner.cache_hits.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Records a cache miss.
-    pub fn record_cache_miss(&self) {
-        self.inner.cache_misses.fetch_add(1, Ordering::Relaxed);
-    }
-
     /// Records a TTL operation.
     pub fn record_ttl_operation(&self) {
         self.inner.ttl_operations.fetch_add(1, Ordering::Relaxed);
@@ -743,22 +674,6 @@ impl Metrics {
     /// Records a health check.
     pub fn record_health_check(&self) {
         self.inner.health_check_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Records a retry attempt.
-    ///
-    /// Called each time a transient failure triggers a retry. The count
-    /// tracks individual retry attempts, not operations that were retried.
-    pub fn record_retry(&self) {
-        self.inner.retry_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Records a retry-exhausted event.
-    ///
-    /// Called when all retry attempts have been exhausted and the operation
-    /// fails permanently. This is a subset of `error_count`.
-    pub fn record_retry_exhausted(&self) {
-        self.inner.retry_exhausted_count.fetch_add(1, Ordering::Relaxed);
     }
 
     // ── Organization-aware recording methods ───────────────────────────────
@@ -785,6 +700,16 @@ impl Metrics {
         let c = tracker.get_or_insert(organization);
         c.set_count += 1;
         c.set_latency_us += us;
+    }
+
+    /// Records a CAS (compare-and-set) operation attributed to an organization.
+    pub fn record_cas_org(&self, duration: Duration, organization: &str) {
+        self.record_cas(duration);
+        let us = duration.as_micros() as u64;
+        let mut tracker = self.inner.organization_tracker.lock();
+        let c = tracker.get_or_insert(organization);
+        c.cas_count += 1;
+        c.cas_latency_us += us;
     }
 
     /// Records a DELETE operation attributed to an organization.
@@ -853,26 +778,23 @@ impl Metrics {
             get_range_count: self.inner.get_range_count.load(Ordering::Relaxed),
             clear_range_count: self.inner.clear_range_count.load(Ordering::Relaxed),
             transaction_count: self.inner.transaction_count.load(Ordering::Relaxed),
+            cas_count: self.inner.cas_count.load(Ordering::Relaxed),
             get_latency_us: self.inner.get_latency_us.load(Ordering::Relaxed),
             set_latency_us: self.inner.set_latency_us.load(Ordering::Relaxed),
             delete_latency_us: self.inner.delete_latency_us.load(Ordering::Relaxed),
             get_range_latency_us: self.inner.get_range_latency_us.load(Ordering::Relaxed),
             clear_range_latency_us: self.inner.clear_range_latency_us.load(Ordering::Relaxed),
             transaction_latency_us: self.inner.transaction_latency_us.load(Ordering::Relaxed),
+            cas_latency_us: self.inner.cas_latency_us.load(Ordering::Relaxed),
             get_percentiles: self.inner.get_histogram.percentiles(),
             set_percentiles: self.inner.set_histogram.percentiles(),
             delete_percentiles: self.inner.delete_histogram.percentiles(),
             get_range_percentiles: self.inner.get_range_histogram.percentiles(),
             clear_range_percentiles: self.inner.clear_range_histogram.percentiles(),
             transaction_percentiles: self.inner.transaction_histogram.percentiles(),
+            cas_percentiles: self.inner.cas_histogram.percentiles(),
             error_count: self.inner.error_count.load(Ordering::Relaxed),
-            clear_range_error_count: self.inner.clear_range_error_count.load(Ordering::Relaxed),
             conflict_count: self.inner.conflict_count.load(Ordering::Relaxed),
-            timeout_count: self.inner.timeout_count.load(Ordering::Relaxed),
-            cache_hits: self.inner.cache_hits.load(Ordering::Relaxed),
-            cache_misses: self.inner.cache_misses.load(Ordering::Relaxed),
-            retry_count: self.inner.retry_count.load(Ordering::Relaxed),
-            retry_exhausted_count: self.inner.retry_exhausted_count.load(Ordering::Relaxed),
             ttl_operations: self.inner.ttl_operations.load(Ordering::Relaxed),
             health_check_count: self.inner.health_check_count.load(Ordering::Relaxed),
             organization_metrics: self.inner.organization_tracker.lock().snapshot(),
@@ -887,26 +809,23 @@ impl Metrics {
         self.inner.get_range_count.store(0, Ordering::Relaxed);
         self.inner.clear_range_count.store(0, Ordering::Relaxed);
         self.inner.transaction_count.store(0, Ordering::Relaxed);
+        self.inner.cas_count.store(0, Ordering::Relaxed);
         self.inner.get_latency_us.store(0, Ordering::Relaxed);
         self.inner.set_latency_us.store(0, Ordering::Relaxed);
         self.inner.delete_latency_us.store(0, Ordering::Relaxed);
         self.inner.get_range_latency_us.store(0, Ordering::Relaxed);
         self.inner.clear_range_latency_us.store(0, Ordering::Relaxed);
         self.inner.transaction_latency_us.store(0, Ordering::Relaxed);
+        self.inner.cas_latency_us.store(0, Ordering::Relaxed);
         self.inner.get_histogram.reset();
         self.inner.set_histogram.reset();
         self.inner.delete_histogram.reset();
         self.inner.get_range_histogram.reset();
         self.inner.clear_range_histogram.reset();
         self.inner.transaction_histogram.reset();
+        self.inner.cas_histogram.reset();
         self.inner.error_count.store(0, Ordering::Relaxed);
-        self.inner.clear_range_error_count.store(0, Ordering::Relaxed);
         self.inner.conflict_count.store(0, Ordering::Relaxed);
-        self.inner.timeout_count.store(0, Ordering::Relaxed);
-        self.inner.cache_hits.store(0, Ordering::Relaxed);
-        self.inner.cache_misses.store(0, Ordering::Relaxed);
-        self.inner.retry_count.store(0, Ordering::Relaxed);
-        self.inner.retry_exhausted_count.store(0, Ordering::Relaxed);
         self.inner.ttl_operations.store(0, Ordering::Relaxed);
         self.inner.health_check_count.store(0, Ordering::Relaxed);
         self.inner.organization_tracker.lock().reset();
@@ -941,9 +860,6 @@ impl Metrics {
             error_rate = snapshot.error_rate(),
             conflict_count = snapshot.conflict_count,
             conflict_rate = snapshot.conflict_rate(),
-            retry_count = snapshot.retry_count,
-            retry_exhausted_count = snapshot.retry_exhausted_count,
-            cache_hit_rate = snapshot.cache_hit_rate(),
             "Storage metrics snapshot"
         );
 
@@ -963,7 +879,7 @@ impl Metrics {
                 conflict_rate = snapshot.conflict_rate(),
                 conflict_count = snapshot.conflict_count,
                 transaction_count = snapshot.transaction_count,
-                "High transaction conflict rate detected"
+                "High transaction/CAS conflict rate detected"
             );
         }
 
@@ -1109,6 +1025,7 @@ mod tests {
         metrics.record_get_range(Duration::from_micros(400));
         metrics.record_clear_range(Duration::from_micros(500));
         metrics.record_transaction(Duration::from_micros(600));
+        metrics.record_cas(Duration::from_micros(700));
 
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.get_percentiles.p50, 100);
@@ -1117,6 +1034,7 @@ mod tests {
         assert_eq!(snapshot.get_range_percentiles.p50, 400);
         assert_eq!(snapshot.clear_range_percentiles.p50, 500);
         assert_eq!(snapshot.transaction_percentiles.p50, 600);
+        assert_eq!(snapshot.cas_percentiles.p50, 700);
     }
 
     #[test]
@@ -1171,19 +1089,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cache_hit_rate() {
-        let metrics = Metrics::new();
-
-        metrics.record_cache_hit();
-        metrics.record_cache_hit();
-        metrics.record_cache_hit();
-        metrics.record_cache_miss();
-
-        let snapshot = metrics.snapshot();
-        assert_eq!(snapshot.cache_hit_rate(), 0.75);
-    }
-
-    #[test]
     fn test_error_rate() {
         let metrics = Metrics::new();
 
@@ -1201,7 +1106,7 @@ mod tests {
     }
 
     #[test]
-    fn test_conflict_rate() {
+    fn test_conflict_rate_transaction_only() {
         let metrics = Metrics::new();
 
         metrics.record_transaction(Duration::from_micros(1000));
@@ -1210,8 +1115,38 @@ mod tests {
         metrics.record_transaction(Duration::from_micros(1000));
         metrics.record_conflict();
 
+        // denominator = cas_count(0) + transaction_count(4) = 4
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.conflict_rate(), 0.25);
+    }
+
+    #[test]
+    fn test_conflict_rate_cas_and_transaction() {
+        let metrics = Metrics::new();
+
+        metrics.record_transaction(Duration::from_micros(1000));
+        metrics.record_transaction(Duration::from_micros(1000));
+        metrics.record_cas(Duration::from_micros(500));
+        metrics.record_cas(Duration::from_micros(500));
+        metrics.record_conflict();
+
+        // denominator = cas_count(2) + transaction_count(2) = 4
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.conflict_rate(), 0.25);
+    }
+
+    #[test]
+    fn test_record_cas() {
+        let metrics = Metrics::new();
+
+        metrics.record_cas(Duration::from_micros(300));
+        metrics.record_cas(Duration::from_micros(500));
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.cas_count, 2);
+        assert_eq!(snapshot.cas_latency_us, 800);
+        // CAS operations are counted separately from SET
+        assert_eq!(snapshot.set_count, 0);
     }
 
     #[test]
@@ -1272,17 +1207,6 @@ mod tests {
     }
 
     #[test]
-    fn test_record_timeout() {
-        let metrics = Metrics::new();
-
-        metrics.record_timeout();
-        metrics.record_timeout();
-
-        let snapshot = metrics.snapshot();
-        assert_eq!(snapshot.timeout_count, 2);
-    }
-
-    #[test]
     fn test_record_ttl_operation() {
         let metrics = Metrics::new();
 
@@ -1339,7 +1263,6 @@ mod tests {
         assert_eq!(snapshot.avg_delete_latency_us(), 0.0);
         assert_eq!(snapshot.avg_get_range_latency_us(), 0.0);
         assert_eq!(snapshot.avg_transaction_latency_us(), 0.0);
-        assert_eq!(snapshot.cache_hit_rate(), 0.0);
         assert_eq!(snapshot.error_rate(), 0.0);
         assert_eq!(snapshot.conflict_rate(), 0.0);
     }
@@ -1425,19 +1348,6 @@ mod tests {
     }
 
     #[test]
-    fn test_record_clear_range_error() {
-        let metrics = Metrics::new();
-
-        metrics.record_clear_range_error();
-        metrics.record_clear_range_error();
-
-        let snapshot = metrics.snapshot();
-        assert_eq!(snapshot.clear_range_error_count, 2);
-        // clear_range errors also increment the global error count
-        assert_eq!(snapshot.error_count, 2);
-    }
-
-    #[test]
     fn test_avg_clear_range_latency() {
         let metrics = Metrics::new();
 
@@ -1475,14 +1385,12 @@ mod tests {
         let metrics = Metrics::new();
 
         metrics.record_clear_range(Duration::from_micros(500));
-        metrics.record_clear_range_error();
 
         metrics.reset();
 
         let snapshot = metrics.snapshot();
         assert_eq!(snapshot.clear_range_count, 0);
         assert_eq!(snapshot.clear_range_latency_us, 0);
-        assert_eq!(snapshot.clear_range_error_count, 0);
     }
 
     // ── Organization-level metrics tests ───────────────────────────────────

@@ -13,18 +13,16 @@
 
 use std::fmt;
 
-use inferadb_common_storage::StorageError;
+use inferadb_common_storage::{
+    ConfigError, StorageError,
+    error::{current_span_id, fmt_span_suffix},
+};
 use inferadb_ledger_sdk::SdkError;
 use thiserror::Error;
 use tonic::Code;
 
 /// Result type alias using [`LedgerStorageError`].
 pub type Result<T> = std::result::Result<T, LedgerStorageError>;
-
-/// Captures the span ID from the current tracing span, if any.
-fn current_span_id() -> Option<tracing::span::Id> {
-    tracing::Span::current().id()
-}
 
 /// Errors specific to the Ledger storage backend.
 ///
@@ -78,11 +76,6 @@ pub enum LedgerStorageError {
     },
 }
 
-/// Appends ` [span=<id>]` to a formatter when a span ID is present.
-fn fmt_span_suffix(f: &mut fmt::Formatter<'_>, span_id: &Option<tracing::span::Id>) -> fmt::Result {
-    if let Some(id) = span_id { write!(f, " [span={}]", id.into_u64()) } else { Ok(()) }
-}
-
 impl fmt::Display for LedgerStorageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -109,6 +102,12 @@ impl fmt::Display for LedgerStorageError {
 impl From<SdkError> for LedgerStorageError {
     fn from(source: SdkError) -> Self {
         Self::Sdk { source, span_id: current_span_id() }
+    }
+}
+
+impl From<ConfigError> for LedgerStorageError {
+    fn from(err: ConfigError) -> Self {
+        Self::Config { message: err.to_string(), span_id: current_span_id() }
     }
 }
 

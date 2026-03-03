@@ -12,17 +12,8 @@
 
 use std::fmt;
 
+use inferadb_common_storage::error::{current_span_id, fmt_span_suffix};
 use thiserror::Error;
-
-/// Captures the span ID from the current tracing span, if any.
-fn current_span_id() -> Option<tracing::span::Id> {
-    tracing::Span::current().id()
-}
-
-/// Appends ` [span=<id>]` to a formatter when a span ID is present.
-fn fmt_span_suffix(f: &mut fmt::Formatter<'_>, span_id: &Option<tracing::span::Id>) -> fmt::Result {
-    if let Some(id) = span_id { write!(f, " [span={}]", id.into_u64()) } else { Ok(()) }
-}
 
 /// Authentication and authorization errors.
 ///
@@ -100,44 +91,6 @@ pub enum AuthError {
     UnsupportedAlgorithm {
         /// Description of the algorithm error.
         message: String,
-        /// Span ID captured at error creation for trace correlation.
-        span_id: Option<tracing::span::Id>,
-    },
-
-    /// JWKS fetch or parsing failed.
-    JwksError {
-        /// Description of the JWKS error.
-        message: String,
-        /// Span ID captured at error creation for trace correlation.
-        span_id: Option<tracing::span::Id>,
-    },
-
-    /// OIDC discovery failed.
-    OidcDiscoveryFailed {
-        /// Description of the OIDC discovery error.
-        message: String,
-        /// Span ID captured at error creation for trace correlation.
-        span_id: Option<tracing::span::Id>,
-    },
-
-    /// Token introspection failed.
-    IntrospectionFailed {
-        /// Description of the introspection error.
-        message: String,
-        /// Span ID captured at error creation for trace correlation.
-        span_id: Option<tracing::span::Id>,
-    },
-
-    /// Invalid introspection response.
-    InvalidIntrospectionResponse {
-        /// Description of the response error.
-        message: String,
-        /// Span ID captured at error creation for trace correlation.
-        span_id: Option<tracing::span::Id>,
-    },
-
-    /// Token is inactive (from introspection).
-    TokenInactive {
         /// Span ID captured at error creation for trace correlation.
         span_id: Option<tracing::span::Id>,
     },
@@ -304,26 +257,6 @@ impl fmt::Display for AuthError {
                 write!(f, "Unsupported algorithm")?;
                 fmt_span_suffix(f, span_id)
             },
-            Self::JwksError { span_id, .. } => {
-                write!(f, "JWKS error")?;
-                fmt_span_suffix(f, span_id)
-            },
-            Self::OidcDiscoveryFailed { span_id, .. } => {
-                write!(f, "OIDC discovery failed")?;
-                fmt_span_suffix(f, span_id)
-            },
-            Self::IntrospectionFailed { span_id, .. } => {
-                write!(f, "Token introspection failed")?;
-                fmt_span_suffix(f, span_id)
-            },
-            Self::InvalidIntrospectionResponse { span_id, .. } => {
-                write!(f, "Invalid introspection response")?;
-                fmt_span_suffix(f, span_id)
-            },
-            Self::TokenInactive { span_id } => {
-                write!(f, "Token is inactive")?;
-                fmt_span_suffix(f, span_id)
-            },
             Self::MissingTenantId { span_id } => {
                 write!(f, "Missing required tenant identifier")?;
                 fmt_span_suffix(f, span_id)
@@ -441,36 +374,6 @@ impl AuthError {
         Self::UnsupportedAlgorithm { message: message.into(), span_id: current_span_id() }
     }
 
-    /// Creates a new `JwksError` error.
-    #[must_use = "error values must be used or propagated"]
-    pub fn jwks_error(message: impl Into<String>) -> Self {
-        Self::JwksError { message: message.into(), span_id: current_span_id() }
-    }
-
-    /// Creates a new `OidcDiscoveryFailed` error.
-    #[must_use = "error values must be used or propagated"]
-    pub fn oidc_discovery_failed(message: impl Into<String>) -> Self {
-        Self::OidcDiscoveryFailed { message: message.into(), span_id: current_span_id() }
-    }
-
-    /// Creates a new `IntrospectionFailed` error.
-    #[must_use = "error values must be used or propagated"]
-    pub fn introspection_failed(message: impl Into<String>) -> Self {
-        Self::IntrospectionFailed { message: message.into(), span_id: current_span_id() }
-    }
-
-    /// Creates a new `InvalidIntrospectionResponse` error.
-    #[must_use = "error values must be used or propagated"]
-    pub fn invalid_introspection_response(message: impl Into<String>) -> Self {
-        Self::InvalidIntrospectionResponse { message: message.into(), span_id: current_span_id() }
-    }
-
-    /// Creates a new `TokenInactive` error.
-    #[must_use = "error values must be used or propagated"]
-    pub fn token_inactive() -> Self {
-        Self::TokenInactive { span_id: current_span_id() }
-    }
-
     /// Creates a new `MissingTenantId` error.
     #[must_use = "error values must be used or propagated"]
     pub fn missing_tenant_id() -> Self {
@@ -562,11 +465,6 @@ impl AuthError {
             | Self::MissingClaim { span_id, .. }
             | Self::InvalidScope { span_id, .. }
             | Self::UnsupportedAlgorithm { span_id, .. }
-            | Self::JwksError { span_id, .. }
-            | Self::OidcDiscoveryFailed { span_id, .. }
-            | Self::IntrospectionFailed { span_id, .. }
-            | Self::InvalidIntrospectionResponse { span_id, .. }
-            | Self::TokenInactive { span_id, .. }
             | Self::MissingTenantId { span_id, .. }
             | Self::TokenTooOld { span_id, .. }
             | Self::KeyNotFound { span_id, .. }
@@ -620,18 +518,6 @@ impl AuthError {
             Self::UnsupportedAlgorithm { message, .. } => {
                 format!("Unsupported algorithm: {message}")
             },
-            Self::JwksError { message, .. } => {
-                format!("JWKS error: {message}")
-            },
-            Self::OidcDiscoveryFailed { message, .. } => {
-                format!("OIDC discovery failed: {message}")
-            },
-            Self::IntrospectionFailed { message, .. } => {
-                format!("Token introspection failed: {message}")
-            },
-            Self::InvalidIntrospectionResponse { message, .. } => {
-                format!("Invalid introspection response: {message}")
-            },
             Self::KeyNotFound { kid, .. } => {
                 format!("Signing key not found: kid={kid}")
             },
@@ -683,19 +569,14 @@ impl AuthError {
     /// All authentication and validation failures are permanent:
     ///
     /// - **Token errors** (`InvalidTokenFormat`, `TokenExpired`, `TokenNotYetValid`,
-    ///   `InvalidSignature`, `TokenTooOld`, `TokenInactive`, `TokenReplayed`, `MissingJti`) — the
-    ///   token itself is invalid; retrying the same token won't fix it.
+    ///   `InvalidSignature`, `TokenTooOld`, `TokenReplayed`, `MissingJti`) — the token itself is
+    ///   invalid; retrying the same token won't fix it.
     /// - **Claim errors** (`InvalidIssuer`, `InvalidAudience`, `MissingClaim`, `InvalidScope`,
     ///   `MissingTenantId`) — the token's claims don't match the server's requirements.
     /// - **Algorithm errors** (`UnsupportedAlgorithm`) — the token uses a disallowed algorithm.
     /// - **Key errors** (`KeyNotFound`, `KeyInactive`, `KeyRevoked`, `KeyNotYetValid`,
     ///   `KeyExpired`, `InvalidPublicKey`, `InvalidKid`) — the signing key is in a definitive state
     ///   that won't change on retry.
-    /// - **Protocol errors** (`JwksError`, `OidcDiscoveryFailed`, `IntrospectionFailed`,
-    ///   `InvalidIntrospectionResponse`) — while these may involve network calls, the errors
-    ///   typically indicate configuration or protocol issues rather than transient failures.
-    ///   Callers needing retry for JWKS/OIDC fetches should implement retry at the HTTP transport
-    ///   layer.
     ///
     /// # Examples
     ///
@@ -768,19 +649,6 @@ mod tests {
         AuthError::missing_claim("tenant_id"),
         "Missing required claim: tenant_id"
     )]
-    #[case::oidc_discovery(
-        AuthError::oidc_discovery_failed("endpoint not found"),
-        "OIDC discovery failed"
-    )]
-    #[case::introspection(
-        AuthError::introspection_failed("connection refused"),
-        "Token introspection failed"
-    )]
-    #[case::invalid_introspection(
-        AuthError::invalid_introspection_response("malformed JSON"),
-        "Invalid introspection response"
-    )]
-    #[case::token_inactive(AuthError::token_inactive(), "Token is inactive")]
     #[case::missing_tenant_id(AuthError::missing_tenant_id(), "Missing required tenant identifier")]
     #[case::key_not_found(AuthError::key_not_found("key-123"), "Signing key not found")]
     #[case::key_inactive(AuthError::key_inactive("key-456"), "Signing key is inactive")]
@@ -982,11 +850,6 @@ mod tests {
     #[case::missing_claim(AuthError::missing_claim("aud"))]
     #[case::invalid_scope(AuthError::invalid_scope("read"))]
     #[case::unsupported_algorithm(AuthError::unsupported_algorithm("HS256"))]
-    #[case::jwks_error(AuthError::jwks_error("fetch failed"))]
-    #[case::oidc_discovery_failed(AuthError::oidc_discovery_failed("timeout"))]
-    #[case::introspection_failed(AuthError::introspection_failed("error"))]
-    #[case::invalid_introspection_response(AuthError::invalid_introspection_response("bad json"))]
-    #[case::token_inactive(AuthError::token_inactive())]
     #[case::missing_tenant_id(AuthError::missing_tenant_id())]
     #[case::token_too_old(AuthError::token_too_old(1_000_000, 86400))]
     #[case::key_not_found(AuthError::key_not_found("kid-1"))]

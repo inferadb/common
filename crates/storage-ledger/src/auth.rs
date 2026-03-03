@@ -58,7 +58,7 @@
 //! # }
 //! ```
 
-use std::{collections::HashMap, future::Future, sync::Arc, time::Instant};
+use std::{future::Future, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -72,9 +72,16 @@ use inferadb_common_storage::{
 use inferadb_ledger_sdk::{
     LedgerClient, ListEntitiesOpts, Operation, ReadConsistency, SetCondition,
 };
-use tonic::Code;
 
 use crate::LedgerStorageError;
+
+/// Maximum number of signing keys returned per organization in a single list call.
+///
+/// If an organization exceeds this limit, the result is truncated and a warning
+/// is logged. This guards against unbounded responses while covering the vast
+/// majority of deployments. If you consistently hit this limit, consider
+/// implementing pagination or archiving inactive keys.
+const MAX_SIGNING_KEYS_PER_ORG: u32 = 1000;
 
 /// Ledger-backed implementation of [`PublicSigningKeyStore`].
 ///
@@ -351,7 +358,7 @@ impl LedgerSigningKeyStore {
         F: FnMut() -> Fut,
         Fut: Future<Output = StorageResult<()>>,
     {
-        crate::retry::with_cas_retry(&self.cas_retry_config, operation).await
+        inferadb_common_storage::with_cas_retry(&self.cas_retry_config, operation).await
     }
 
     /// Converts a storage error to a metrics error kind.
@@ -368,7 +375,10 @@ impl LedgerSigningKeyStore {
 
 #[async_trait]
 impl PublicSigningKeyStore for LedgerSigningKeyStore {
-    /// Stores a signing key in the Ledger with CAS to prevent overwrites.
+    /// Stores a signing key in the Ledger atomically.
+    ///
+    /// Uses `SetCondition::NotExists` for a single atomic write that fails if
+    /// the key already exists, eliminating the TOCTOU race of read-then-write.
     ///
     /// Returns [`StorageError::Conflict`] if a key with the same `kid` already exists.
     #[tracing::instrument(skip(self, key), fields(kid = %key.kid))]
@@ -379,25 +389,15 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
     ) -> StorageResult<()> {
         let start = Instant::now();
         let storage_key = Self::storage_key(&key.kid);
-
-        // Check if key already exists
-        if let Some(_existing) = self.do_read(organization, &storage_key).await? {
-            self.record_error(SigningKeyErrorKind::Conflict);
-            return Err(StorageError::conflict());
-        }
-
         let value = Self::serialize_key(key)?;
 
         let result = self
             .client
-            .set_entity(organization, None, storage_key, value, None)
+            .set_entity_if(organization, None, storage_key, value, SetCondition::NotExists, None)
             .await
             .map(|_| ())
             .map_err(|e| {
-                // Handle race condition where another writer created the key
-                if let inferadb_ledger_sdk::SdkError::Rpc { code, .. } = &e
-                    && *code == Code::AlreadyExists
-                {
+                if e.is_cas_conflict() {
                     return StorageError::conflict();
                 }
                 StorageError::from(LedgerStorageError::from(e))
@@ -444,6 +444,11 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
     }
 
     /// Lists all active signing keys in the organization.
+    ///
+    /// Returns up to [`MAX_SIGNING_KEYS_PER_ORG`] keys. If more keys exist, the
+    /// result is silently truncated and a warning is logged. A key is considered
+    /// active if it is not revoked, not expired, and its `valid_from` timestamp
+    /// has passed.
     #[tracing::instrument(skip(self))]
     async fn list_active_keys(
         &self,
@@ -454,7 +459,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
             key_prefix: SIGNING_KEY_PREFIX.to_string(),
             at_height: None,
             include_expired: false,
-            limit: 1000, // Reasonable limit for signing keys per org
+            limit: MAX_SIGNING_KEYS_PER_ORG,
             page_token: None,
             consistency: self.read_consistency,
             vault: None, // Signing keys are organization-level, not vault-scoped
@@ -468,6 +473,14 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
         let list_result = match result {
             Ok(result) => {
+                if result.has_next_page() {
+                    tracing::warn!(
+                        organization = %organization,
+                        limit = MAX_SIGNING_KEYS_PER_ORG,
+                        "signing key list truncated at {MAX_SIGNING_KEYS_PER_ORG} keys for org {organization}",
+                    );
+                }
+
                 let now = Utc::now();
                 let mut active_keys = Vec::new();
 
@@ -685,7 +698,8 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         // Pre-serialize all keys, separating successes from failures.
         // Track which indices had serialization errors so we can report per-key.
         let mut operations = Vec::with_capacity(keys.len());
-        let mut serialization_errors: Vec<(usize, StorageError)> = Vec::new();
+        let mut serialization_errors: Vec<Option<StorageError>> =
+            (0..keys.len()).map(|_| None).collect();
 
         for (i, key) in keys.iter().enumerate() {
             match Self::serialize_key(key) {
@@ -695,7 +709,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
                 },
                 Err(e) => {
                     self.record_error(SigningKeyErrorKind::Serialization);
-                    serialization_errors.push((i, e));
+                    serialization_errors[i] = Some(e);
                 },
             }
         }
@@ -716,19 +730,18 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
         // Build per-key results: serialization errors go at their original indices,
         // remaining slots get the batch outcome.
-        let mut ser_error_map: HashMap<usize, StorageError> =
-            serialization_errors.into_iter().collect();
-
-        let mut results = Vec::with_capacity(keys.len());
-        for i in 0..keys.len() {
-            if let Some(err) = ser_error_map.remove(&i) {
-                results.push(Err(err));
-            } else if batch_failed {
-                results.push(Err(StorageError::internal("Batch key creation failed")));
-            } else {
-                results.push(Ok(()));
-            }
-        }
+        let results = serialization_errors
+            .into_iter()
+            .map(|ser_err| {
+                if let Some(err) = ser_err {
+                    Err(err)
+                } else if batch_failed {
+                    Err(StorageError::internal("Batch key creation failed"))
+                } else {
+                    Ok(())
+                }
+            })
+            .collect();
 
         if let Some(metrics) = &self.metrics {
             metrics.record_create(start.elapsed());

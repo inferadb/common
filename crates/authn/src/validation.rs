@@ -10,81 +10,60 @@
 //! - Only EdDSA (Ed25519) is accepted
 //! - Symmetric algorithms and "none" are always rejected
 
+use jsonwebtoken::Algorithm;
+
 use crate::error::AuthError;
-
-/// Forbidden JWT algorithms that are never accepted for security reasons.
-///
-/// Per RFC 8725 Section 3.1, these algorithms are blocked because:
-/// - `none`: No signature verification (trivially bypassable)
-/// - `HS256`, `HS384`, `HS512`: Symmetric algorithms (shared secret vulnerability)
-///
-/// Only EdDSA (Ed25519) is currently supported.
-pub const FORBIDDEN_ALGORITHMS: &[&str] = &["none", "HS256", "HS384", "HS512"];
-
-/// Accepted JWT algorithms.
-///
-/// Only EdDSA (Ed25519) is supported. The verification pipeline in
-/// [`crate::jwt::verify_with_signing_key_cache`] handles EdDSA keys
-/// from the Ledger-backed signing key store.
-///
-/// Per RFC 8725 Section 3.1, validators must reject algorithms they do not
-/// fully implement — listing an algorithm here without verification support
-/// would produce confusing errors at the signature verification stage.
-pub const ACCEPTED_ALGORITHMS: &[&str] = &["EdDSA"];
 
 /// Validates the JWT algorithm against security policies.
 ///
 /// Enforces strict algorithm security per RFC 8725:
 /// - Rejects symmetric algorithms (HS256, HS384, HS512)
-/// - Rejects the "none" algorithm
 /// - Accepts only EdDSA (Ed25519)
+/// - Rejects all other algorithms
+///
+/// Matches directly on the [`Algorithm`] enum to avoid relying on
+/// `Debug` formatting, which is not semver-stable.
 ///
 /// # Arguments
 ///
-/// * `alg` — The algorithm from the JWT header
+/// * `alg` — The algorithm variant from the decoded JWT header
 ///
 /// # Errors
 ///
 /// Returns [`AuthError::UnsupportedAlgorithm`] if:
-/// - Algorithm is symmetric (HS256, HS384, HS512)
-/// - Algorithm is "none"
-/// - Algorithm is not in [`ACCEPTED_ALGORITHMS`]
+/// - Algorithm is symmetric (HS256, HS384, HS512) — rejected with a security-specific message
+/// - Algorithm is anything other than EdDSA
 ///
 /// # Examples
 ///
 /// ```no_run
 /// use inferadb_common_authn::validation::validate_algorithm;
+/// use jsonwebtoken::Algorithm;
 ///
 /// // EdDSA is accepted
-/// let result = validate_algorithm("EdDSA");
+/// let result = validate_algorithm(Algorithm::EdDSA);
 /// assert!(result.is_ok());
 ///
 /// // RS256 is not currently supported
-/// let result = validate_algorithm("RS256");
+/// let result = validate_algorithm(Algorithm::RS256);
 /// assert!(result.is_err());
 ///
 /// // Symmetric algorithm rejected
-/// let result = validate_algorithm("HS256");
+/// let result = validate_algorithm(Algorithm::HS256);
 /// assert!(result.is_err());
 /// ```
-pub fn validate_algorithm(alg: &str) -> Result<(), AuthError> {
-    // Check against forbidden algorithms
-    if FORBIDDEN_ALGORITHMS.contains(&alg) {
-        return Err(AuthError::unsupported_algorithm(format!(
-            "Algorithm '{}' is not allowed for security reasons",
-            alg
-        )));
+pub fn validate_algorithm(alg: Algorithm) -> Result<(), AuthError> {
+    match alg {
+        Algorithm::EdDSA => Ok(()),
+        Algorithm::HS256 | Algorithm::HS384 | Algorithm::HS512 => {
+            Err(AuthError::unsupported_algorithm(
+                "symmetric algorithms are not allowed for security reasons",
+            ))
+        },
+        other => {
+            Err(AuthError::unsupported_algorithm(format!("{other:?}: only EdDSA is accepted")))
+        },
     }
-
-    // Check if in accepted list
-    if !ACCEPTED_ALGORITHMS.contains(&alg) {
-        return Err(AuthError::unsupported_algorithm(format!(
-            "Algorithm '{}' is not in accepted list (only EdDSA is supported)",
-            alg
-        )));
-    }
-
-    Ok(())
 }
 
 /// Maximum allowed length for a JWT `kid` header parameter.
@@ -158,7 +137,7 @@ mod tests {
 
     #[test]
     fn test_validate_algorithm_eddsa_accepted() {
-        assert!(validate_algorithm("EdDSA").is_ok());
+        assert!(validate_algorithm(Algorithm::EdDSA).is_ok());
     }
 
     #[test]
@@ -166,62 +145,36 @@ mod tests {
         // RS256 is not currently supported end-to-end — only EdDSA has full
         // verification pipeline support. RS256 should produce a clear error
         // rather than passing validation and failing at signature verification.
-        let result = validate_algorithm("RS256");
+        let result = validate_algorithm(Algorithm::RS256);
         assert!(
-            matches!(result, Err(AuthError::UnsupportedAlgorithm { message: ref msg, .. }) if msg.contains("not in accepted list"))
+            matches!(result, Err(AuthError::UnsupportedAlgorithm { message: ref msg, .. }) if msg.contains("only EdDSA is accepted"))
         );
     }
 
     #[test]
-    fn test_validate_algorithm_symmetric_rejected() {
-        assert!(validate_algorithm("HS256").is_err());
-        assert!(validate_algorithm("HS384").is_err());
-        assert!(validate_algorithm("HS512").is_err());
-    }
-
-    #[test]
-    fn test_validate_algorithm_none_rejected() {
-        let result = validate_algorithm("none");
-        assert!(
-            matches!(result, Err(AuthError::UnsupportedAlgorithm { message: ref msg, .. }) if msg.contains("not allowed for security reasons"))
-        );
-    }
-
-    #[test]
-    fn test_validate_algorithm_not_in_list() {
-        // ES256 is not in ACCEPTED_ALGORITHMS
-        let result = validate_algorithm("ES256");
-        assert_auth_error!(result, UnsupportedAlgorithm);
-    }
-
-    #[test]
-    fn test_forbidden_algorithms_each_rejected_with_security_message() {
-        // Each forbidden algorithm must be rejected before checking the
-        // accepted list, with a message indicating security reasons.
-        for alg in FORBIDDEN_ALGORITHMS {
+    fn test_validate_algorithm_symmetric_rejected_with_security_message() {
+        for alg in [Algorithm::HS256, Algorithm::HS384, Algorithm::HS512] {
             let result = validate_algorithm(alg);
             assert!(
                 matches!(result, Err(AuthError::UnsupportedAlgorithm { message: ref msg, .. }) if msg.contains("not allowed for security reasons")),
-                "Expected security rejection for forbidden algorithm '{alg}'"
+                "Expected security rejection for symmetric algorithm '{alg:?}'"
             );
         }
     }
 
     #[test]
-    fn test_forbidden_algorithms_constant() {
-        assert_eq!(FORBIDDEN_ALGORITHMS.len(), 4);
-        assert!(FORBIDDEN_ALGORITHMS.contains(&"none"));
-        assert!(FORBIDDEN_ALGORITHMS.contains(&"HS256"));
-        assert!(FORBIDDEN_ALGORITHMS.contains(&"HS384"));
-        assert!(FORBIDDEN_ALGORITHMS.contains(&"HS512"));
+    fn test_validate_algorithm_not_in_list() {
+        // ES256 is not accepted
+        let result = validate_algorithm(Algorithm::ES256);
+        assert_auth_error!(result, UnsupportedAlgorithm);
     }
 
     #[test]
-    fn test_accepted_algorithms_constant() {
-        assert_eq!(ACCEPTED_ALGORITHMS.len(), 1);
-        assert!(ACCEPTED_ALGORITHMS.contains(&"EdDSA"));
-        // RS256 intentionally excluded — see ACCEPTED_ALGORITHMS doc comment
-        assert!(!ACCEPTED_ALGORITHMS.contains(&"RS256"));
+    fn test_validate_algorithm_rs384_rejected() {
+        let result = validate_algorithm(Algorithm::RS384);
+        assert!(
+            matches!(result, Err(AuthError::UnsupportedAlgorithm { message: ref msg, .. }) if msg.contains("only EdDSA is accepted"))
+        );
     }
 
     // ========== validate_kid tests ==========

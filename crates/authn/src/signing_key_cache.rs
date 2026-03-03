@@ -1238,7 +1238,10 @@ mod tests {
                     StorageError::Timeout { .. } => StorageError::timeout(),
                     StorageError::NotFound { key, .. } => StorageError::not_found(key),
                     StorageError::Internal { message, .. } => StorageError::internal(message),
-                    _ => StorageError::internal("unknown"),
+                    StorageError::Conflict { .. } => StorageError::conflict(),
+                    StorageError::ShuttingDown { .. } => StorageError::shutting_down(),
+                    StorageError::CircuitOpen { .. } => StorageError::circuit_open(),
+                    other => StorageError::internal(other.detail()),
                 });
             }
             self.inner.get_key(organization, kid).await

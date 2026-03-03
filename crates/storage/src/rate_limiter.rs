@@ -40,6 +40,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use parking_lot::Mutex;
+use tracing::warn;
 
 use crate::{
     StorageBackend, StorageRange,
@@ -49,6 +50,11 @@ use crate::{
     transaction::Transaction,
     types::KeyValue,
 };
+
+/// Default maximum number of per-organization buckets before new organizations
+/// are rejected with a warning log. Prevents unbounded memory growth in
+/// multi-tenant deployments with high organization cardinality.
+pub const DEFAULT_MAX_ORGANIZATION_BUCKETS: usize = 10_000;
 
 /// Configuration for a token-bucket rate limiter.
 ///
@@ -163,6 +169,7 @@ pub struct TokenBucketLimiter {
     default_config: RateLimitConfig,
     extractor: Option<Arc<dyn OrganizationExtractor>>,
     metrics: RateLimitMetrics,
+    max_organization_buckets: usize,
 }
 
 impl std::fmt::Debug for TokenBucketLimiter {
@@ -210,6 +217,7 @@ impl TokenBucketLimiter {
             default_config: config,
             extractor: None,
             metrics: RateLimitMetrics::new(),
+            max_organization_buckets: DEFAULT_MAX_ORGANIZATION_BUCKETS,
         }
     }
 
@@ -232,6 +240,17 @@ impl TokenBucketLimiter {
     #[must_use = "returns the modified limiter for chaining"]
     pub fn with_organization_configs(mut self, configs: HashMap<String, RateLimitConfig>) -> Self {
         self.organization_config = Some(configs);
+        self
+    }
+
+    /// Sets the maximum number of per-organization buckets.
+    ///
+    /// When the limit is reached, new organizations fall back to the global
+    /// bucket and a warning is logged. Defaults to
+    /// [`DEFAULT_MAX_ORGANIZATION_BUCKETS`].
+    #[must_use = "returns the modified limiter for chaining"]
+    pub fn with_max_organization_buckets(mut self, max: usize) -> Self {
+        self.max_organization_buckets = max;
         self
     }
 
@@ -275,6 +294,21 @@ impl TokenBucketLimiter {
             .unwrap_or(self.default_config);
 
         let mut organizations = self.organizations.lock();
+
+        // If the org already has a bucket, use it. Otherwise, check the
+        // cardinality limit before inserting a new one.
+        if !organizations.contains_key(org) && organizations.len() >= self.max_organization_buckets
+        {
+            warn!(
+                organization = org,
+                bucket_count = organizations.len(),
+                max = self.max_organization_buckets,
+                "organization bucket limit reached, falling back to global bucket"
+            );
+            drop(organizations);
+            return self.check_global();
+        }
+
         let bucket =
             organizations.entry(org.to_owned()).or_insert_with(|| BucketState::new(config));
 
@@ -630,5 +664,25 @@ mod tests {
         let display = err.to_string();
         assert!(display.contains("150"), "display should contain retry_after ms: {display}");
         assert!(display.contains("Rate limit exceeded"), "display: {display}");
+    }
+
+    #[test]
+    fn organization_bucket_limit_falls_back_to_global() {
+        let config = RateLimitConfig::new(1000, 100).unwrap();
+        let limiter = TokenBucketLimiter::new(config)
+            .with_organization_extractor(Arc::new(PrefixExtractor))
+            .with_max_organization_buckets(2);
+
+        // Fill up two organization buckets
+        assert!(limiter.check(b"org1:k1").is_ok());
+        assert!(limiter.check(b"org2:k1").is_ok());
+
+        // Third org exceeds the bucket limit -- falls back to the global bucket
+        // and still succeeds (global bucket has capacity)
+        assert!(limiter.check(b"org3:k1").is_ok());
+
+        // Verify no third org bucket was created
+        let orgs = limiter.organizations.lock();
+        assert_eq!(orgs.len(), 2, "should not exceed max_organization_buckets");
     }
 }

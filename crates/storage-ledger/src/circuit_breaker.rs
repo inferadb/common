@@ -233,6 +233,12 @@ impl CircuitBreaker {
     }
 
     /// Records a successful operation, potentially closing the circuit.
+    ///
+    /// In half-open state, multiple concurrent probes may all call this method
+    /// simultaneously. Each increments `consecutive_half_open_successes`, so the
+    /// counter can briefly exceed `half_open_success_threshold` before the state
+    /// transitions to closed. This is harmless — the transition is idempotent
+    /// and the counter is reset to zero when the circuit closes.
     pub fn record_success(&self) {
         let mut inner = self.inner.lock();
         match inner.state {

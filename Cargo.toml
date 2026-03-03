@@ -64,8 +64,10 @@ moka = { version = "0.12", features = ["future"] }
 # Fault injection (fail_point! compiles to nothing without "failpoints" feature)
 fail = "0.5"
 
-# Testing
+# Randomness
 rand = "0.10"
+
+# Testing
 proptest = "1"
 rstest = "0.26"
 tracing-subscriber = { version = "0.3", features = ["registry"] }

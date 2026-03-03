@@ -4,11 +4,7 @@
 //! [`Transaction`](inferadb_common_storage::Transaction) trait for atomic
 //! multi-operation commits to Ledger.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -19,17 +15,16 @@ use inferadb_ledger_sdk::{LedgerClient, Operation, ReadConsistency, SetCondition
 
 use crate::{error::LedgerStorageError, keys::encode_key};
 
-/// Compare-and-set operation to be verified at commit time.
+/// A buffered operation awaiting commit.
 #[derive(Debug, Clone)]
-struct CasOperation {
-    /// Hex-encoded key.
-    key: String,
-    /// Expected current value (None means key should not exist).
-    expected: Option<Vec<u8>>,
-    /// New value to set if condition is met.
-    new_value: Vec<u8>,
-    /// Optional TTL for the new value.
-    ttl: Option<Duration>,
+enum PendingOp {
+    /// Unconditional set (with optional TTL).
+    Set { value: Vec<u8>, ttl: Option<Duration> },
+    /// Unconditional delete.
+    Delete,
+    /// Compare-and-set (with optional TTL). The expected value is checked
+    /// server-side at commit time.
+    Cas { expected: Option<Vec<u8>>, new_value: Vec<u8>, ttl: Option<Duration> },
 }
 
 /// Transaction for atomic operations on the Ledger backend.
@@ -44,9 +39,12 @@ struct CasOperation {
 /// `LedgerTransaction` implements the [`Transaction`] trait's
 /// **read-committed** isolation model:
 ///
-/// - **Read-your-writes**: Reads check pending sets and deletes before consulting the ledger. A
-///   [`set`](Transaction::set) followed by [`get`](Transaction::get) on the same key returns the
-///   buffered value without a network round-trip.
+/// - **Read-your-writes**: Reads check pending operations (sets, deletes, and compare-and-sets)
+///   before consulting the ledger. A [`set`](Transaction::set) or
+///   [`compare_and_set`](Transaction::compare_and_set) followed by [`get`](Transaction::get) on the
+///   same key returns the buffered value without a network round-trip. For CAS operations, the
+///   speculative `new_value` is returned; this is safe because if the CAS condition fails at commit
+///   time, the entire transaction is rejected atomically.
 ///
 /// - **Live reads**: Reads of unmodified keys go directly to the ledger with the configured
 ///   [`ReadConsistency`] level. With [`Linearizable`](ReadConsistency::Linearizable) consistency,
@@ -117,27 +115,22 @@ pub struct LedgerTransaction {
     /// Read consistency level.
     read_consistency: ReadConsistency,
 
-    /// Pending set operations: hex-encoded key -> value.
-    pending_sets: HashMap<String, Vec<u8>>,
-
-    /// Pending delete operations: hex-encoded keys.
-    pending_deletes: HashSet<String>,
-
-    /// Pending TTLs for set operations: hex-encoded key -> duration.
-    pending_ttls: HashMap<String, Duration>,
-
-    /// Pending compare-and-set operations.
-    pending_cas: Vec<CasOperation>,
+    /// All pending operations keyed by hex-encoded storage key.
+    pending: HashMap<String, PendingOp>,
 }
 
 impl std::fmt::Debug for LedgerTransaction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let sets = self.pending.values().filter(|op| matches!(op, PendingOp::Set { .. })).count();
+        let deletes = self.pending.values().filter(|op| matches!(op, PendingOp::Delete)).count();
+        let cas = self.pending.values().filter(|op| matches!(op, PendingOp::Cas { .. })).count();
+
         f.debug_struct("LedgerTransaction")
             .field("organization", &self.organization)
             .field("vault", &self.vault)
-            .field("pending_sets", &self.pending_sets.len())
-            .field("pending_deletes", &self.pending_deletes.len())
-            .field("pending_cas", &self.pending_cas.len())
+            .field("pending_sets", &sets)
+            .field("pending_deletes", &deletes)
+            .field("pending_cas", &cas)
             .finish()
     }
 }
@@ -150,16 +143,7 @@ impl LedgerTransaction {
         vault: Option<VaultSlug>,
         read_consistency: ReadConsistency,
     ) -> Self {
-        Self {
-            client,
-            organization,
-            vault,
-            read_consistency,
-            pending_sets: HashMap::new(),
-            pending_deletes: HashSet::new(),
-            pending_ttls: HashMap::new(),
-            pending_cas: Vec::new(),
-        }
+        Self { client, organization, vault, read_consistency, pending: HashMap::new() }
     }
 
     /// Performs a read with the configured consistency level.
@@ -177,17 +161,16 @@ impl Transaction for LedgerTransaction {
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
         let encoded_key = encode_key(key);
 
-        // First, check if the key was deleted in this transaction
-        if self.pending_deletes.contains(&encoded_key) {
-            return Ok(None);
+        // Check pending operations for this key
+        if let Some(op) = self.pending.get(&encoded_key) {
+            return match op {
+                PendingOp::Set { value, .. } => Ok(Some(Bytes::from(value.clone()))),
+                PendingOp::Delete => Ok(None),
+                PendingOp::Cas { new_value, .. } => Ok(Some(Bytes::from(new_value.clone()))),
+            };
         }
 
-        // Then, check if the key was set in this transaction
-        if let Some(value) = self.pending_sets.get(&encoded_key) {
-            return Ok(Some(Bytes::from(value.clone())));
-        }
-
-        // Finally, read from underlying storage
+        // Read from underlying storage
         match self.do_read(&encoded_key).await {
             Ok(Some(value)) => Ok(Some(Bytes::from(value))),
             Ok(None) => Ok(None),
@@ -198,29 +181,13 @@ impl Transaction for LedgerTransaction {
     /// Buffers a set operation for atomic commit.
     fn set(&mut self, key: Vec<u8>, value: Vec<u8>) {
         let encoded_key = encode_key(&key);
-
-        // Remove from pending deletes if it was marked for deletion
-        self.pending_deletes.remove(&encoded_key);
-
-        // Clear any pending TTL — a plain set produces a non-expiring key
-        self.pending_ttls.remove(&encoded_key);
-
-        // Add to pending sets
-        self.pending_sets.insert(encoded_key, value);
+        self.pending.insert(encoded_key, PendingOp::Set { value, ttl: None });
     }
 
     /// Buffers a delete operation for atomic commit.
     fn delete(&mut self, key: Vec<u8>) {
         let encoded_key = encode_key(&key);
-
-        // Clear any pending TTL
-        self.pending_ttls.remove(&encoded_key);
-
-        // Remove from pending sets if it was set in this transaction
-        self.pending_sets.remove(&encoded_key);
-
-        // Add to pending deletes
-        self.pending_deletes.insert(encoded_key);
+        self.pending.insert(encoded_key, PendingOp::Delete);
     }
 
     /// Buffers a compare-and-set operation for atomic commit.
@@ -231,24 +198,14 @@ impl Transaction for LedgerTransaction {
         new_value: Vec<u8>,
     ) -> StorageResult<()> {
         let encoded_key = encode_key(&key);
-
-        // Buffer the CAS operation - it will be applied at commit time
-        self.pending_cas.push(CasOperation { key: encoded_key, expected, new_value, ttl: None });
+        self.pending.insert(encoded_key, PendingOp::Cas { expected, new_value, ttl: None });
         Ok(())
     }
 
     /// Buffers a set operation with TTL for atomic commit.
     fn set_with_ttl(&mut self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) {
         let encoded_key = encode_key(&key);
-
-        // Remove from pending deletes if it was marked for deletion
-        self.pending_deletes.remove(&encoded_key);
-
-        // Track the TTL for this key
-        self.pending_ttls.insert(encoded_key.clone(), ttl);
-
-        // Add to pending sets
-        self.pending_sets.insert(encoded_key, value);
+        self.pending.insert(encoded_key, PendingOp::Set { value, ttl: Some(ttl) });
     }
 
     /// Buffers a compare-and-set operation with TTL for atomic commit.
@@ -260,65 +217,49 @@ impl Transaction for LedgerTransaction {
         ttl: Duration,
     ) -> StorageResult<()> {
         let encoded_key = encode_key(&key);
-
-        self.pending_cas.push(CasOperation {
-            key: encoded_key,
-            expected,
-            new_value,
-            ttl: Some(ttl),
-        });
+        self.pending.insert(encoded_key, PendingOp::Cas { expected, new_value, ttl: Some(ttl) });
         Ok(())
     }
 
     /// Commits all buffered operations as a single atomic Ledger write.
     async fn commit(self: Box<Self>) -> StorageResult<()> {
-        // If there are no pending operations, this is a no-op
-        if self.pending_sets.is_empty()
-            && self.pending_deletes.is_empty()
-            && self.pending_cas.is_empty()
-        {
+        if self.pending.is_empty() {
             return Ok(());
         }
 
-        // Capture SDK params before consuming fields via into_iter
         let organization = self.organization;
         let vault = self.vault;
 
-        // Build the list of operations
-        let mut operations = Vec::with_capacity(
-            self.pending_sets.len() + self.pending_deletes.len() + self.pending_cas.len(),
-        );
+        let mut operations = Vec::with_capacity(self.pending.len());
 
-        // Add CAS operations first (they typically have ordering requirements)
-        for cas in self.pending_cas {
-            let condition = SetCondition::from_expected(cas.expected);
-            let expires_at =
-                cas.ttl.map(crate::LedgerBackend::compute_expiration_timestamp).transpose()?;
-            operations.push(Operation::SetEntity {
-                key: cas.key,
-                value: cas.new_value,
-                expires_at,
-                condition: Some(condition),
-            });
-        }
-
-        // Add regular set operations
-        for (key, value) in self.pending_sets {
-            if let Some(ttl) = self.pending_ttls.get(&key) {
-                let expires_at = crate::LedgerBackend::compute_expiration_timestamp(*ttl)?;
-                operations.push(Operation::set_entity_with_expiry(key, value, expires_at));
-            } else {
-                operations.push(Operation::set_entity(key, value));
+        for (key, op) in self.pending {
+            match op {
+                PendingOp::Set { value, ttl: None } => {
+                    operations.push(Operation::set_entity(key, value));
+                },
+                PendingOp::Set { value, ttl: Some(ttl) } => {
+                    let expires_at = crate::LedgerBackend::compute_expiration_timestamp(ttl)?;
+                    operations.push(Operation::set_entity_with_expiry(key, value, expires_at));
+                },
+                PendingOp::Delete => {
+                    operations.push(Operation::delete_entity(key));
+                },
+                PendingOp::Cas { expected, new_value, ttl } => {
+                    let condition = SetCondition::from_expected(expected);
+                    let expires_at =
+                        ttl.map(crate::LedgerBackend::compute_expiration_timestamp).transpose()?;
+                    operations.push(Operation::SetEntity {
+                        key,
+                        value: new_value,
+                        expires_at,
+                        condition: Some(condition),
+                    });
+                },
             }
         }
 
-        // Add delete operations
-        for key in self.pending_deletes {
-            operations.push(Operation::delete_entity(key));
-        }
-
-        // Submit all operations atomically
-        // If any CAS condition fails, the whole transaction fails
+        // Submit all operations atomically.
+        // If any CAS condition fails, the whole transaction fails.
         match self.client.write(organization, vault, operations).await {
             Ok(_) => Ok(()),
             Err(e) if e.is_cas_conflict() => Err(StorageError::conflict()),
@@ -388,7 +329,7 @@ mod tests {
         // Write a value
         txn.set(b"key".to_vec(), b"value".to_vec());
 
-        // Read it back (should use pending_sets, not do_read)
+        // Read it back (should use pending op, not do_read)
         let value = txn.get(b"key").await.expect("get");
         assert_eq!(value.map(|b| b.to_vec()), Some(b"value".to_vec()));
 

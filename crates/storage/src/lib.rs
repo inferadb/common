@@ -148,12 +148,12 @@ pub use metrics::{
     MetricsSnapshot, OrganizationOperationSnapshot,
 };
 pub use rate_limiter::{
-    OrganizationExtractor, RateLimitConfig, RateLimitMetricsSnapshot, RateLimitedBackend,
-    TokenBucketLimiter,
+    DEFAULT_MAX_ORGANIZATION_BUCKETS, OrganizationExtractor, RateLimitConfig,
+    RateLimitMetricsSnapshot, RateLimitedBackend, TokenBucketLimiter,
 };
 pub use size_limits::{
     DEFAULT_MAX_KEY_SIZE, DEFAULT_MAX_VALUE_SIZE, SizeLimits, validate_key_size, validate_sizes,
 };
 pub use transaction::Transaction;
-pub use types::{CertId, ClientId, KeyValue, OrganizationSlug, VaultSlug};
+pub use types::{CertId, ClientId, KeyValue, OrganizationSlug, UserSlug, VaultSlug};
 pub use zeroize::Zeroizing;

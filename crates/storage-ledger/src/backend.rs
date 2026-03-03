@@ -119,6 +119,9 @@ pub struct LedgerBackend {
 
     /// Optional cancellation token for graceful shutdown.
     cancellation_token: Option<tokio_util::sync::CancellationToken>,
+
+    /// Cached string representation of the organization ID for metrics.
+    org_str_cached: String,
 }
 
 impl std::fmt::Debug for LedgerBackend {
@@ -186,6 +189,7 @@ impl LedgerBackend {
 
         Ok(Self {
             client: Arc::new(client),
+            org_str_cached: organization.to_string(),
             organization,
             vault,
             read_consistency,
@@ -199,16 +203,11 @@ impl LedgerBackend {
         })
     }
 
-    /// Creates a backend from an existing SDK client.
+    /// Creates a backend from an existing SDK client with default settings.
     ///
-    /// This is useful when you want to share a client across multiple
-    /// backend instances or when you need more control over client lifecycle.
-    ///
-    /// Uses default pagination settings ([`DEFAULT_PAGE_SIZE`] and
-    /// [`DEFAULT_MAX_RANGE_RESULTS`]).
-    ///
-    /// [`DEFAULT_PAGE_SIZE`]: crate::config::DEFAULT_PAGE_SIZE
-    /// [`DEFAULT_MAX_RANGE_RESULTS`]: crate::config::DEFAULT_MAX_RANGE_RESULTS
+    /// Uses default timeouts, pagination, no circuit breaker, and no size
+    /// limits. For customization, use [`LedgerBackendConfig::builder`] with
+    /// [`ClientConfig`](inferadb_ledger_sdk::ClientConfig) instead.
     #[must_use = "constructing a backend has no side effects"]
     pub fn from_client(
         client: Arc<LedgerClient>,
@@ -219,6 +218,7 @@ impl LedgerBackend {
         use crate::config::{DEFAULT_MAX_RANGE_RESULTS, DEFAULT_PAGE_SIZE};
         Self {
             client,
+            org_str_cached: organization.to_string(),
             organization,
             vault,
             read_consistency,
@@ -298,7 +298,7 @@ impl LedgerBackend {
             .organization(organization)
             .maybe_vault(vault.map(Into::into))
             .build()
-            .map_err(|e| LedgerStorageError::config(e.to_string()))?;
+            .map_err(LedgerStorageError::from)?;
 
         Self::new(config).await
     }
@@ -431,9 +431,9 @@ impl LedgerBackend {
         &self.metrics
     }
 
-    /// Returns the organization ID as a string for metric recording.
-    fn org_str(&self) -> String {
-        self.organization.to_string()
+    /// Returns the organization ID as a cached string for metric recording.
+    fn org_str(&self) -> &str {
+        &self.org_str_cached
     }
 
     /// Performs a read with the configured consistency level.
@@ -466,146 +466,12 @@ impl LedgerBackend {
                 )
             })
     }
-}
 
-impl inferadb_common_storage::MetricsCollector for LedgerBackend {
-    fn metrics(&self) -> &Metrics {
-        &self.metrics
-    }
-}
-
-#[async_trait]
-impl StorageBackend for LedgerBackend {
-    /// Reads a value by key, respecting the configured read consistency level.
-    #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
-    async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
-        self.check_cancelled()?;
-        self.check_circuit()?;
-        let start = std::time::Instant::now();
-        let encoded_key = encode_key(key);
-
-        let result = tokio::time::timeout(self.timeout_config.read_timeout, async {
-            match self.do_read(&encoded_key).await {
-                Ok(Some(value)) => Ok(Some(Bytes::from(value))),
-                Ok(None) => Ok(None),
-                Err(e) => Err(StorageError::from(e)),
-            }
-        })
-        .await
-        .unwrap_or_else(|_| Err(StorageError::timeout()));
-        self.record_circuit_result(&result);
-        self.metrics.record_get_org(start.elapsed(), &self.org_str());
-        if result.is_err() {
-            self.metrics.record_error_org(&self.org_str());
-        }
-        result
-    }
-
-    /// Stores a key-value pair in the Ledger.
-    #[tracing::instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len()))]
-    async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()> {
-        self.check_cancelled()?;
-        self.check_circuit()?;
-        self.check_sizes(&key, &value)?;
-        let start = std::time::Instant::now();
-        let encoded_key = encode_key(&key);
-
-        let result = tokio::time::timeout(self.timeout_config.write_timeout, async {
-            self.client
-                .set_entity(self.organization, self.vault, encoded_key, value, None)
-                .await
-                .map(|_| ())
-                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
-        })
-        .await
-        .unwrap_or_else(|_| Err(StorageError::timeout()));
-        self.record_circuit_result(&result);
-        self.metrics.record_set_org(start.elapsed(), &self.org_str());
-        if result.is_err() {
-            self.metrics.record_error_org(&self.org_str());
-        }
-        result
-    }
-
-    /// Performs a compare-and-set operation.
+    /// Internal range query without metrics/circuit-breaker wrapping.
     ///
-    /// Conflict errors (`FailedPrecondition`) are **not** retried — they propagate
-    /// immediately as [`StorageError::Conflict`].
-    #[tracing::instrument(skip(self, key, expected, new_value), fields(key_len = key.len()))]
-    async fn compare_and_set(
-        &self,
-        key: &[u8],
-        expected: Option<&[u8]>,
-        new_value: Vec<u8>,
-    ) -> StorageResult<()> {
-        self.check_cancelled()?;
-        self.check_circuit()?;
-        self.check_sizes(key, &new_value)?;
-        let start = std::time::Instant::now();
-        let encoded_key = encode_key(key);
-
-        let condition = SetCondition::from_expected(expected.map(|v| v.to_vec()));
-
-        let result = tokio::time::timeout(self.timeout_config.write_timeout, async {
-            match self
-                .client
-                .set_entity_if(
-                    self.organization,
-                    self.vault,
-                    encoded_key,
-                    new_value,
-                    condition,
-                    None,
-                )
-                .await
-            {
-                Ok(_) => Ok(()),
-                Err(e) if e.is_cas_conflict() => Err(StorageError::conflict()),
-                Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
-            }
-        })
-        .await
-        .unwrap_or_else(|_| Err(StorageError::timeout()));
-        self.record_circuit_result(&result);
-        self.metrics.record_set_org(start.elapsed(), &self.org_str());
-        if result.is_err() {
-            self.metrics.record_error_org(&self.org_str());
-        }
-        result
-    }
-
-    /// Removes a key and its value from the Ledger.
-    #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
-    async fn delete(&self, key: &[u8]) -> StorageResult<()> {
-        self.check_cancelled()?;
-        self.check_circuit()?;
-        let start = std::time::Instant::now();
-        let encoded_key = encode_key(key);
-
-        let result = tokio::time::timeout(self.timeout_config.write_timeout, async {
-            self.client
-                .delete_entity(self.organization, self.vault, encoded_key)
-                .await
-                .map(|_| ())
-                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
-        })
-        .await
-        .unwrap_or_else(|_| Err(StorageError::timeout()));
-        self.record_circuit_result(&result);
-        self.metrics.record_delete_org(start.elapsed(), &self.org_str());
-        if result.is_err() {
-            self.metrics.record_error_org(&self.org_str());
-        }
-        result
-    }
-
-    /// Scans a key range with server-side pagination and prefix optimization.
-    #[tracing::instrument(skip(self, range))]
-    async fn get_range(&self, range: StorageRange) -> StorageResult<Vec<KeyValue>> {
-        self.check_cancelled()?;
-        self.check_circuit()?;
-        let start = std::time::Instant::now();
-
+    /// Used by both `get_range` (via `ledger_op!`) and `clear_range` to avoid
+    /// double-counting metrics when `clear_range` fetches keys to delete.
+    async fn get_range_inner(&self, range: StorageRange) -> StorageResult<Vec<KeyValue>> {
         // Convert range bounds to hex-encoded strings
         let (start_key, start_inclusive) = match range.start_bound() {
             Bound::Included(k) => (Some(encode_key(k)), true),
@@ -619,41 +485,29 @@ impl StorageBackend for LedgerBackend {
             Bound::Unbounded => (None, true),
         };
 
-        // Find common prefix between start and end for efficient scanning.
-        // For range queries, we use the longest common prefix of start and end
-        // to minimize the number of entities returned by the server.
-        //
-        // Uses common_prefix_len to compute the prefix length without allocating,
-        // then slices into one of the existing strings to build the prefix.
+        // Longest common prefix of start and end minimizes server-side scanning.
         let prefix = match (&start_key, &end_key) {
             (Some(start), Some(end)) => {
                 let len = common_prefix_len(start, end);
                 start[..len].to_owned()
             },
             (Some(start), None) => start.clone(),
-            (None, Some(_)) => {
-                // common_prefix_len("", end) is always 0, so prefix is empty
-                String::new()
-            },
-            (None, None) => String::new(),
+            (None, _) => String::new(),
         };
 
-        // Paginate through results using page_token, bounded by list timeout.
+        // Paginate through results, bounded by list timeout.
         let list_timeout = self.timeout_config.list_timeout;
-        let result = tokio::time::timeout(list_timeout, async {
+        tokio::time::timeout(list_timeout, async {
             let mut all_key_values = Vec::new();
             let mut page_token: Option<String> = None;
 
             loop {
-                let current_page_token = page_token.take();
-                let prefix_clone = prefix.clone();
-
                 let opts = ListEntitiesOpts {
-                    key_prefix: prefix_clone,
+                    key_prefix: prefix.clone(),
                     at_height: None,
                     include_expired: false,
                     limit: self.page_size,
-                    page_token: current_page_token,
+                    page_token: page_token.take(),
                     consistency: self.read_consistency,
                     vault: self.vault,
                 };
@@ -664,12 +518,10 @@ impl StorageBackend for LedgerBackend {
                     .await
                     .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
-                // Pre-allocate on the first page to reduce reallocations
                 if all_key_values.is_empty() {
                     all_key_values.reserve(result.items.len());
                 }
 
-                // Filter results to match exact range bounds
                 for entity in &result.items {
                     let after_start = match &start_key {
                         Some(start) if start_inclusive => &entity.key >= start,
@@ -693,23 +545,18 @@ impl StorageBackend for LedgerBackend {
                             },
                             Err(e) => {
                                 tracing::warn!(key = entity.key, "Failed to decode key: {}", e);
-                                // Skip malformed keys
                             },
                         }
                     }
                 }
 
-                // Check safety bound before continuing to the next page
                 if all_key_values.len() > self.max_range_results {
-                    return Err(StorageError::internal(format!(
-                        "range query exceeded safety limit of {} results (got {}); \
-                         increase max_range_results in LedgerBackendConfig if this is expected",
-                        self.max_range_results,
+                    return Err(StorageError::range_limit_exceeded(
                         all_key_values.len(),
-                    )));
+                        self.max_range_results,
+                    ));
                 }
 
-                // Continue to next page or break
                 if result.has_next_page() {
                     page_token = result.next_page_token;
                 } else {
@@ -717,57 +564,185 @@ impl StorageBackend for LedgerBackend {
                 }
             }
 
-            // Sort by key to ensure consistent ordering
             all_key_values.sort_by(|a, b| a.key.cmp(&b.key));
-
             Ok(all_key_values)
         })
         .await
-        .unwrap_or(Err(StorageError::timeout()));
-        self.record_circuit_result(&result);
-        self.metrics.record_get_range_org(start.elapsed(), &self.org_str());
+        .unwrap_or_else(|_| Err(StorageError::timeout()))
+    }
+}
+
+impl inferadb_common_storage::MetricsCollector for LedgerBackend {
+    fn metrics(&self) -> &Metrics {
+        &self.metrics
+    }
+}
+
+/// Wraps a [`LedgerBackend`] operation with standard prologue and epilogue:
+///
+/// **Prologue:** `check_cancelled`, `check_circuit`, optional `check_sizes`.
+/// **Epilogue:** `record_circuit_result`, per-operation metric, error metric.
+///
+/// # Usage
+///
+/// ```text
+/// ledger_op!(self, record_get_org, { async body })
+/// ledger_op!(self, record_set_org, sizes(&key, &value), { async body })
+/// ```
+macro_rules! ledger_op {
+    ($self:expr, $metric:ident,sizes($key:expr, $val:expr), $body:block) => {{
+        $self.check_cancelled()?;
+        $self.check_circuit()?;
+        $self.check_sizes($key, $val)?;
+        let start = std::time::Instant::now();
+        let result = $body;
+        $self.record_circuit_result(&result);
+        let org = $self.org_str();
+        $self.metrics.$metric(start.elapsed(), org);
         if result.is_err() {
-            self.metrics.record_error_org(&self.org_str());
+            $self.metrics.record_error_org(org);
         }
         result
+    }};
+    ($self:expr, $metric:ident, $body:block) => {{
+        $self.check_cancelled()?;
+        $self.check_circuit()?;
+        let start = std::time::Instant::now();
+        let result = $body;
+        $self.record_circuit_result(&result);
+        let org = $self.org_str();
+        $self.metrics.$metric(start.elapsed(), org);
+        if result.is_err() {
+            $self.metrics.record_error_org(org);
+        }
+        result
+    }};
+}
+
+#[async_trait]
+impl StorageBackend for LedgerBackend {
+    /// Reads a value by key, respecting the configured read consistency level.
+    #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
+    async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
+        ledger_op!(self, record_get_org, {
+            let encoded_key = encode_key(key);
+            tokio::time::timeout(self.timeout_config.read_timeout, async {
+                match self.do_read(&encoded_key).await {
+                    Ok(Some(value)) => Ok(Some(Bytes::from(value))),
+                    Ok(None) => Ok(None),
+                    Err(e) => Err(StorageError::from(e)),
+                }
+            })
+            .await
+            .unwrap_or_else(|_| Err(StorageError::timeout()))
+        })
+    }
+
+    /// Stores a key-value pair in the Ledger.
+    #[tracing::instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len()))]
+    async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()> {
+        ledger_op!(self, record_set_org, sizes(&key, &value), {
+            let encoded_key = encode_key(&key);
+            tokio::time::timeout(self.timeout_config.write_timeout, async {
+                self.client
+                    .set_entity(self.organization, self.vault, encoded_key, value, None)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+            })
+            .await
+            .unwrap_or_else(|_| Err(StorageError::timeout()))
+        })
+    }
+
+    /// Performs a compare-and-set operation.
+    ///
+    /// Conflict errors (`FailedPrecondition`) are **not** retried — they propagate
+    /// immediately as [`StorageError::Conflict`].
+    #[tracing::instrument(skip(self, key, expected, new_value), fields(key_len = key.len()))]
+    async fn compare_and_set(
+        &self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        new_value: Vec<u8>,
+    ) -> StorageResult<()> {
+        ledger_op!(self, record_cas_org, sizes(key, &new_value), {
+            let encoded_key = encode_key(key);
+            let condition = SetCondition::from_expected(expected.map(|v| v.to_vec()));
+            tokio::time::timeout(self.timeout_config.write_timeout, async {
+                match self
+                    .client
+                    .set_entity_if(
+                        self.organization,
+                        self.vault,
+                        encoded_key,
+                        new_value,
+                        condition,
+                        None,
+                    )
+                    .await
+                {
+                    Ok(_) => Ok(()),
+                    Err(e) if e.is_cas_conflict() => Err(StorageError::conflict()),
+                    Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
+                }
+            })
+            .await
+            .unwrap_or_else(|_| Err(StorageError::timeout()))
+        })
+    }
+
+    /// Removes a key and its value from the Ledger.
+    #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
+    async fn delete(&self, key: &[u8]) -> StorageResult<()> {
+        ledger_op!(self, record_delete_org, {
+            let encoded_key = encode_key(key);
+            tokio::time::timeout(self.timeout_config.write_timeout, async {
+                self.client
+                    .delete_entity(self.organization, self.vault, encoded_key)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+            })
+            .await
+            .unwrap_or_else(|_| Err(StorageError::timeout()))
+        })
+    }
+
+    /// Scans a key range with server-side pagination and prefix optimization.
+    #[tracing::instrument(skip(self, range))]
+    async fn get_range(&self, range: StorageRange) -> StorageResult<Vec<KeyValue>> {
+        ledger_op!(self, record_get_range_org, { self.get_range_inner(range).await })
     }
 
     /// Deletes all keys in a range using a two-phase get-then-delete approach.
     #[tracing::instrument(skip(self, range))]
     async fn clear_range(&self, range: StorageRange) -> StorageResult<()> {
-        self.check_cancelled()?;
-        self.check_circuit()?;
-        let start = std::time::Instant::now();
+        ledger_op!(self, record_clear_range_org, {
+            let keys_to_delete = self.get_range_inner(range).await?;
 
-        // First, get all keys in the range (retried per-page internally)
-        let keys_to_delete = self.get_range(range).await?;
+            if keys_to_delete.is_empty() {
+                return Ok(());
+            }
 
-        if keys_to_delete.is_empty() {
-            return Ok(());
-        }
+            let operations: Vec<_> = keys_to_delete
+                .into_iter()
+                .map(|kv| Operation::delete_entity(encode_key(&kv.key)))
+                .collect();
 
-        // Build delete operations
-        let operations: Vec<_> = keys_to_delete
-            .into_iter()
-            .map(|kv| Operation::delete_entity(encode_key(&kv.key)))
-            .collect();
-
-        // Execute as batch delete with timeout
-        let result = tokio::time::timeout(self.timeout_config.list_timeout, async {
-            self.client
-                .write(self.organization, self.vault, operations)
-                .await
-                .map(|_| ())
-                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+            // Use list_timeout (not write_timeout) because the batch delete
+            // size correlates with the preceding range scan, which also uses
+            // list_timeout. A narrow write_timeout would fail for large ranges.
+            tokio::time::timeout(self.timeout_config.list_timeout, async {
+                self.client
+                    .write(self.organization, self.vault, operations)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+            })
+            .await
+            .unwrap_or_else(|_| Err(StorageError::timeout()))
         })
-        .await
-        .unwrap_or_else(|_| Err(StorageError::timeout()));
-        self.record_circuit_result(&result);
-        self.metrics.record_clear_range_org(start.elapsed(), &self.org_str());
-        if result.is_err() {
-            self.metrics.record_error_org(&self.org_str());
-        }
-        result
     }
 
     /// Stores a key-value pair with automatic expiration.
@@ -783,28 +758,19 @@ impl StorageBackend for LedgerBackend {
     /// the Unix epoch, since a valid absolute timestamp cannot be computed.
     #[tracing::instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len(), ttl_ms = ttl.as_millis() as u64))]
     async fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> StorageResult<()> {
-        self.check_cancelled()?;
-        self.check_circuit()?;
-        self.check_sizes(&key, &value)?;
-        let start = std::time::Instant::now();
-        let encoded_key = encode_key(&key);
-        let expires_at = Self::compute_expiration_timestamp(ttl)?;
-
-        let result = tokio::time::timeout(self.timeout_config.write_timeout, async {
-            self.client
-                .set_entity(self.organization, self.vault, encoded_key, value, Some(expires_at))
-                .await
-                .map(|_| ())
-                .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+        ledger_op!(self, record_set_org, sizes(&key, &value), {
+            let encoded_key = encode_key(&key);
+            let expires_at = Self::compute_expiration_timestamp(ttl)?;
+            tokio::time::timeout(self.timeout_config.write_timeout, async {
+                self.client
+                    .set_entity(self.organization, self.vault, encoded_key, value, Some(expires_at))
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
+            })
+            .await
+            .unwrap_or_else(|_| Err(StorageError::timeout()))
         })
-        .await
-        .unwrap_or_else(|_| Err(StorageError::timeout()));
-        self.record_circuit_result(&result);
-        self.metrics.record_set_org(start.elapsed(), &self.org_str());
-        if result.is_err() {
-            self.metrics.record_error_org(&self.org_str());
-        }
-        result
     }
 
     /// Performs a compare-and-set operation with TTL.
@@ -819,57 +785,45 @@ impl StorageBackend for LedgerBackend {
         new_value: Vec<u8>,
         ttl: Duration,
     ) -> StorageResult<()> {
-        self.check_cancelled()?;
-        self.check_circuit()?;
-        self.check_sizes(key, &new_value)?;
-        let start = std::time::Instant::now();
-        let encoded_key = encode_key(key);
-        let expires_at = Self::compute_expiration_timestamp(ttl)?;
-
-        let condition = SetCondition::from_expected(expected.map(|v| v.to_vec()));
-
-        let result = tokio::time::timeout(self.timeout_config.write_timeout, async {
-            match self
-                .client
-                .set_entity_if(
-                    self.organization,
-                    self.vault,
-                    encoded_key,
-                    new_value,
-                    condition,
-                    Some(expires_at),
-                )
-                .await
-            {
-                Ok(_) => Ok(()),
-                Err(e) if e.is_cas_conflict() => Err(StorageError::conflict()),
-                Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
-            }
+        ledger_op!(self, record_cas_org, sizes(key, &new_value), {
+            let encoded_key = encode_key(key);
+            let expires_at = Self::compute_expiration_timestamp(ttl)?;
+            let condition = SetCondition::from_expected(expected.map(|v| v.to_vec()));
+            tokio::time::timeout(self.timeout_config.write_timeout, async {
+                match self
+                    .client
+                    .set_entity_if(
+                        self.organization,
+                        self.vault,
+                        encoded_key,
+                        new_value,
+                        condition,
+                        Some(expires_at),
+                    )
+                    .await
+                {
+                    Ok(_) => Ok(()),
+                    Err(e) if e.is_cas_conflict() => Err(StorageError::conflict()),
+                    Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
+                }
+            })
+            .await
+            .unwrap_or_else(|_| Err(StorageError::timeout()))
         })
-        .await
-        .unwrap_or_else(|_| Err(StorageError::timeout()));
-        self.record_circuit_result(&result);
-        self.metrics.record_set_org(start.elapsed(), &self.org_str());
-        if result.is_err() {
-            self.metrics.record_error_org(&self.org_str());
-        }
-        result
     }
 
     /// Creates a new [`LedgerTransaction`] for buffered atomic writes.
     #[tracing::instrument(skip(self))]
     async fn transaction(&self) -> StorageResult<Box<dyn Transaction>> {
-        self.check_cancelled()?;
-        self.check_circuit()?;
-        let start = std::time::Instant::now();
-        let txn = LedgerTransaction::new(
-            Arc::clone(&self.client),
-            self.organization,
-            self.vault,
-            self.read_consistency,
-        );
-        self.metrics.record_transaction_org(start.elapsed(), &self.org_str());
-        Ok(Box::new(txn))
+        ledger_op!(self, record_transaction_org, {
+            let txn = LedgerTransaction::new(
+                Arc::clone(&self.client),
+                self.organization,
+                self.vault,
+                self.read_consistency,
+            );
+            Ok(Box::new(txn) as Box<dyn Transaction>)
+        })
     }
 
     /// Checks backend connectivity, bypassing the circuit breaker.

@@ -33,9 +33,10 @@
 //! # }
 //! ```
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use async_trait::async_trait;
+use bon::bon;
 use bytes::Bytes;
 use moka::future::Cache;
 use tracing::trace;
@@ -88,14 +89,33 @@ pub struct CacheConfig {
     enabled: bool,
 }
 
+#[bon]
 impl CacheConfig {
     /// Creates a validated cache configuration.
     ///
     /// # Errors
     ///
     /// Returns [`ConfigError`] if `max_entries` is 0 or `ttl` is less than 1 second.
-    pub fn builder() -> CacheConfigBuilder {
-        CacheConfigBuilder { max_entries: DEFAULT_MAX_ENTRIES, ttl: DEFAULT_TTL }
+    #[builder]
+    pub fn new(
+        #[builder(default = DEFAULT_MAX_ENTRIES)] max_entries: u64,
+        #[builder(default = DEFAULT_TTL)] ttl: Duration,
+    ) -> Result<Self, ConfigError> {
+        if max_entries == 0 {
+            return Err(ConfigError::BelowMinimum {
+                field: "max_entries",
+                value: max_entries.to_string(),
+                min: "1".to_owned(),
+            });
+        }
+        if ttl < MIN_TTL {
+            return Err(ConfigError::BelowMinimum {
+                field: "ttl",
+                value: format!("{}ms", ttl.as_millis()),
+                min: "1s".to_owned(),
+            });
+        }
+        Ok(Self { max_entries, ttl, enabled: true })
     }
 
     /// Creates a disabled cache configuration.
@@ -122,51 +142,6 @@ impl CacheConfig {
     }
 }
 
-/// Builder for [`CacheConfig`].
-pub struct CacheConfigBuilder {
-    max_entries: u64,
-    ttl: Duration,
-}
-
-impl CacheConfigBuilder {
-    /// Sets the maximum number of entries in the cache.
-    pub fn max_entries(mut self, max_entries: u64) -> Self {
-        self.max_entries = max_entries;
-        self
-    }
-
-    /// Sets the TTL for cache entries.
-    pub fn ttl(mut self, ttl: Duration) -> Self {
-        self.ttl = ttl;
-        self
-    }
-
-    /// Builds the [`CacheConfig`], validating all fields.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ConfigError`] if:
-    /// - `max_entries` is 0
-    /// - `ttl` is less than 1 second
-    pub fn build(self) -> Result<CacheConfig, ConfigError> {
-        if self.max_entries == 0 {
-            return Err(ConfigError::BelowMinimum {
-                field: "max_entries",
-                value: self.max_entries.to_string(),
-                min: "1".to_owned(),
-            });
-        }
-        if self.ttl < MIN_TTL {
-            return Err(ConfigError::BelowMinimum {
-                field: "ttl",
-                value: format!("{}ms", self.ttl.as_millis()),
-                min: "1s".to_owned(),
-            });
-        }
-        Ok(CacheConfig { max_entries: self.max_entries, ttl: self.ttl, enabled: true })
-    }
-}
-
 // ───────────────────────────────────────────────────────────────────────────
 // CachedBackend
 // ───────────────────────────────────────────────────────────────────────────
@@ -175,14 +150,23 @@ impl CacheConfigBuilder {
 ///
 /// Caches both present and absent keys to prevent repeated backend lookups.
 /// Write operations invalidate the cache before delegating.
-#[derive(Clone)]
 pub struct CachedBackend<S: StorageBackend> {
-    inner: S,
+    inner: Arc<S>,
     cache: Option<Cache<Vec<u8>, Option<Bytes>>>,
     config: CacheConfig,
 }
 
-impl<S: StorageBackend + Clone> CachedBackend<S> {
+impl<S: StorageBackend> Clone for CachedBackend<S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            cache: self.cache.clone(),
+            config: self.config.clone(),
+        }
+    }
+}
+
+impl<S: StorageBackend> CachedBackend<S> {
     /// Creates a new cached backend.
     ///
     /// If `config` was created with [`CacheConfig::disabled()`], no cache is
@@ -193,7 +177,7 @@ impl<S: StorageBackend + Clone> CachedBackend<S> {
         } else {
             None
         };
-        Self { inner, cache, config }
+        Self { inner: Arc::new(inner), cache, config }
     }
 
     /// Returns a reference to the inner backend.
@@ -216,7 +200,7 @@ impl<S: StorageBackend + Clone> CachedBackend<S> {
 }
 
 #[async_trait]
-impl<S: StorageBackend + Clone> StorageBackend for CachedBackend<S> {
+impl<S: StorageBackend> StorageBackend for CachedBackend<S> {
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
         if let Some(cache) = &self.cache {
             if let Some(cached_value) = cache.get(key).await {
@@ -251,6 +235,11 @@ impl<S: StorageBackend + Clone> StorageBackend for CachedBackend<S> {
         self.inner.get_range(range).await
     }
 
+    /// Clears the given range in the inner backend.
+    ///
+    /// Invalidates the **entire** cache (not just the affected keys), because
+    /// the cache has no efficient way to determine which entries fall within
+    /// the range.
     async fn clear_range(&self, range: StorageRange) -> StorageResult<()> {
         if let Some(cache) = &self.cache {
             cache.invalidate_all();
@@ -265,6 +254,11 @@ impl<S: StorageBackend + Clone> StorageBackend for CachedBackend<S> {
         self.inner.set_with_ttl(key, value, ttl).await
     }
 
+    /// Returns a transaction from the inner backend.
+    ///
+    /// **Cache coherence:** Transaction writes bypass the cache entirely.
+    /// Callers should call [`clear_cache`](Self::clear_cache) after a
+    /// transaction commits to avoid stale reads from the cache layer.
     async fn transaction(&self) -> StorageResult<Box<dyn Transaction>> {
         self.inner.transaction().await
     }

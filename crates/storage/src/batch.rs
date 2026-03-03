@@ -27,9 +27,9 @@
 //!
 //! # Transaction Size Limits
 //!
-//! Many storage backends (particularly FoundationDB) have transaction size limits.
-//! The default configuration uses 9MB as the effective limit to leave room for
-//! metadata overhead, staying safely under the 10MB FoundationDB limit.
+//! Many storage backends impose transaction size limits.
+//! The default configuration uses 9 MiB as the effective limit to leave room for
+//! metadata overhead, staying safely under common 10 MiB backend limits.
 
 use std::{
     sync::Arc,
@@ -43,7 +43,7 @@ use crate::{ConfigError, StorageBackend, StorageError, StorageResult};
 
 /// Effective transaction size limit (9 MiB).
 ///
-/// Leaves ~1 MiB headroom below the 10 MiB FoundationDB hard limit
+/// Leaves ~1 MiB headroom below the 10 MiB backend transaction limit
 /// for transaction metadata overhead.
 pub const TRANSACTION_SIZE_LIMIT: usize = 9 * 1024 * 1024;
 
@@ -125,7 +125,7 @@ impl BatchConfig {
     /// Creates a batch config optimized for large transactions.
     ///
     /// Uses [`TRANSACTION_SIZE_LIMIT`] (9 MiB) as the maximum batch byte size,
-    /// allowing sub-batches to fill up to the FoundationDB transaction limit.
+    /// allowing sub-batches to fill up to the backend transaction limit.
     #[must_use = "constructing a config has no side effects"]
     pub fn for_large_transactions() -> Self {
         Self {

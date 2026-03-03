@@ -74,16 +74,21 @@ enum BufferedWrite {
 /// `get_range` and `clear_range` pass through to the inner backend and do
 /// **not** reflect buffered writes. This is a documented limitation — callers
 /// that need range-consistent reads should commit first.
-#[derive(Clone)]
 pub struct BufferedBackend<S: StorageBackend> {
-    inner: S,
+    inner: Arc<S>,
     buffer: Arc<Mutex<Vec<BufferedWrite>>>,
 }
 
-impl<S: StorageBackend + Clone + 'static> BufferedBackend<S> {
+impl<S: StorageBackend> Clone for BufferedBackend<S> {
+    fn clone(&self) -> Self {
+        Self { inner: Arc::clone(&self.inner), buffer: Arc::clone(&self.buffer) }
+    }
+}
+
+impl<S: StorageBackend + 'static> BufferedBackend<S> {
     /// Creates a new buffered backend wrapping the given storage.
     pub fn new(inner: S) -> Self {
-        Self { inner, buffer: Arc::new(Mutex::new(Vec::new())) }
+        Self { inner: Arc::new(inner), buffer: Arc::new(Mutex::new(Vec::new())) }
     }
 
     /// Commits all buffered writes to the underlying storage atomically.
@@ -129,6 +134,10 @@ impl<S: StorageBackend + Clone + 'static> BufferedBackend<S> {
 
     /// Looks up a key in the buffer (most-recent-write-wins).
     ///
+    /// Performs an O(n) linear scan of the buffer in reverse order.
+    /// For large buffers, callers should consider flushing periodically
+    /// via [`commit`](Self::commit) to keep lookup cost low.
+    ///
     /// Returns `Some(Some(bytes))` for a buffered set, `Some(None)` for a
     /// buffered delete, or `None` if the key is not in the buffer.
     async fn buffer_lookup(&self, key: &[u8]) -> Option<Option<Bytes>> {
@@ -152,7 +161,7 @@ impl<S: StorageBackend + Clone + 'static> BufferedBackend<S> {
 }
 
 #[async_trait]
-impl<S: StorageBackend + Clone + 'static> StorageBackend for BufferedBackend<S> {
+impl<S: StorageBackend + 'static> StorageBackend for BufferedBackend<S> {
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
         if let Some(result) = self.buffer_lookup(key).await {
             return Ok(result);
@@ -185,7 +194,7 @@ impl<S: StorageBackend + Clone + 'static> StorageBackend for BufferedBackend<S> 
 
     async fn transaction(&self) -> StorageResult<Box<dyn Transaction>> {
         Ok(Box::new(BufferedTransaction {
-            inner: self.inner.clone(),
+            inner: Arc::clone(&self.inner),
             parent_buffer: Arc::clone(&self.buffer),
             local_writes: Vec::new(),
         }))
@@ -231,7 +240,7 @@ impl<S: StorageBackend + Clone + 'static> StorageBackend for BufferedBackend<S> 
 /// parent [`BufferedBackend`]'s buffer on commit (instead of committing to
 /// real storage).
 struct BufferedTransaction<S: StorageBackend> {
-    inner: S,
+    inner: Arc<S>,
     parent_buffer: Arc<Mutex<Vec<BufferedWrite>>>,
     local_writes: Vec<BufferedWrite>,
 }

@@ -50,7 +50,6 @@ pub const DEFAULT_MAX_IAT_AGE: std::time::Duration = std::time::Duration::from_s
 ///   "iat": 1234567800,
 ///   "org": "<organization_slug>",
 ///   "vault": "<vault>",
-///   "vault_role": "write",
 ///   "scope": "vault:read vault:write"
 /// }
 /// ```
@@ -117,16 +116,16 @@ impl JwtClaims {
     ///
     /// Returns `None` if the claim is absent. No error is raised for missing vault IDs.
     #[must_use = "returns the vault ID without modifying the claims"]
-    pub fn vault(&self) -> Option<String> {
-        self.vault.clone()
+    pub fn vault(&self) -> Option<&str> {
+        self.vault.as_deref()
     }
 
     /// Returns the `org` claim value if present.
     ///
     /// Use [`require_org`](Self::require_org) when the org ID is mandatory.
     #[must_use = "returns the org ID without modifying the claims"]
-    pub fn org(&self) -> Option<String> {
-        self.org.clone()
+    pub fn org(&self) -> Option<&str> {
+        self.org.as_deref()
     }
 }
 
@@ -290,7 +289,7 @@ pub fn verify_signature(
 ) -> Result<JwtClaims, AuthError> {
     let mut validation = Validation::new(algorithm);
     validation.validate_exp = true; // Validate token expiration
-    validation.validate_nbf = false;
+    validation.validate_nbf = true;
     validation.validate_aud = false;
 
     let token_data = decode::<JwtClaims>(token, key, &validation)?;
@@ -319,8 +318,7 @@ pub fn verify_signature(
 /// Returns an error if:
 /// - The JWT is malformed or missing required fields ([`AuthError::InvalidTokenFormat`])
 /// - The `kid` header fails validation ([`AuthError::InvalidKid`])
-/// - The algorithm is not in [`crate::validation::ACCEPTED_ALGORITHMS`]
-///   ([`AuthError::UnsupportedAlgorithm`])
+/// - The algorithm is not EdDSA ([`AuthError::UnsupportedAlgorithm`])
 /// - The key cannot be found in Ledger ([`AuthError::KeyNotFound`])
 /// - The key is inactive ([`AuthError::KeyInactive`])
 /// - The key is not yet valid ([`AuthError::KeyNotYetValid`])
@@ -347,7 +345,7 @@ pub fn verify_signature(
 /// let token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJFZERTQSIsImtpZCI6Im9yZy0uLi4ifQ...";
 /// let claims = verify_with_signing_key_cache(token, &cache).await?;
 ///
-/// println!("Verified claims for organization: {}", claims.org.unwrap_or_default());
+/// println!("Verified claims for organization: {}", claims.org().unwrap_or_default());
 /// # Ok(())
 /// # }
 /// ```
@@ -367,35 +365,34 @@ pub async fn verify_with_signing_key_cache(
     // Validate kid format before any cache or storage interaction
     validate_kid(&kid)?;
 
-    // Validate algorithm — only EdDSA is accepted (see ACCEPTED_ALGORITHMS)
-    let alg_str = format!("{:?}", header.alg);
-    validate_algorithm(&alg_str)?;
+    // Validate algorithm — only EdDSA is accepted
+    validate_algorithm(header.alg)?;
 
     // 2. Decode claims without verification to extract organization ID
     let claims = decode_jwt_claims(token)?;
     let org_str = claims.require_org()?;
     let org =
         inferadb_common_storage::OrganizationSlug::from(org_str.parse::<u64>().map_err(|_| {
-            AuthError::invalid_token_format(format!(
-                "org '{}' is not a valid Snowflake ID",
-                org_str
-            ))
+            tracing::debug!(org = %org_str, "org claim is not a valid Snowflake ID");
+            AuthError::invalid_token_format("org is not a valid Snowflake ID")
         })?);
 
     // 3. Get decoding key from signing key cache (fetches from Ledger on cache miss)
-    let decoding_key = signing_key_cache.get_decoding_key(org, &kid).await.map_err(|e| {
+    let decoding_key = signing_key_cache.get_decoding_key(org, &kid).await.inspect_err(|e| {
         tracing::warn!(
             org = %org,
             kid = %kid,
             error = %e,
             "Failed to get signing key from Ledger"
         );
-        // Convert signing key cache errors to appropriate auth errors
-        e
     })?;
 
     // 4. Verify signature with the Ledger-backed key
     let verified_claims = verify_signature(token, &decoding_key, header.alg)?;
+
+    // 5. Validate claims (iat recency) — verify_signature checks exp and nbf,
+    // but we also enforce iat freshness to reject old tokens.
+    validate_claims(&verified_claims, None, Some(DEFAULT_MAX_IAT_AGE))?;
 
     tracing::debug!(
         org = %org,
@@ -552,7 +549,7 @@ mod tests {
             org: Some("987654321".into()),
         };
 
-        assert_eq!(claims.org(), Some("987654321".to_owned()));
+        assert_eq!(claims.org(), Some("987654321"));
     }
 
     #[test]

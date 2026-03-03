@@ -124,7 +124,7 @@ impl<B: StorageBackend> StorageBackend for InstrumentedBackend<B> {
     ) -> StorageResult<()> {
         let start = std::time::Instant::now();
         let result = self.inner.compare_and_set(key, expected, new_value).await;
-        self.metrics.record_set(start.elapsed());
+        self.metrics.record_cas(start.elapsed());
         if let Err(ref e) = result {
             self.record_error(e);
         }
@@ -181,7 +181,7 @@ impl<B: StorageBackend> StorageBackend for InstrumentedBackend<B> {
     ) -> StorageResult<()> {
         let start = std::time::Instant::now();
         let result = self.inner.compare_and_set_with_ttl(key, expected, new_value, ttl).await;
-        self.metrics.record_set(start.elapsed());
+        self.metrics.record_cas(start.elapsed());
         self.metrics.record_ttl_operation();
         if let Err(ref e) = result {
             self.record_error(e);
@@ -273,6 +273,8 @@ mod tests {
         assert!(result.is_err());
 
         let snap = backend.metrics().snapshot();
+        assert_eq!(snap.cas_count, 1, "CAS operations must be counted separately from SET");
+        assert_eq!(snap.set_count, 1, "only the initial set() should count as SET");
         assert_eq!(snap.conflict_count, 1);
         assert_eq!(snap.error_count, 1);
     }

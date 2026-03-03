@@ -79,6 +79,33 @@ impl Drop for ShutdownGuard {
     }
 }
 
+/// A stored entry with its value and optional expiration time.
+#[derive(Debug, Clone)]
+struct StoredEntry {
+    value: Bytes,
+    expires_at: Option<Instant>,
+}
+
+impl StoredEntry {
+    fn is_expired(&self) -> bool {
+        self.expires_at.is_some_and(|t| t <= Instant::now())
+    }
+
+    /// Returns the value if the entry is not expired, or `None` otherwise.
+    fn live_value(&self) -> Option<&Bytes> {
+        if self.is_expired() { None } else { Some(&self.value) }
+    }
+}
+
+/// Checks whether the expected value matches the current value for a CAS operation.
+fn cas_matches(expected: Option<&[u8]>, current: Option<&Bytes>) -> bool {
+    match (expected, current) {
+        (None, None) => true,
+        (Some(exp), Some(cur)) => exp == &cur[..],
+        _ => false,
+    }
+}
+
 /// In-memory storage backend using [`BTreeMap`].
 ///
 /// This backend is primarily intended for testing but can also be used
@@ -96,8 +123,7 @@ impl Drop for ShutdownGuard {
 /// You can also call [`shutdown`](Self::shutdown) to stop the task explicitly.
 #[derive(Clone)]
 pub struct MemoryBackend {
-    data: Arc<RwLock<BTreeMap<Vec<u8>, Bytes>>>,
-    ttl_data: Arc<RwLock<BTreeMap<Vec<u8>, Instant>>>,
+    data: Arc<RwLock<BTreeMap<Vec<u8>, StoredEntry>>>,
     /// Shared ownership of the shutdown sender. When the last clone drops
     /// (and [`ShutdownGuard`] is deallocated), the sender is dropped, which
     /// closes the watch channel and signals the cleanup task to exit.
@@ -153,7 +179,6 @@ impl MemoryBackend {
         let (shutdown_tx, shutdown_rx) = watch::channel(());
         let backend = Self {
             data: Arc::new(RwLock::new(BTreeMap::new())),
-            ttl_data: Arc::new(RwLock::new(BTreeMap::new())),
             shutdown_guard: Arc::new(ShutdownGuard { shutdown_tx }),
             size_limits,
         };
@@ -181,27 +206,8 @@ impl MemoryBackend {
             }
 
             let now = Instant::now();
-            let mut expired_keys = Vec::new();
-
-            // Find expired keys
-            {
-                let ttl_guard = self.ttl_data.read();
-                for (key, expiry) in ttl_guard.iter() {
-                    if *expiry <= now {
-                        expired_keys.push(key.clone());
-                    }
-                }
-            }
-
-            // Remove expired keys
-            if !expired_keys.is_empty() {
-                let mut data_guard = self.data.write();
-                let mut ttl_guard = self.ttl_data.write();
-                for key in expired_keys {
-                    data_guard.remove(&key);
-                    ttl_guard.remove(&key);
-                }
-            }
+            let mut data = self.data.write();
+            data.retain(|_, entry| entry.expires_at.is_none_or(|t| t > now));
         }
     }
 
@@ -213,15 +219,6 @@ impl MemoryBackend {
     /// Use this when you need deterministic shutdown timing (e.g., in tests).
     pub fn shutdown(&self) {
         let _ = self.shutdown_guard.shutdown_tx.send(());
-    }
-
-    /// Checks if a key has expired.
-    fn is_expired(&self, key: &[u8]) -> bool {
-        let ttl_guard = self.ttl_data.read();
-        if let Some(expiry) = ttl_guard.get(key) {
-            return *expiry <= Instant::now();
-        }
-        false
     }
 
     /// Validates key and value sizes against configured limits, if any.
@@ -243,26 +240,15 @@ impl Default for MemoryBackend {
 impl StorageBackend for MemoryBackend {
     #[tracing::instrument(skip(self, key), fields(key_len = key.len()))]
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {
-        if self.is_expired(key) {
-            return Ok(None);
-        }
-
         let data = self.data.read();
-        Ok(data.get(key).cloned())
+        Ok(data.get(key).and_then(StoredEntry::live_value).cloned())
     }
 
     #[tracing::instrument(skip(self, key, value), fields(key_len = key.len(), value_len = value.len()))]
     async fn set(&self, key: Vec<u8>, value: Vec<u8>) -> StorageResult<()> {
         self.check_sizes(&key, &value)?;
         let mut data = self.data.write();
-        data.insert(key.clone(), Bytes::from(value));
-
-        // Remove TTL if exists (set without TTL clears any existing TTL)
-        {
-            let mut ttl_guard = self.ttl_data.write();
-            ttl_guard.remove(&key);
-        }
-
+        data.insert(key, StoredEntry { value: Bytes::from(value), expires_at: None });
         Ok(())
     }
 
@@ -276,24 +262,12 @@ impl StorageBackend for MemoryBackend {
         self.check_sizes(key, &new_value)?;
         let mut data = self.data.write();
 
-        let current = if self.is_expired(key) { None } else { data.get(key).cloned() };
-
-        let matches = match (expected, &current) {
-            (None, None) => true,
-            (Some(exp), Some(cur)) => exp == &cur[..],
-            _ => false,
-        };
-
-        if !matches {
+        let current = data.get(key).and_then(StoredEntry::live_value);
+        if !cas_matches(expected, current) {
             return Err(StorageError::conflict());
         }
 
-        data.insert(key.to_vec(), Bytes::from(new_value));
-
-        // Clear any existing TTL on this key
-        let mut ttl_guard = self.ttl_data.write();
-        ttl_guard.remove(key);
-
+        data.insert(key.to_vec(), StoredEntry { value: Bytes::from(new_value), expires_at: None });
         Ok(())
     }
 
@@ -301,12 +275,6 @@ impl StorageBackend for MemoryBackend {
     async fn delete(&self, key: &[u8]) -> StorageResult<()> {
         let mut data = self.data.write();
         data.remove(key);
-
-        {
-            let mut ttl_guard = self.ttl_data.write();
-            ttl_guard.remove(key);
-        }
-
         Ok(())
     }
 
@@ -328,8 +296,9 @@ impl StorageBackend for MemoryBackend {
 
         let results: Vec<KeyValue> = data
             .range::<[u8], _>((start, end))
-            .filter(|(key, _)| !self.is_expired(key))
-            .map(|(k, v)| KeyValue::new(Bytes::copy_from_slice(k), v.clone()))
+            .filter_map(|(k, entry)| {
+                entry.live_value().map(|v| KeyValue::new(Bytes::copy_from_slice(k), v.clone()))
+            })
             .collect();
 
         Ok(results)
@@ -348,13 +317,10 @@ impl StorageBackend for MemoryBackend {
             return Ok(());
         }
 
-        // Phase 2: Acquire both write locks in a fixed order (data → ttl_data)
-        // and batch-remove all keys in a single critical section.
+        // Phase 2: Acquire write lock and batch-remove all keys.
         let mut data = self.data.write();
-        let mut ttl_guard = self.ttl_data.write();
         for key in &keys_to_remove {
             data.remove(key);
-            ttl_guard.remove(key);
         }
 
         Ok(())
@@ -364,13 +330,8 @@ impl StorageBackend for MemoryBackend {
     async fn set_with_ttl(&self, key: Vec<u8>, value: Vec<u8>, ttl: Duration) -> StorageResult<()> {
         self.check_sizes(&key, &value)?;
         let mut data = self.data.write();
-        let mut ttl_data = self.ttl_data.write();
-
-        let expiry = Instant::now() + ttl;
-
-        data.insert(key.clone(), Bytes::from(value));
-        ttl_data.insert(key, expiry);
-
+        let expires_at = Some(Instant::now() + ttl);
+        data.insert(key, StoredEntry { value: Bytes::from(value), expires_at });
         Ok(())
     }
 
@@ -385,23 +346,13 @@ impl StorageBackend for MemoryBackend {
         self.check_sizes(key, &new_value)?;
         let mut data = self.data.write();
 
-        let current = if self.is_expired(key) { None } else { data.get(key).cloned() };
-
-        let matches = match (expected, &current) {
-            (None, None) => true,
-            (Some(exp), Some(cur)) => exp == &cur[..],
-            _ => false,
-        };
-
-        if !matches {
+        let current = data.get(key).and_then(StoredEntry::live_value);
+        if !cas_matches(expected, current) {
             return Err(StorageError::conflict());
         }
 
-        data.insert(key.to_vec(), Bytes::from(new_value));
-
-        let mut ttl_guard = self.ttl_data.write();
-        ttl_guard.insert(key.to_vec(), Instant::now() + ttl);
-
+        let expires_at = Some(Instant::now() + ttl);
+        data.insert(key.to_vec(), StoredEntry { value: Bytes::from(new_value), expires_at });
         Ok(())
     }
 
@@ -549,57 +500,29 @@ impl Transaction for MemoryTransaction {
 
         let mut data = self.backend.data.write();
 
-        // First, verify all CAS conditions hold
+        // Verify all CAS conditions hold
         for cas in &self.pending_cas {
-            let current_value =
-                if self.backend.is_expired(&cas.key) { None } else { data.get(&cas.key).cloned() };
-
-            let matches = match (&cas.expected, &current_value) {
-                // Both None: key doesn't exist and we expected it not to exist
-                (None, None) => true,
-                // Expected value matches current value
-                (Some(expected_bytes), Some(current_bytes)) => {
-                    expected_bytes.as_slice() == &current_bytes[..]
-                },
-                // Mismatch: one is Some and other is None
-                _ => false,
-            };
-
-            if !matches {
+            let current = data.get(&cas.key).and_then(StoredEntry::live_value);
+            if !cas_matches(cas.expected.as_deref(), current) {
                 return Err(crate::StorageError::conflict());
             }
         }
 
-        // Acquire TTL lock once for all writes
-        let mut ttl_guard = self.backend.ttl_data.write();
-
         // Apply all CAS writes
         for cas in self.pending_cas {
-            data.insert(cas.key.clone(), Bytes::from(cas.new_value));
-            match cas.ttl {
-                Some(ttl) => {
-                    ttl_guard.insert(cas.key, Instant::now() + ttl);
-                },
-                None => {
-                    ttl_guard.remove(&cas.key);
-                },
-            }
+            let expires_at = cas.ttl.map(|ttl| Instant::now() + ttl);
+            data.insert(cas.key, StoredEntry { value: Bytes::from(cas.new_value), expires_at });
         }
 
         // Apply all pending writes atomically
         for (key, value) in self.pending_writes {
             match value {
                 Some(v) => {
-                    data.insert(key.clone(), Bytes::from(v));
-                    if let Some(ttl) = self.pending_ttls.get(&key) {
-                        ttl_guard.insert(key, Instant::now() + *ttl);
-                    } else {
-                        ttl_guard.remove(&key);
-                    }
+                    let expires_at = self.pending_ttls.get(&key).map(|ttl| Instant::now() + *ttl);
+                    data.insert(key, StoredEntry { value: Bytes::from(v), expires_at });
                 },
                 None => {
                     data.remove(&key);
-                    ttl_guard.remove(&key);
                 },
             }
         }
@@ -881,9 +804,10 @@ mod tests {
         let value = backend.get(b"key").await.unwrap();
         assert_eq!(value, Some(Bytes::from("value2")));
 
-        // Verify TTL was cleared (key persists in ttl_data check)
-        let ttl_data = backend.ttl_data.read();
-        assert!(!ttl_data.contains_key(&b"key".to_vec()));
+        // Verify TTL was cleared (entry has no expiration)
+        let data = backend.data.read();
+        let entry = data.get(&b"key".to_vec()).expect("key should exist");
+        assert!(entry.expires_at.is_none(), "CAS without TTL should clear expiration");
     }
 
     #[tokio::test]
@@ -1031,12 +955,17 @@ mod tests {
         // Wait long enough for the TTL to expire
         sleep(Duration::from_millis(1500)).await;
 
-        // The key should still exist because the cleanup task was stopped.
-        // (The key is expired but not yet cleaned up.)
-        let ttl_data = backend.ttl_data.read();
+        // The key should still exist in the map because the cleanup task was stopped.
+        // (The entry is expired but not yet cleaned up.)
+        let data = backend.data.read();
+        let entry = data.get(&b"ttl_key".to_vec());
         assert!(
-            ttl_data.contains_key(&b"ttl_key".to_vec()),
-            "cleanup task should not have removed the expired TTL entry after shutdown"
+            entry.is_some(),
+            "cleanup task should not have removed the expired entry after shutdown"
+        );
+        assert!(
+            entry.expect("checked above").is_expired(),
+            "entry should be expired but still present"
         );
     }
 

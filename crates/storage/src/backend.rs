@@ -555,6 +555,8 @@ impl<T: StorageBackend + ?Sized> StorageBackendExt for T {}
 /// Delegate [`StorageBackend`] through an `Arc<dyn StorageBackend>`.
 ///
 /// This enables [`DynBackend`] to be used directly as a `StorageBackend`.
+// NOTE: This delegation must stay in sync with the `StorageBackend` trait.
+// Adding a new method to the trait requires adding a corresponding delegation here.
 #[async_trait]
 impl StorageBackend for Arc<dyn StorageBackend> {
     async fn get(&self, key: &[u8]) -> StorageResult<Option<Bytes>> {

@@ -14,6 +14,7 @@
 //! - [`StorageError::CasRetriesExhausted`] - CAS retries exhausted due to sustained contention
 //! - [`StorageError::CircuitOpen`] - Circuit breaker is open and rejecting requests
 //! - [`StorageError::SizeLimitExceeded`] - Key or value exceeds configured size limit
+//! - [`StorageError::RangeLimitExceeded`] - Range query returned more results than allowed
 //! - [`StorageError::RateLimitExceeded`] - Rate limit exceeded; retry after indicated duration
 //! - [`StorageError::ShuttingDown`] - Backend is shutting down and rejecting new operations
 //! - [`ConfigError`] - Configuration value failed validation at construction time
@@ -35,15 +36,12 @@
 //! }
 //! ```
 
-use std::{fmt, sync::Arc};
+use std::fmt;
 
 use thiserror::Error;
 
-/// Reference-counted error type for source chain tracking.
-///
-/// Uses [`Arc`] instead of `Box` to enable shared ownership across
-/// concurrent error chains.
-pub type BoxError = Arc<dyn std::error::Error + Send + Sync>;
+/// Boxed error type for source chain tracking.
+pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Result type alias for storage operations.
 ///
@@ -98,7 +96,7 @@ pub enum ConfigError {
 }
 
 /// Captures the span ID from the current tracing span, if any.
-fn current_span_id() -> Option<tracing::span::Id> {
+pub fn current_span_id() -> Option<tracing::span::Id> {
     tracing::Span::current().id()
 }
 
@@ -141,6 +139,23 @@ impl std::fmt::Display for TimeoutContext {
     }
 }
 
+/// Formats a byte key for human-readable display.
+///
+/// Returns the key as a UTF-8 string if valid, otherwise hex-encodes it.
+fn format_key_for_display(key: &[u8]) -> std::borrow::Cow<'_, str> {
+    match std::str::from_utf8(key) {
+        Ok(s) => std::borrow::Cow::Borrowed(s),
+        Err(_) => {
+            use std::fmt::Write;
+            let mut hex = String::with_capacity(key.len() * 2);
+            for b in key {
+                let _ = write!(hex, "{b:02x}");
+            }
+            std::borrow::Cow::Owned(hex)
+        },
+    }
+}
+
 /// Errors that can occur during storage operations.
 ///
 /// Backend implementations map their internal error types to these canonical
@@ -165,8 +180,8 @@ pub enum StorageError {
     ///
     /// This is a recoverable error indicating the key does not exist.
     NotFound {
-        /// The key that was not found.
-        key: String,
+        /// The key that was not found (raw bytes, hex-encoded for display).
+        key: Vec<u8>,
         /// Span ID captured at error creation for trace correlation.
         span_id: Option<tracing::span::Id>,
     },
@@ -280,6 +295,23 @@ pub enum StorageError {
         span_id: Option<tracing::span::Id>,
     },
 
+    /// A range query returned more results than the configured safety limit.
+    ///
+    /// This error is returned when a `get_range` operation produces more
+    /// results than [`max_range_results`]. The caller should narrow the
+    /// range or increase the limit in the backend configuration.
+    ///
+    /// This is **not** transient — the same query will consistently exceed
+    /// the limit.
+    RangeLimitExceeded {
+        /// Number of results the query would have returned.
+        actual: usize,
+        /// The configured maximum allowed results.
+        limit: usize,
+        /// Span ID captured at error creation for trace correlation.
+        span_id: Option<tracing::span::Id>,
+    },
+
     /// The operation was rejected because the rate limit was exceeded.
     ///
     /// This is a transient error — the caller should back off and retry
@@ -309,7 +341,10 @@ pub enum StorageError {
 }
 
 /// Appends ` [span=<id>]` to a formatter when a span ID is present.
-fn fmt_span_suffix(f: &mut fmt::Formatter<'_>, span_id: &Option<tracing::span::Id>) -> fmt::Result {
+pub fn fmt_span_suffix(
+    f: &mut fmt::Formatter<'_>,
+    span_id: &Option<tracing::span::Id>,
+) -> fmt::Result {
     if let Some(id) = span_id { write!(f, " [span={}]", id.into_u64()) } else { Ok(()) }
 }
 
@@ -356,6 +391,10 @@ impl fmt::Display for StorageError {
                 write!(f, "Size limit exceeded: {kind} is {actual} bytes, limit is {limit} bytes")?;
                 fmt_span_suffix(f, span_id)
             },
+            Self::RangeLimitExceeded { actual, limit, span_id } => {
+                write!(f, "Range query exceeded limit: {actual} results, limit is {limit}")?;
+                fmt_span_suffix(f, span_id)
+            },
             Self::RateLimitExceeded { retry_after, span_id } => {
                 write!(f, "Rate limit exceeded, retry after {}ms", retry_after.as_millis())?;
                 fmt_span_suffix(f, span_id)
@@ -371,10 +410,13 @@ impl fmt::Display for StorageError {
 impl StorageError {
     /// Creates a new `NotFound` error for the given key.
     ///
+    /// Accepts any type that can be referenced as `&[u8]`, including `&str`,
+    /// `String`, `Vec<u8>`, and `&[u8]`.
+    ///
     /// Captures the current tracing span ID for log correlation.
     #[must_use = "error values must be used or propagated"]
-    pub fn not_found(key: impl Into<String>) -> Self {
-        Self::NotFound { key: key.into(), span_id: current_span_id() }
+    pub fn not_found(key: impl AsRef<[u8]>) -> Self {
+        Self::NotFound { key: key.as_ref().to_vec(), span_id: current_span_id() }
     }
 
     /// Creates a new `Conflict` error.
@@ -403,7 +445,7 @@ impl StorageError {
     ) -> Self {
         Self::Connection {
             message: message.into(),
-            source: Some(Arc::new(source)),
+            source: Some(Box::new(source)),
             span_id: current_span_id(),
         }
     }
@@ -426,7 +468,7 @@ impl StorageError {
     ) -> Self {
         Self::Serialization {
             message: message.into(),
-            source: Some(Arc::new(source)),
+            source: Some(Box::new(source)),
             span_id: current_span_id(),
         }
     }
@@ -449,7 +491,7 @@ impl StorageError {
     ) -> Self {
         Self::Internal {
             message: message.into(),
-            source: Some(Arc::new(source)),
+            source: Some(Box::new(source)),
             span_id: current_span_id(),
         }
     }
@@ -502,6 +544,14 @@ impl StorageError {
         Self::SizeLimitExceeded { kind, actual, limit, span_id: current_span_id() }
     }
 
+    /// Creates a new `RangeLimitExceeded` error.
+    ///
+    /// Captures the current tracing span ID for log correlation.
+    #[must_use = "error values must be used or propagated"]
+    pub fn range_limit_exceeded(actual: usize, limit: usize) -> Self {
+        Self::RangeLimitExceeded { actual, limit, span_id: current_span_id() }
+    }
+
     /// Creates a new `RateLimitExceeded` error with the suggested retry-after
     /// duration.
     ///
@@ -536,6 +586,7 @@ impl StorageError {
             | Self::CasRetriesExhausted { span_id, .. }
             | Self::CircuitOpen { span_id, .. }
             | Self::SizeLimitExceeded { span_id, .. }
+            | Self::RangeLimitExceeded { span_id, .. }
             | Self::RateLimitExceeded { span_id, .. }
             | Self::ShuttingDown { span_id, .. } => span_id.as_ref(),
         }
@@ -567,7 +618,7 @@ impl StorageError {
     pub fn detail(&self) -> String {
         match self {
             Self::NotFound { key, .. } => {
-                format!("Key not found: {key}")
+                format!("Key not found: {}", format_key_for_display(key))
             },
             Self::Connection { message, .. } => {
                 format!("Connection error: {message}")
@@ -603,32 +654,6 @@ impl StorageError {
     #[must_use = "returns a classification without side effects"]
     pub fn is_conflict(&self) -> bool {
         matches!(self, Self::Conflict { .. })
-    }
-
-    /// Returns the suggested HTTP status code for this error.
-    ///
-    /// Maps each error variant to the most appropriate HTTP status code:
-    ///
-    /// | Variant | Code | Reason |
-    /// |---------|------|--------|
-    /// | `NotFound` | 404 | Resource does not exist |
-    /// | `Conflict` / `CasRetriesExhausted` | 409 | Write conflict |
-    /// | `RateLimitExceeded` | 429 | Too many requests |
-    /// | `SizeLimitExceeded` / `Serialization` | 400 | Bad request |
-    /// | `CircuitOpen` / `Connection` / `ShuttingDown` | 503 | Service unavailable |
-    /// | `Timeout` | 504 | Gateway timeout |
-    /// | `Internal` | 500 | Internal server error |
-    #[must_use = "returns a status code without side effects"]
-    pub fn suggested_status_code(&self) -> u16 {
-        match self {
-            Self::NotFound { .. } => 404,
-            Self::Conflict { .. } | Self::CasRetriesExhausted { .. } => 409,
-            Self::RateLimitExceeded { .. } => 429,
-            Self::SizeLimitExceeded { .. } | Self::Serialization { .. } => 400,
-            Self::CircuitOpen { .. } | Self::Connection { .. } | Self::ShuttingDown { .. } => 503,
-            Self::Timeout { .. } => 504,
-            Self::Internal { .. } => 500,
-        }
     }
 }
 
@@ -907,31 +932,6 @@ mod tests {
         assert!(StorageError::conflict().is_conflict());
         assert!(!StorageError::not_found("key").is_conflict());
         assert!(!StorageError::internal("oops").is_conflict());
-    }
-
-    #[rstest]
-    #[case::not_found(StorageError::not_found("key"), 404)]
-    #[case::conflict(StorageError::conflict(), 409)]
-    #[case::cas_exhausted(StorageError::cas_retries_exhausted(3), 409)]
-    #[case::rate_limit(
-        StorageError::rate_limit_exceeded(std::time::Duration::from_millis(100)),
-        429
-    )]
-    #[case::size_limit(StorageError::size_limit_exceeded("key", 1024, 512), 400)]
-    #[case::serialization(StorageError::serialization("bad"), 400)]
-    #[case::circuit_open(StorageError::circuit_open(), 503)]
-    #[case::connection(StorageError::connection("net down"), 503)]
-    #[case::shutting_down(StorageError::shutting_down(), 503)]
-    #[case::timeout(StorageError::timeout(), 504)]
-    #[case::internal(StorageError::internal("oops"), 500)]
-    fn suggested_status_code_mapping(#[case] err: StorageError, #[case] expected: u16) {
-        assert_eq!(
-            err.suggested_status_code(),
-            expected,
-            "{:?} should map to HTTP {}",
-            std::mem::discriminant(&err),
-            expected,
-        );
     }
 
     #[test]

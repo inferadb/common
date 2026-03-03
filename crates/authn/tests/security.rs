@@ -10,7 +10,6 @@ use std::{sync::Arc, time::Duration};
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
-use ed25519_dalek::SigningKey;
 use inferadb_common_authn::{
     error::AuthError,
     jwt::{
@@ -18,72 +17,20 @@ use inferadb_common_authn::{
         verify_with_signing_key_cache,
     },
     signing_key_cache::SigningKeyCache,
+    testutil::{craft_raw_jwt, create_signed_jwt, generate_test_keypair},
     validation::validate_algorithm,
 };
 use inferadb_common_storage::{
-    CertId, ClientId, OrganizationSlug,
-    auth::{MemorySigningKeyStore, PublicSigningKey, PublicSigningKeyStore},
+    OrganizationSlug,
+    auth::{MemorySigningKeyStore, PublicSigningKeyStore},
 };
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
-use rand_core::OsRng;
 use serde_json::json;
 use zeroize::Zeroizing;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Generate a test Ed25519 key pair and return (pkcs8_der, public_key_base64).
-///
-/// The private key material is wrapped in [`Zeroizing`] to ensure it is scrubbed
-/// from memory on drop.
-fn generate_test_keypair() -> (Zeroizing<Vec<u8>>, String) {
-    let signing_key = SigningKey::generate(&mut OsRng);
-    let public_key_bytes = signing_key.verifying_key().to_bytes();
-    let public_key_b64 = URL_SAFE_NO_PAD.encode(public_key_bytes);
-
-    let private_bytes: Zeroizing<[u8; 32]> = Zeroizing::new(signing_key.to_bytes());
-    let mut pkcs8_der = Zeroizing::new(vec![
-        0x30, 0x2e, // SEQUENCE, 46 bytes
-        0x02, 0x01, 0x00, // INTEGER version 0
-        0x30, 0x05, // SEQUENCE, 5 bytes (algorithm identifier)
-        0x06, 0x03, 0x2b, 0x65, 0x70, // OID 1.3.101.112 (Ed25519)
-        0x04, 0x22, // OCTET STRING, 34 bytes
-        0x04, 0x20, // OCTET STRING, 32 bytes (the actual key)
-    ]);
-    pkcs8_der.extend_from_slice(&*private_bytes);
-
-    (pkcs8_der, public_key_b64)
-}
-
-/// Create a valid JWT signed with the given PKCS#8 DER key.
-fn create_signed_jwt(pkcs8_der: &[u8], kid: &str, org: &str) -> String {
-    let now = Utc::now().timestamp() as u64;
-    let claims = json!({
-        "iss": "https://api.inferadb.com",
-        "sub": "client:test-client",
-        "aud": "https://api.inferadb.com/evaluate",
-        "exp": now + 3600,
-        "iat": now,
-        "scope": "vault:read vault:write",
-        "org": org,
-    });
-
-    let mut header = Header::new(Algorithm::EdDSA);
-    header.kid = Some(kid.to_string());
-
-    let encoding_key = EncodingKey::from_ed_der(pkcs8_der);
-    jsonwebtoken::encode(&header, &claims, &encoding_key).expect("Failed to encode test JWT")
-}
-
-/// Create a raw JWT string from header and payload JSON (with a fake signature).
-fn craft_raw_jwt(header_json: &serde_json::Value, payload_json: &serde_json::Value) -> String {
-    let header_b64 = URL_SAFE_NO_PAD.encode(serde_json::to_vec(header_json).expect("header json"));
-    let payload_b64 =
-        URL_SAFE_NO_PAD.encode(serde_json::to_vec(payload_json).expect("payload json"));
-    // Empty signature — this is intentional for testing rejection
-    format!("{header_b64}.{payload_b64}.")
-}
 
 /// Register a valid active EdDSA signing key in the store.
 async fn register_key(
@@ -92,18 +39,8 @@ async fn register_key(
     public_key_b64: &str,
     organization: OrganizationSlug,
 ) {
-    let key = PublicSigningKey {
-        kid: kid.to_string(),
-        public_key: public_key_b64.to_owned().into(),
-        client_id: ClientId::from(1),
-        cert_id: CertId::from(1),
-        created_at: Utc::now(),
-        valid_from: Utc::now() - chrono::Duration::hours(1),
-        valid_until: None,
-        active: true,
-        revoked_at: None,
-        revocation_reason: None,
-    };
+    let key =
+        inferadb_common_authn::testutil::create_test_signing_key_with_pubkey(kid, public_key_b64);
     store.create_key(organization, &key).await.expect("Failed to register test key");
 }
 
@@ -113,12 +50,14 @@ async fn register_key(
 
 #[test]
 fn test_algorithm_none_rejected_before_key_lookup() {
-    // Security property: the `none` algorithm must be rejected at the
-    // algorithm validation layer, before any key lookup occurs.
-    let result = validate_algorithm("none");
+    // Security property: the `none` algorithm is not representable by
+    // jsonwebtoken::Algorithm (it rejects it at parse time), so we can't
+    // test validate_algorithm directly. The end-to-end test below covers this.
+    // Instead, verify that a non-EdDSA algorithm is rejected.
+    let result = validate_algorithm(Algorithm::RS256);
     assert!(
-        matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("not allowed for security reasons")),
-        "Expected 'none' to be rejected with security message, got: {result:?}"
+        matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("only EdDSA is accepted")),
+        "Expected RS256 to be rejected, got: {result:?}"
     );
 }
 
@@ -171,7 +110,7 @@ fn test_algorithm_confusion_hs256_rejected() {
     // as forbidden, preventing the classic algorithm confusion attack where
     // an attacker signs a JWT using HMAC with the server's EdDSA public key
     // as the HMAC secret.
-    let result = validate_algorithm("HS256");
+    let result = validate_algorithm(Algorithm::HS256);
     assert!(
         matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("not allowed for security reasons")),
         "Security: HS256 must be rejected as forbidden, got: {result:?}"
@@ -180,7 +119,7 @@ fn test_algorithm_confusion_hs256_rejected() {
 
 #[test]
 fn test_algorithm_confusion_hs384_rejected() {
-    let result = validate_algorithm("HS384");
+    let result = validate_algorithm(Algorithm::HS384);
     assert!(
         matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("not allowed for security reasons")),
         "Security: HS384 must be rejected as forbidden, got: {result:?}"
@@ -189,7 +128,7 @@ fn test_algorithm_confusion_hs384_rejected() {
 
 #[test]
 fn test_algorithm_confusion_hs512_rejected() {
-    let result = validate_algorithm("HS512");
+    let result = validate_algorithm(Algorithm::HS512);
     assert!(
         matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("not allowed for security reasons")),
         "Security: HS512 must be rejected as forbidden, got: {result:?}"
@@ -233,6 +172,37 @@ async fn test_algorithm_confusion_hs256_end_to_end() {
         matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("not allowed for security reasons")),
         "Security: HS256-signed JWT must be rejected even with valid HMAC, got: {result:?}"
     );
+}
+
+// ===========================================================================
+// Additional: RS256 (non-accepted algorithm) test
+// ===========================================================================
+
+#[test]
+fn test_rs256_rejected_as_not_accepted() {
+    // RS256 is not a symmetric algorithm but is also not EdDSA. It should be
+    // rejected with an "only EdDSA is accepted" message.
+    let result = validate_algorithm(Algorithm::RS256);
+    assert!(
+        matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("only EdDSA is accepted")),
+        "RS256 must be rejected as not-accepted, got: {result:?}"
+    );
+}
+
+// ===========================================================================
+// Additional: all symmetric algorithms each get a dedicated test
+// ===========================================================================
+
+#[test]
+fn test_all_symmetric_algorithms_rejected_with_security_message() {
+    let symmetric = [Algorithm::HS256, Algorithm::HS384, Algorithm::HS512];
+    for alg in &symmetric {
+        let result = validate_algorithm(*alg);
+        assert!(
+            matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("not allowed for security reasons")),
+            "Security: symmetric algorithm '{alg:?}' must be rejected with security message, got: {result:?}"
+        );
+    }
 }
 
 // ===========================================================================
@@ -555,37 +525,4 @@ fn test_malformed_jwt_empty_signature() {
         header_result.is_ok(),
         "Header of structurally-valid JWT should decode, got: {header_result:?}"
     );
-}
-
-// ===========================================================================
-// Additional: RS256 (accepted-but-unsupported algorithm boundary) test
-// ===========================================================================
-
-#[test]
-fn test_rs256_rejected_as_not_accepted() {
-    // RS256 was removed from ACCEPTED_ALGORITHMS (it was listed but never
-    // supported end-to-end). It should be rejected with a "not in accepted
-    // list" message, distinct from the "not allowed for security reasons"
-    // message used for forbidden algorithms.
-    let result = validate_algorithm("RS256");
-    assert!(
-        matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("not in accepted list")),
-        "RS256 must be rejected as not-accepted (not forbidden), got: {result:?}"
-    );
-}
-
-// ===========================================================================
-// Additional: all forbidden algorithms each get a dedicated test
-// ===========================================================================
-
-#[test]
-fn test_all_forbidden_algorithms_rejected_with_security_message() {
-    let forbidden = ["none", "HS256", "HS384", "HS512"];
-    for alg in &forbidden {
-        let result = validate_algorithm(alg);
-        assert!(
-            matches!(&result, Err(AuthError::UnsupportedAlgorithm { message: msg, .. }) if msg.contains("not allowed for security reasons")),
-            "Security: forbidden algorithm '{alg}' must be rejected with security message, got: {result:?}"
-        );
-    }
 }

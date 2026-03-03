@@ -130,7 +130,6 @@ pub mod circuit_breaker;
 mod config;
 mod error;
 mod keys;
-mod retry;
 mod transaction;
 
 /// Authentication-related storage implementations.

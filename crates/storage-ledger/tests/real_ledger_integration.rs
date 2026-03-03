@@ -1,9 +1,7 @@
 //! Integration tests for the Ledger storage backend with a real Ledger cluster.
 //!
-//! These tests require a running Ledger server. They are skipped unless the
-//! `RUN_LEDGER_INTEGRATION_TESTS` environment variable is set.
-//!
-//! # Running the tests
+//! These tests require a running Ledger server and are marked `#[ignore]` so
+//! they do not run during normal `cargo test`. To run them:
 //!
 //! ```bash
 //! # Start a Ledger server (single-node mode)
@@ -12,10 +10,9 @@
 //! INFERADB__LEDGER__DATA_DIR=/tmp/ledger-test \
 //! ledger
 //!
-//! # Run tests
-//! RUN_LEDGER_INTEGRATION_TESTS=1 \
+//! # Run all ignored tests in this file, single-threaded
 //! LEDGER_ENDPOINT=http://localhost:50051 \
-//! cargo test --test real_ledger_integration -- --test-threads=1
+//! cargo test --test real_ledger_integration -- --include-ignored --test-threads=1
 //! ```
 //!
 //! Or use Docker Compose:
@@ -48,11 +45,6 @@ use tokio::time::sleep;
 /// Global counter for generating unique vault IDs per test.
 /// This ensures test isolation without requiring database cleanup.
 static VAULT_COUNTER: AtomicU64 = AtomicU64::new(1000);
-
-/// Check if real Ledger integration tests should run.
-fn should_run() -> bool {
-    env::var("RUN_LEDGER_INTEGRATION_TESTS").is_ok()
-}
 
 /// Get the Ledger endpoint from environment, or default.
 fn ledger_endpoint() -> String {
@@ -109,12 +101,8 @@ async fn create_backend_with_vault(vault: VaultSlug) -> LedgerBackend {
 // ============================================================================
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_get_nonexistent_key() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
     let result = backend.get(b"nonexistent-key-12345").await;
 
@@ -123,12 +111,8 @@ async fn test_real_ledger_get_nonexistent_key() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_set_and_get() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     // Set a value
@@ -140,12 +124,8 @@ async fn test_real_ledger_set_and_get() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_overwrite() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     // Set initial value
@@ -160,12 +140,8 @@ async fn test_real_ledger_overwrite() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_delete() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     // Set then delete
@@ -178,12 +154,8 @@ async fn test_real_ledger_delete() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_delete_nonexistent() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     // Deleting a nonexistent key should succeed
@@ -196,12 +168,8 @@ async fn test_real_ledger_delete_nonexistent() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_binary_keys() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     // Key with null bytes and high bytes
@@ -215,12 +183,8 @@ async fn test_real_ledger_binary_keys() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_large_value() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     // 1MB value
@@ -238,12 +202,8 @@ async fn test_real_ledger_large_value() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_range_query() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     // Insert keys with common prefix
@@ -267,12 +227,8 @@ async fn test_real_ledger_range_query() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_range_query_inclusive_bounds() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     backend.set(b"bound:a".to_vec(), b"va".to_vec()).await.unwrap();
@@ -289,12 +245,8 @@ async fn test_real_ledger_range_query_inclusive_bounds() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_clear_range() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     // Insert keys
@@ -321,12 +273,8 @@ async fn test_real_ledger_clear_range() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_ttl() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     // Set with short TTL (2 seconds)
@@ -350,12 +298,8 @@ async fn test_real_ledger_ttl() {
 /// Verifies that `set_with_ttl` computes the correct `expires_at` timestamp on the
 /// underlying Ledger entity, using `list_entities` to inspect the raw metadata.
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_ttl_sets_correct_expires_at() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
     let ttl = Duration::from_secs(60);
 
@@ -404,12 +348,8 @@ async fn test_real_ledger_ttl_sets_correct_expires_at() {
 /// runs every 60 seconds, so a 2-second TTL followed by a 3-second sleep
 /// leaves the entity expired but physically present.
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_ttl_visible_with_include_expired() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     backend
@@ -454,12 +394,8 @@ async fn test_real_ledger_ttl_visible_with_include_expired() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_transaction_commit() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     // Start transaction
@@ -482,12 +418,8 @@ async fn test_real_ledger_transaction_commit() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_transaction_delete() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     // Pre-populate
@@ -507,12 +439,8 @@ async fn test_real_ledger_transaction_delete() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_transaction_set_delete_set() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     let mut txn = backend.transaction().await.unwrap();
@@ -530,12 +458,8 @@ async fn test_real_ledger_transaction_set_delete_set() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_empty_transaction() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     // Empty transaction should commit successfully
@@ -549,12 +473,8 @@ async fn test_real_ledger_empty_transaction() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_vault_isolation() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let vault_a = unique_vault_slug();
     let vault_b = unique_vault_slug();
 
@@ -580,12 +500,8 @@ async fn test_real_ledger_vault_isolation() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_concurrent_writes() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     // Each spawned task creates its own backend with unique vault for isolation
     // Spawn multiple concurrent writers
     let mut handles = Vec::new();
@@ -608,12 +524,8 @@ async fn test_real_ledger_concurrent_writes() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_concurrent_writes_same_key() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let base_vault = unique_vault_slug();
 
     // Multiple writers to the same vault/key
@@ -643,12 +555,8 @@ async fn test_real_ledger_concurrent_writes_same_key() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_reconnection_after_idle() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     // First operation
@@ -680,12 +588,8 @@ async fn test_real_ledger_reconnection_after_idle() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_health_check() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     let status =
@@ -698,12 +602,8 @@ async fn test_real_ledger_health_check() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_many_keys() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     let backend = create_test_backend().await;
 
     // Insert many keys
@@ -734,12 +634,8 @@ async fn test_real_ledger_many_keys() {
 /// one will succeed and the other will receive `StorageError::Conflict`. If they
 /// serialize naturally (one completes before the other reads), both may succeed.
 #[tokio::test]
+#[ignore]
 async fn test_real_ledger_concurrent_revoke_conflict() {
-    if !should_run() {
-        eprintln!("Skipping real Ledger test (RUN_LEDGER_INTEGRATION_TESTS not set)");
-        return;
-    }
-
     use std::sync::Arc;
 
     use chrono::Utc;
