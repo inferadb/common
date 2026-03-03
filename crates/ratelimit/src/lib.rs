@@ -195,6 +195,36 @@ pub enum RateLimitOutcome {
     },
 }
 
+/// Flattened rate limit response for HTTP middleware.
+///
+/// Unlike [`RateLimitOutcome`], this struct always carries all fields regardless
+/// of whether the request was allowed, making it straightforward to populate
+/// `X-RateLimit-*` and `Retry-After` response headers.
+///
+/// Returned by [`AppRateLimiter::check_response`].
+#[derive(Debug, Clone)]
+pub struct RateLimitResponse {
+    /// Whether the request is allowed.
+    pub allowed: bool,
+    /// Remaining requests in the current window (0 when denied).
+    pub remaining: u64,
+    /// Seconds until the window resets.
+    pub reset_after_secs: u64,
+}
+
+impl From<RateLimitOutcome> for RateLimitResponse {
+    fn from(outcome: RateLimitOutcome) -> Self {
+        match outcome {
+            RateLimitOutcome::Allowed { remaining, reset_after_secs } => {
+                Self { allowed: true, remaining, reset_after_secs }
+            },
+            RateLimitOutcome::Limited { retry_after_secs } => {
+                Self { allowed: false, remaining: 0, reset_after_secs: retry_after_secs }
+            },
+        }
+    }
+}
+
 /// Distributed fixed-window rate limiter backed by a [`StorageBackend`].
 ///
 /// Uses storage-backed counters with atomic CAS operations and TTL for
@@ -320,6 +350,25 @@ impl<S: StorageBackend> AppRateLimiter<S> {
 
         // Unreachable: the loop either returns or continues
         Err(StorageError::cas_retries_exhausted(MAX_CAS_RETRIES))
+    }
+
+    /// Checks a rate limit and returns a flat [`RateLimitResponse`].
+    ///
+    /// This is a convenience wrapper around [`check`](Self::check) that returns
+    /// a struct with all fields always present, suitable for populating HTTP
+    /// rate limit headers (`X-RateLimit-Remaining`, `X-RateLimit-Reset`,
+    /// `Retry-After`).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`check`](Self::check).
+    pub async fn check_response(
+        &self,
+        category: &str,
+        identifier: &str,
+        policy: &RateLimitPolicy,
+    ) -> StorageResult<RateLimitResponse> {
+        self.check(category, identifier, policy).await.map(RateLimitResponse::from)
     }
 }
 
