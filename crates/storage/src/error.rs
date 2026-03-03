@@ -298,7 +298,7 @@ pub enum StorageError {
     /// A range query returned more results than the configured safety limit.
     ///
     /// This error is returned when a `get_range` operation produces more
-    /// results than [`max_range_results`]. The caller should narrow the
+    /// results than `max_range_results`. The caller should narrow the
     /// range or increase the limit in the backend configuration.
     ///
     /// This is **not** transient — the same query will consistently exceed

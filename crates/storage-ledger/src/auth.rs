@@ -445,7 +445,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
     /// Lists all active signing keys in the organization.
     ///
-    /// Returns up to [`MAX_SIGNING_KEYS_PER_ORG`] keys. If more keys exist, the
+    /// Returns up to `MAX_SIGNING_KEYS_PER_ORG` keys. If more keys exist, the
     /// result is silently truncated and a warning is logged. A key is considered
     /// active if it is not revoked, not expired, and its `valid_from` timestamp
     /// has passed.

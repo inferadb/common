@@ -301,7 +301,7 @@ impl<S: StorageBackend> AppRateLimiter<S> {
     ///
     /// # Errors
     ///
-    /// - [`StorageError::CasRetriesExhausted`] if the CAS loop fails after [`MAX_CAS_RETRIES`]
+    /// - [`StorageError::CasRetriesExhausted`] if the CAS loop fails after `MAX_CAS_RETRIES`
     ///   attempts due to sustained contention.
     /// - Other [`StorageError`] variants on backend failures.
     pub async fn check(
