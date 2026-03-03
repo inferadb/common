@@ -13,51 +13,23 @@
 > [!IMPORTANT]
 > Under active development. Not production-ready.
 
-This workspace provides the storage abstraction layer and JWT authentication library used by [InferaDB Engine](https://github.com/inferadb/engine) and [InferaDB Control](https://github.com/inferadb/control). It defines a common interface for persistent storage with pluggable backends and a hardened EdDSA-only JWT validator with three-tier key caching.
+**InferaDB Common provides the storage abstraction layer, JWT authentication, and rate limiting used by [InferaDB Engine](https://github.com/inferadb/engine) and [InferaDB Control](https://github.com/inferadb/control).** It defines a pluggable `StorageBackend` trait for persistent storage, a hardened EdDSA-only JWT validator with three-tier key caching, and a distributed fixed-window rate limiter.
 
-- [Overview](#overview)
 - [Crates](#crates)
-- [Prerequisites](#prerequisites)
 - [Quick Start](#quick-start)
-- [Architecture](#architecture)
 - [Usage](#usage)
-- [Development](#development)
-- [Testing](#testing)
 - [Contributing](#contributing)
 - [Community](#community)
 - [License](#license)
 
-## Overview
-
-InferaDB Common consists of three crates that together provide:
-
-- **Storage abstraction** (`StorageBackend` trait) with get, set, delete, range scans, compare-and-set, TTL, and transactions
-- **In-memory backend** for testing and development
-- **Ledger-backed backend** for production use with cryptographic auditability, retry/timeout, circuit breaking, and distributed tracing
-- **JWT authentication** with EdDSA-only enforcement (per RFC 8725), three-tier key caching, replay detection, and key material zeroing
-
 ## Crates
 
-| Crate                                            | Package                          | Description                                                                                           |
-| ------------------------------------------------ | -------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| [`crates/storage`](crates/storage)               | `inferadb-common-storage`        | Storage backend trait, in-memory implementation, batch writer, metrics, rate limiting, size limits    |
-| [`crates/storage-ledger`](crates/storage-ledger) | `inferadb-common-storage-ledger` | [Ledger](https://github.com/inferadb/ledger)-backed storage with retry, timeout, circuit breaker, CAS |
-| [`crates/authn`](crates/authn)                   | `inferadb-common-authn`          | JWT validation, signing key cache, replay detection, audit logging                                    |
-
-## Prerequisites
-
-- **Rust 1.92+** (stable) — for building and clippy
-- **Rust nightly** — for `cargo fmt` only
-- **[mise](https://mise.jdx.dev/)** — synchronized development tooling (`mise trust && mise install`)
-- **[just](https://github.com/casey/just)** — task runner for common development commands
-- **protobuf 29+** and **buf 1+** — for Ledger SDK proto compilation (installed via mise)
-
-Install the Rust toolchains:
-
-```bash
-rustup install 1.92
-rustup install nightly
-```
+| Crate                                                     | Description                                                                                           |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| [`inferadb-common-storage`](crates/storage)               | Storage backend trait, in-memory implementation, batch writer, metrics, rate limiting, size limits    |
+| [`inferadb-common-storage-ledger`](crates/storage-ledger) | [Ledger](https://github.com/inferadb/ledger)-backed storage with retry, timeout, circuit breaker, CAS |
+| [`inferadb-common-authn`](crates/authn)                   | JWT validation, signing key cache, replay detection, audit logging                                    |
+| [`inferadb-common-ratelimit`](crates/ratelimit)           | Distributed fixed-window rate limiter backed by any `StorageBackend`                                  |
 
 ## Quick Start
 
@@ -69,66 +41,6 @@ just build
 just test
 ```
 
-That's it. `just check` runs the full CI suite (build + clippy + test + format check).
-
-## Architecture
-
-```text
-inferadb-common-authn
-  ├── inferadb-common-storage (PublicSigningKeyStore trait, error types)
-  └── moka, jsonwebtoken, ed25519-dalek (JWT validation)
-
-inferadb-common-storage-ledger
-  ├── inferadb-common-storage (StorageBackend trait)
-  └── inferadb-ledger-sdk (Ledger gRPC client)
-```
-
-### Key Abstractions
-
-| Abstraction             | Location                         | Purpose                                                                    |
-| ----------------------- | -------------------------------- | -------------------------------------------------------------------------- |
-| `StorageBackend`        | `storage/src/backend.rs`         | Core trait — get, set, delete, range, CAS, TTL, transactions, health check |
-| `Transaction`           | `storage/src/transaction.rs`     | Atomic multi-operation commit                                              |
-| `MemoryBackend`         | `storage/src/memory.rs`          | In-memory implementation for tests                                         |
-| `LedgerBackend`         | `storage-ledger/src/backend.rs`  | Production backend with retry, timeout, circuit breaker                    |
-| `PublicSigningKeyStore` | `storage/src/auth/store.rs`      | Trait for key storage (memory and ledger implementations)                  |
-| `SigningKeyCache`       | `authn/src/signing_key_cache.rs` | Three-tier cache: L1 (moka TTL) → L2 (Ledger) → L3 (bounded fallback)      |
-| `JwtValidator`          | `authn/src/jwt.rs`               | EdDSA JWT validation with configurable claims, replay detection            |
-
-### Data Flow
-
-```text
-JWT Request
-  → JwtValidator::validate()
-    → SigningKeyCache::get_decoding_key()
-      → L1 (moka TTL cache, ~ms)
-      → L2 (Ledger via PublicSigningKeyStore, ~10-100ms)
-      → L3 (bounded fallback cache, disaster recovery)
-    → signature verification (EdDSA only)
-    → claims validation (exp, iat, aud, iss, kid)
-    → replay detection (optional, JTI-based)
-  → JwtClaims
-
-Storage Operation
-  → RateLimitedBackend (optional)
-    → LedgerBackend
-      → circuit breaker check
-      → with_retry_timeout()
-        → SDK call with W3C Trace Context
-      → circuit breaker state update
-```
-
-### Identifier Newtypes
-
-The workspace uses newtype wrappers for identifiers to prevent accidental mixing:
-
-| Type               | Purpose                           |
-| ------------------ | --------------------------------- |
-| `OrganizationSlug` | Organization identifier (slug)    |
-| `VaultSlug`        | Vault (key collection) identifier |
-| `ClientId`         | API client identifier             |
-| `CertId`           | Certificate identifier            |
-
 ## Usage
 
 ### In-Memory Backend (Testing)
@@ -138,25 +50,13 @@ use inferadb_common_storage::{MemoryBackend, StorageBackend, to_storage_range};
 
 let backend = MemoryBackend::new();
 
-// Basic CRUD
 backend.set(b"key".to_vec(), b"value".to_vec()).await?;
 let value = backend.get(b"key").await?;
 backend.delete(b"key").await?;
 
-// Range queries
 let entries = backend
     .get_range(to_storage_range(b"prefix:".to_vec()..b"prefix:\xff".to_vec()))
     .await?;
-
-// Transactions
-let mut tx = backend.transaction().await?;
-tx.set(b"key1".to_vec(), b"value1".to_vec());
-tx.set(b"key2".to_vec(), b"value2".to_vec());
-tx.commit().await?;
-
-// Compare-and-set
-backend.set(b"counter".to_vec(), b"1".to_vec()).await?;
-backend.compare_and_set(b"counter", Some(b"1".as_slice()), b"2".to_vec()).await?;
 ```
 
 ### Ledger Backend (Production)
@@ -194,105 +94,47 @@ let claims = verify_with_signing_key_cache(token, &cache).await?;
 println!("org: {}", claims.org.unwrap_or_default());
 ```
 
-## Development
-
-### Adding a New `StorageBackend` Implementation
-
-1. Implement the `StorageBackend` trait from `inferadb-common-storage`
-2. All 10 methods are required: `get`, `set`, `compare_and_set`, `delete`, `get_range`, `clear_range`, `set_with_ttl`, `transaction`, `health_check`
-3. Run the conformance test suite against your implementation:
+### Rate Limiting
 
 ```rust
-use inferadb_common_storage::conformance;
+use inferadb_common_storage::MemoryBackend;
+use inferadb_common_ratelimit::{AppRateLimiter, RateLimitPolicy, RateLimitOutcome};
 
-#[tokio::test]
-async fn conformance() {
-    let backend = MyBackend::new();
-    conformance::run_all(&backend).await;
+let limiter = AppRateLimiter::new(MemoryBackend::new());
+
+let policy = RateLimitPolicy::per_hour(100)?;
+let outcome = limiter.check("login_ip", "192.168.1.1", &policy).await?;
+if let RateLimitOutcome::Allowed { remaining, .. } = outcome {
+    println!("{remaining} requests remaining");
 }
-```
-
-### Adding a New Error Variant
-
-Error enums use `#[non_exhaustive]` and constructor methods:
-
-1. Add the variant to the enum in the appropriate `error.rs` (include `span_id: Option<tracing::span::Id>`)
-2. Add a constructor method that calls `current_span_id()` for automatic span capture
-3. Update the manual `Display` impl
-4. Update `is_transient()` classification
-5. Update `detail()` if the variant carries internal context
-
-### Code Style
-
-- No `unsafe`, `.unwrap()`, `panic!()`, `todo!()`, `unimplemented!()`
-- Builders via `bon` — use `#[builder(into)]` for `String` fields
-- Fallible builders return `Result<Self, ConfigError>` with validation at construction
-- Doc examples use ` ```no_run ` (skip execution, verify compilation)
-- All errors carry optional `span_id` for distributed tracing correlation
-
-## Testing
-
-### Unit Tests
-
-```bash
-just test
-```
-
-Property-based tests (`proptest`) run as part of the normal test suite.
-
-### Fuzz Tests
-
-JWT parsing fuzz targets live in `crates/authn/fuzz/`. Requires `cargo-fuzz` and nightly:
-
-```bash
-cargo install cargo-fuzz
-just fuzz         # 60 seconds per target (default)
-just fuzz 300     # 5 minutes per target
-```
-
-### Fail-Point Tests
-
-Deterministic fault injection tests (gated behind the `failpoints` feature):
-
-```bash
-just test-failpoints
-```
-
-### Stress Tests
-
-Concurrency stress tests (gated behind the `stress` feature):
-
-```bash
-just test-stress
-```
-
-### Integration Tests (Real Ledger)
-
-Requires a running Ledger instance (gated behind the `integration` feature):
-
-```bash
-# Start a local Ledger instance first, then:
-just test-integration
 ```
 
 ## Contributing
 
-See the [Contributing Guide](https://github.com/inferadb/common/blob/main/../CLAUDE.md) for commit message conventions (Conventional Commits), PR process, and code of conduct.
+### Prerequisites
 
-### CI Checklist
+- Rust 1.92+ and nightly
+- [mise](https://mise.jdx.dev/) for synchronized development tooling
+- [just](https://github.com/casey/just) for development commands
 
-Before submitting a PR, run the full check suite:
+### Build and Test
 
 ```bash
-just check
+just build
+just test
+just check   # build + clippy + test + format
 ```
 
-This runs:
+### Additional Test Suites
 
-1. `cargo +1.92 build --workspace --all-targets` — compilation
-2. `cargo +1.92 clippy --workspace --all-targets -- -D warnings` — lints (zero warnings)
-3. `cargo +1.92 test --workspace` — all tests pass
-4. `cargo +nightly fmt --all -- --check` — formatting
+```bash
+just test-failpoints    # deterministic fault injection
+just test-stress        # concurrency stress tests
+just test-integration   # requires a running Ledger server
+just fuzz               # JWT parsing fuzz targets (requires cargo-fuzz)
+```
+
+See the [Contributing Guide](../CLAUDE.md) for commit conventions and PR process.
 
 ## Community
 
