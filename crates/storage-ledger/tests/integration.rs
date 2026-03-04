@@ -918,7 +918,10 @@ mod signing_key_store {
                 vec![Operation::set_entity(
                     "signing-keys/corrupted-key".to_string(),
                     b"this is not valid JSON".to_vec(),
+                    None,
+                    None,
                 )],
+                None,
             )
             .await
             .expect("write malformed data");
@@ -964,7 +967,12 @@ mod signing_key_store {
 
         for (key, value) in malformed_entries {
             client
-                .write(organization, None, vec![Operation::set_entity(key.to_string(), value)])
+                .write(
+                    organization,
+                    None,
+                    vec![Operation::set_entity(key.to_string(), value, None, None)],
+                    None,
+                )
                 .await
                 .expect("write malformed data");
         }

@@ -115,6 +115,9 @@ pub struct LedgerTransaction {
     /// Read consistency level.
     read_consistency: ReadConsistency,
 
+    /// Optional cancellation token for cooperative shutdown.
+    cancellation_token: Option<tokio_util::sync::CancellationToken>,
+
     /// All pending operations keyed by hex-encoded storage key.
     pending: HashMap<String, PendingOp>,
 }
@@ -142,14 +145,28 @@ impl LedgerTransaction {
         organization: OrganizationSlug,
         vault: Option<VaultSlug>,
         read_consistency: ReadConsistency,
+        cancellation_token: Option<tokio_util::sync::CancellationToken>,
     ) -> Self {
-        Self { client, organization, vault, read_consistency, pending: HashMap::new() }
+        Self {
+            client,
+            organization,
+            vault,
+            read_consistency,
+            cancellation_token,
+            pending: HashMap::new(),
+        }
     }
 
-    /// Performs a read with the configured consistency level.
+    /// Performs a read with the configured consistency level and cancellation token.
     async fn do_read(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, LedgerStorageError> {
         self.client
-            .read_with_consistency(self.organization, self.vault, key, self.read_consistency)
+            .read(
+                self.organization,
+                self.vault,
+                key,
+                Some(self.read_consistency),
+                self.cancellation_token.clone(),
+            )
             .await
             .map_err(LedgerStorageError::from)
     }
@@ -235,11 +252,11 @@ impl Transaction for LedgerTransaction {
         for (key, op) in self.pending {
             match op {
                 PendingOp::Set { value, ttl: None } => {
-                    operations.push(Operation::set_entity(key, value));
+                    operations.push(Operation::set_entity(key, value, None, None));
                 },
                 PendingOp::Set { value, ttl: Some(ttl) } => {
                     let expires_at = crate::LedgerBackend::compute_expiration_timestamp(ttl)?;
-                    operations.push(Operation::set_entity_with_expiry(key, value, expires_at));
+                    operations.push(Operation::set_entity(key, value, Some(expires_at), None));
                 },
                 PendingOp::Delete => {
                     operations.push(Operation::delete_entity(key));
@@ -260,7 +277,7 @@ impl Transaction for LedgerTransaction {
 
         // Submit all operations atomically.
         // If any CAS condition fails, the whole transaction fails.
-        match self.client.write(organization, vault, operations).await {
+        match self.client.write(organization, vault, operations, self.cancellation_token).await {
             Ok(_) => Ok(()),
             Err(e) if e.is_cas_conflict() => Err(StorageError::conflict()),
             Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
@@ -300,6 +317,7 @@ mod tests {
             OrganizationSlug::from(1),
             Some(VaultSlug::from(100)),
             consistency,
+            None,
         )
     }
 

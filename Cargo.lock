@@ -304,17 +304,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "backon"
-version = "1.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef"
-dependencies = [
- "fastrand",
- "gloo-timers",
- "tokio",
-]
-
-[[package]]
 name = "backtrace"
 version = "0.3.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1192,20 +1181,20 @@ dependencies = [
  "cfg-if",
  "js-sys",
  "libc",
- "r-efi",
+ "r-efi 5.3.0",
  "wasip2",
  "wasm-bindgen",
 ]
 
 [[package]]
 name = "getrandom"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "139ef39800118c7683f2fd3c98c1b23c09ae076556b435f8e9064ae108aaeeec"
+checksum = "0de51e6874e94e7bf76d726fc5d13ba782deca734ff60d5bb2fb2607c7406555"
 dependencies = [
  "cfg-if",
  "libc",
- "r-efi",
+ "r-efi 6.0.0",
  "rand_core 0.10.0",
  "wasip2",
  "wasip3",
@@ -1232,18 +1221,6 @@ name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
-
-[[package]]
-name = "gloo-timers"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbb143cf96099802033e0d4f4963b19fd2e0b728bcf076cd9cf7f6634f092994"
-dependencies = [
- "futures-channel",
- "futures-core",
- "js-sys",
- "wasm-bindgen",
-]
 
 [[package]]
 name = "h2"
@@ -1434,6 +1411,16 @@ name = "humantime"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
+
+[[package]]
+name = "humantime-serde"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57a3db5ea5923d99402c94e9feb261dc5ee9b4efa158b0315f788cf549cc200c"
+dependencies = [
+ "humantime",
+ "serde",
+]
 
 [[package]]
 name = "hyper"
@@ -1746,9 +1733,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-proto"
-version = "0.1.0-dev.20260302.82"
+version = "0.1.0-dev.20260304.83"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "401931afb83647375cb7b398c1fd089b3cb027c49929808c17149dfc62c248cb"
+checksum = "7137fda7a89b11901d3db1bd0ba7837c9051d61f69d4ed76fa929b7476b098e8"
 dependencies = [
  "chrono",
  "inferadb-ledger-types",
@@ -1764,9 +1751,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-raft"
-version = "0.1.0-dev.20260302.82"
+version = "0.1.0-dev.20260304.83"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0baa7fe95eace31052087e12db01dce88a300ca976fecaec90abce05bf8786ea"
+checksum = "e5fd562005894c8fd8e3aa14f6b0580e41d733daa8aea4be1cd0d309d0366d44"
 dependencies = [
  "arc-swap",
  "async-compression",
@@ -1812,11 +1799,11 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-sdk"
-version = "0.1.0-dev.20260302.82"
+version = "0.1.0-dev.20260304.83"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0eed5c68b927428f146c7647ef7af5f532be1df4f2a80ef394dffc3124378e0"
+checksum = "0dc04198c21ef2217249191b775803cd4ce10984aac2a386c2bd75e1c2564e4b"
 dependencies = [
- "backon",
+ "base64",
  "bon",
  "chrono",
  "dashmap",
@@ -1847,9 +1834,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-state"
-version = "0.1.0-dev.20260302.82"
+version = "0.1.0-dev.20260304.83"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0fa5ebb36e7ec634ad5a3e8938cf7326e897ba16884c074f1dd5b556129d7b6"
+checksum = "7b9be64bbc2860f827c5fcb9e7f65c0b06933e5e56feef77df2efadb0295f384"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1874,9 +1861,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-store"
-version = "0.1.0-dev.20260302.82"
+version = "0.1.0-dev.20260304.83"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb34751a6a50d71a07ad2ad005984153ee5c25b64be90133948cedb50c7e9c70"
+checksum = "e9b990e1ce86aaaea6b964aa452740a6d027e65bd750a7d0721d99592034e08b"
 dependencies = [
  "aes-gcm",
  "aes-kw",
@@ -1898,14 +1885,14 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-types"
-version = "0.1.0-dev.20260302.82"
+version = "0.1.0-dev.20260304.83"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a781dce48236900eecbbc9eb572a6bf619575f904405d63b592969b587a3e42e"
+checksum = "9270397e8016c6a5355a957af3e7df76cda7248bb472491782a16ac8c1a95533"
 dependencies = [
  "bon",
  "chrono",
  "hmac",
- "humantime",
+ "humantime-serde",
  "parking_lot",
  "postcard",
  "rand 0.10.0",
@@ -2757,9 +2744,9 @@ dependencies = [
 
 [[package]]
 name = "quote"
-version = "1.0.44"
+version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21b2ebcf727b7760c461f091f9f0f539b77b8e87f2fd88131e7f1b433b3cece4"
+checksum = "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924"
 dependencies = [
  "proc-macro2",
 ]
@@ -2769,6 +2756,12 @@ name = "r-efi"
 version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
+
+[[package]]
+name = "r-efi"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "radium"
@@ -2804,7 +2797,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc266eb313df6c5c09c1c7b1fbe2510961e5bcd3add930c1e31f7ed9da0feff8"
 dependencies = [
  "chacha20",
- "getrandom 0.4.1",
+ "getrandom 0.4.2",
  "rand_core 0.10.0",
 ]
 
@@ -3563,7 +3556,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "82a72c767771b47409d2345987fda8628641887d5466101319899796367354a0"
 dependencies = [
  "fastrand",
- "getrandom 0.4.1",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -3676,9 +3669,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.49.0"
+version = "1.50.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72a2903cd7736441aac9df9d7688bd0ce48edccaadf181c3b90be801e81d3d86"
+checksum = "27ad5e34374e03cfffefc301becb44e9dc3c17584f414349ebe29ed26661822d"
 dependencies = [
  "bytes",
  "libc",
@@ -4080,7 +4073,7 @@ version = "1.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b672338555252d43fd2240c714dc444b8c6fb0a5c5335e65a07bba7742735ddb"
 dependencies = [
- "getrandom 0.4.1",
+ "getrandom 0.4.2",
  "js-sys",
  "serde_core",
  "sha1_smol",
@@ -4883,3 +4876,11 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[patch.unused]]
+name = "inferadb-ledger-sdk"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "inferadb-ledger-types"
+version = "0.1.0"

@@ -74,28 +74,28 @@ let config = LedgerBackendConfig::builder()
 
 ### Configuration Options
 
-| Option | Required | Default | Description |
-|--------|----------|---------|-------------|
-| `endpoint` | Yes | - | Ledger server URL (e.g., `http://localhost:50051`) |
-| `client_id` | Yes | - | Unique client ID for idempotency tracking |
-| `organization` | Yes | - | Organization slug for data scoping |
-| `vault` | No | None | Vault slug for finer-grained scoping |
-| `timeout` | No | 30s | Request timeout |
-| `connect_timeout` | No | 10s | Connection timeout |
-| `read_consistency` | No | Linearizable | Read consistency level |
-| `compression` | No | false | Enable gRPC compression |
+| Option             | Required | Default      | Description                                        |
+| ------------------ | -------- | ------------ | -------------------------------------------------- |
+| `endpoint`         | Yes      | -            | Ledger server URL (e.g., `http://localhost:50051`) |
+| `client_id`        | Yes      | -            | Unique client ID for idempotency tracking          |
+| `organization`     | Yes      | -            | Organization slug for data scoping                 |
+| `vault`            | No       | None         | Vault slug for finer-grained scoping               |
+| `timeout`          | No       | 30s          | Request timeout                                    |
+| `connect_timeout`  | No       | 10s          | Connection timeout                                 |
+| `read_consistency` | No       | Linearizable | Read consistency level                             |
+| `compression`      | No       | false        | Enable gRPC compression                            |
 
 ## Key Mapping
 
 The backend maps byte keys to Ledger's string-based entity keys using hex encoding to preserve ordering:
 
-| StorageBackend | Ledger SDK |
-|----------------|------------|
-| `get(key)` | `client.read_consistent(ns, vault, hex(key))` |
-| `set(key, value)` | `client.write([SetEntity { key: hex(key), value }])` |
-| `delete(key)` | `client.write([DeleteEntity { key: hex(key) }])` |
-| `get_range(start..end)` | `client.list_entities(prefix)` + filter |
-| `set_with_ttl(key, value, ttl)` | `SetEntity { expires_at: now + ttl }` |
+| StorageBackend                  | Ledger SDK                                                                      |
+| ------------------------------- | ------------------------------------------------------------------------------- |
+| `get(key)`                      | `client.read(org, vault, hex(key), consistency, token)`                         |
+| `set(key, value)`               | `client.set_entity(org, vault, hex(key), value, None, None, token)`             |
+| `delete(key)`                   | `client.delete_entity(org, vault, hex(key), token)`                             |
+| `get_range(start..end)`         | `client.list_entities(org, opts)` + filter                                      |
+| `set_with_ttl(key, value, ttl)` | `client.set_entity(org, vault, hex(key), value, Some(expires_at), None, token)` |
 
 ## Consistency Model
 
@@ -138,14 +138,14 @@ txn.commit().await?;
 
 Ledger SDK errors are mapped to `StorageError`:
 
-| Ledger Error | StorageError |
-|--------------|--------------|
-| Connection failed | `Connection` |
-| Request timeout | `Timeout` |
-| Key not found | `NotFound` |
-| Transaction conflict | `Conflict` |
-| Invalid argument | `Serialization` |
-| Other errors | `Internal` |
+| Ledger Error         | StorageError    |
+| -------------------- | --------------- |
+| Connection failed    | `Connection`    |
+| Request timeout      | `Timeout`       |
+| Key not found        | `NotFound`      |
+| Transaction conflict | `Conflict`      |
+| Invalid argument     | `Serialization` |
+| Other errors         | `Internal`      |
 
 ## Integration Tests
 

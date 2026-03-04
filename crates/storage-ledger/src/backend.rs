@@ -375,8 +375,8 @@ impl LedgerBackend {
     /// Signals the backend to shut down.
     ///
     /// After calling this method, new operations return
-    /// [`StorageError::ShuttingDown`] immediately. In-flight operations that
-    /// already passed the cancellation check are allowed to complete.
+    /// [`StorageError::ShuttingDown`] immediately. In-flight SDK operations
+    /// are cancelled cooperatively at the next retry boundary.
     ///
     /// If the backend was constructed without a
     /// [`CancellationToken`](tokio_util::sync::CancellationToken), this method
@@ -436,10 +436,16 @@ impl LedgerBackend {
         &self.org_str_cached
     }
 
-    /// Performs a read with the configured consistency level.
+    /// Performs a read with the configured consistency level and cancellation token.
     async fn do_read(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, LedgerStorageError> {
         self.client
-            .read_with_consistency(self.organization, self.vault, key, self.read_consistency)
+            .read(
+                self.organization,
+                self.vault,
+                key,
+                Some(self.read_consistency),
+                self.cancellation_token.clone(),
+            )
             .await
             .map_err(LedgerStorageError::from)
     }
@@ -502,6 +508,8 @@ impl LedgerBackend {
             let mut page_token: Option<String> = None;
 
             loop {
+                self.check_cancelled()?;
+
                 let opts = ListEntitiesOpts {
                     key_prefix: prefix.clone(),
                     at_height: None,
@@ -645,7 +653,15 @@ impl StorageBackend for LedgerBackend {
             let encoded_key = encode_key(&key);
             tokio::time::timeout(self.timeout_config.write_timeout, async {
                 self.client
-                    .set_entity(self.organization, self.vault, encoded_key, value, None)
+                    .set_entity(
+                        self.organization,
+                        self.vault,
+                        encoded_key,
+                        value,
+                        None,
+                        None,
+                        self.cancellation_token.clone(),
+                    )
                     .await
                     .map(|_| ())
                     .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
@@ -672,13 +688,14 @@ impl StorageBackend for LedgerBackend {
             tokio::time::timeout(self.timeout_config.write_timeout, async {
                 match self
                     .client
-                    .set_entity_if(
+                    .set_entity(
                         self.organization,
                         self.vault,
                         encoded_key,
                         new_value,
-                        condition,
                         None,
+                        Some(condition),
+                        self.cancellation_token.clone(),
                     )
                     .await
                 {
@@ -699,7 +716,12 @@ impl StorageBackend for LedgerBackend {
             let encoded_key = encode_key(key);
             tokio::time::timeout(self.timeout_config.write_timeout, async {
                 self.client
-                    .delete_entity(self.organization, self.vault, encoded_key)
+                    .delete_entity(
+                        self.organization,
+                        self.vault,
+                        encoded_key,
+                        self.cancellation_token.clone(),
+                    )
                     .await
                     .map(|_| ())
                     .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
@@ -735,7 +757,12 @@ impl StorageBackend for LedgerBackend {
             // list_timeout. A narrow write_timeout would fail for large ranges.
             tokio::time::timeout(self.timeout_config.list_timeout, async {
                 self.client
-                    .write(self.organization, self.vault, operations)
+                    .write(
+                        self.organization,
+                        self.vault,
+                        operations,
+                        self.cancellation_token.clone(),
+                    )
                     .await
                     .map(|_| ())
                     .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
@@ -763,7 +790,15 @@ impl StorageBackend for LedgerBackend {
             let expires_at = Self::compute_expiration_timestamp(ttl)?;
             tokio::time::timeout(self.timeout_config.write_timeout, async {
                 self.client
-                    .set_entity(self.organization, self.vault, encoded_key, value, Some(expires_at))
+                    .set_entity(
+                        self.organization,
+                        self.vault,
+                        encoded_key,
+                        value,
+                        Some(expires_at),
+                        None,
+                        self.cancellation_token.clone(),
+                    )
                     .await
                     .map(|_| ())
                     .map_err(|e| StorageError::from(LedgerStorageError::from(e)))
@@ -792,13 +827,14 @@ impl StorageBackend for LedgerBackend {
             tokio::time::timeout(self.timeout_config.write_timeout, async {
                 match self
                     .client
-                    .set_entity_if(
+                    .set_entity(
                         self.organization,
                         self.vault,
                         encoded_key,
                         new_value,
-                        condition,
                         Some(expires_at),
+                        Some(condition),
+                        self.cancellation_token.clone(),
                     )
                     .await
                 {
@@ -821,6 +857,7 @@ impl StorageBackend for LedgerBackend {
                 self.organization,
                 self.vault,
                 self.read_consistency,
+                self.cancellation_token.clone(),
             );
             Ok(Box::new(txn) as Box<dyn Transaction>)
         })

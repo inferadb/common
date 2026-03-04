@@ -139,6 +139,8 @@ pub struct LedgerSigningKeyStore {
     metrics: Option<SigningKeyMetrics>,
     /// CAS retry configuration for optimistic locking.
     cas_retry_config: CasRetryConfig,
+    /// Optional cancellation token for cooperative shutdown.
+    cancellation_token: Option<tokio_util::sync::CancellationToken>,
 }
 
 impl std::fmt::Debug for LedgerSigningKeyStore {
@@ -162,6 +164,7 @@ impl LedgerSigningKeyStore {
             read_consistency: ReadConsistency::Linearizable,
             metrics: None,
             cas_retry_config: CasRetryConfig::default(),
+            cancellation_token: None,
         }
     }
 
@@ -181,6 +184,7 @@ impl LedgerSigningKeyStore {
             read_consistency: consistency,
             metrics: None,
             cas_retry_config: CasRetryConfig::default(),
+            cancellation_token: None,
         }
     }
 
@@ -226,6 +230,16 @@ impl LedgerSigningKeyStore {
         self
     }
 
+    /// Configures a cancellation token for cooperative shutdown.
+    ///
+    /// When the token is cancelled, in-flight SDK operations are cancelled
+    /// at the next retry boundary.
+    #[must_use = "returns a modified store builder without side effects"]
+    pub fn with_cancellation_token(mut self, token: tokio_util::sync::CancellationToken) -> Self {
+        self.cancellation_token = Some(token);
+        self
+    }
+
     /// Returns the metrics collector if configured.
     #[must_use = "returns a reference without side effects"]
     pub fn metrics(&self) -> Option<&SigningKeyMetrics> {
@@ -245,14 +259,20 @@ impl LedgerSigningKeyStore {
         format!("{SIGNING_KEY_PREFIX}{kid}")
     }
 
-    /// Reads a key from Ledger with the configured consistency.
+    /// Reads a key from Ledger with the configured consistency and cancellation token.
     async fn do_read(
         &self,
         organization: OrganizationSlug,
         key: &str,
     ) -> Result<Option<Vec<u8>>, LedgerStorageError> {
         self.client
-            .read_with_consistency(organization, None, key, self.read_consistency)
+            .read(
+                organization,
+                None,
+                key,
+                Some(self.read_consistency),
+                self.cancellation_token.clone(),
+            )
             .await
             .map_err(LedgerStorageError::from)
     }
@@ -290,13 +310,14 @@ impl LedgerSigningKeyStore {
     ) -> StorageResult<()> {
         match self
             .client
-            .set_entity_if(
+            .set_entity(
                 organization,
                 None,
                 storage_key,
                 new_value,
-                SetCondition::ValueEquals(expected_value),
                 None,
+                Some(SetCondition::ValueEquals(expected_value)),
+                self.cancellation_token.clone(),
             )
             .await
         {
@@ -309,7 +330,7 @@ impl LedgerSigningKeyStore {
     /// Performs a conditional delete using optimistic locking.
     ///
     /// Uses a two-operation atomic batch: a CAS precondition check
-    /// (`set_entity_if` with the current value) followed by a `delete_entity`.
+    /// (`set_entity` with `SetCondition::ValueEquals`) followed by a `delete_entity`.
     /// If the value has been modified since it was read, the entire batch
     /// fails with [`StorageError::Conflict`].
     async fn cas_delete(
@@ -325,14 +346,16 @@ impl LedgerSigningKeyStore {
                 None,
                 vec![
                     // Precondition: value must match what we read
-                    Operation::set_entity_if(
+                    Operation::set_entity(
                         storage_key.clone(),
                         expected_value.clone(),
-                        SetCondition::ValueEquals(expected_value),
+                        None,
+                        Some(SetCondition::ValueEquals(expected_value)),
                     ),
                     // Delete the entity (atomic with the precondition)
                     Operation::delete_entity(storage_key),
                 ],
+                self.cancellation_token.clone(),
             )
             .await
         {
@@ -393,7 +416,15 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
         let result = self
             .client
-            .set_entity_if(organization, None, storage_key, value, SetCondition::NotExists, None)
+            .set_entity(
+                organization,
+                None,
+                storage_key,
+                value,
+                None,
+                Some(SetCondition::NotExists),
+                self.cancellation_token.clone(),
+            )
             .await
             .map(|_| ())
             .map_err(|e| {
@@ -673,81 +704,6 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         }
 
         result
-    }
-
-    /// Optimized bulk create: batches all key writes into a single SDK `write()` call.
-    ///
-    /// Unlike the default sequential implementation, this issues one network
-    /// round-trip regardless of how many keys are being stored. Returns one
-    /// result per input key, positionally aligned with the input slice.
-    /// Individual serialization failures are reported per-key; the remaining
-    /// keys are still submitted in the batch. If the batch write itself fails,
-    /// all successfully-serialized keys are reported as [`StorageError::Internal`].
-    #[tracing::instrument(skip(self, keys), fields(count = keys.len()))]
-    async fn create_keys(
-        &self,
-        organization: OrganizationSlug,
-        keys: &[PublicSigningKey],
-    ) -> Vec<StorageResult<()>> {
-        if keys.is_empty() {
-            return Vec::new();
-        }
-
-        let start = Instant::now();
-
-        // Pre-serialize all keys, separating successes from failures.
-        // Track which indices had serialization errors so we can report per-key.
-        let mut operations = Vec::with_capacity(keys.len());
-        let mut serialization_errors: Vec<Option<StorageError>> =
-            (0..keys.len()).map(|_| None).collect();
-
-        for (i, key) in keys.iter().enumerate() {
-            match Self::serialize_key(key) {
-                Ok(value) => {
-                    let storage_key = Self::storage_key(&key.kid);
-                    operations.push(Operation::set_entity(storage_key, value));
-                },
-                Err(e) => {
-                    self.record_error(SigningKeyErrorKind::Serialization);
-                    serialization_errors[i] = Some(e);
-                },
-            }
-        }
-
-        // Submit all valid operations in a single batch write
-        let batch_failed = if operations.is_empty() {
-            false
-        } else {
-            match self.client.write(organization, None, operations).await {
-                Ok(_) => false,
-                Err(e) => {
-                    let storage_err = StorageError::from(LedgerStorageError::from(e));
-                    self.record_error(Self::error_to_kind(&storage_err));
-                    true
-                },
-            }
-        };
-
-        // Build per-key results: serialization errors go at their original indices,
-        // remaining slots get the batch outcome.
-        let results = serialization_errors
-            .into_iter()
-            .map(|ser_err| {
-                if let Some(err) = ser_err {
-                    Err(err)
-                } else if batch_failed {
-                    Err(StorageError::internal("Batch key creation failed"))
-                } else {
-                    Ok(())
-                }
-            })
-            .collect();
-
-        if let Some(metrics) = &self.metrics {
-            metrics.record_create(start.elapsed());
-        }
-
-        results
     }
 }
 

@@ -70,7 +70,7 @@
 //!
 //! | StorageBackend          | Ledger                                                       |
 //! | ----------------------- | ------------------------------------------------------------ |
-//! | `get(key)`              | `read_consistent` or `read` depending on [`ReadConsistency`] |
+//! | `get(key)`              | `read` with configured [`ReadConsistency`]                   |
 //! | `set(key, value)`       | `write([Operation::set_entity(hex(key), value)])`            |
 //! | `get_range(start..end)` | `list_entities(prefix)` + client-side filtering              |
 //!

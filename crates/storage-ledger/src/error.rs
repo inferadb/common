@@ -259,8 +259,8 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
             StorageError::internal_with_source(format!("Invalid URL '{url}': {message}"), err)
         },
 
-        // Client shutdown
-        SdkError::Shutdown => StorageError::connection_with_source("Client shutting down", err),
+        // Client shutdown — non-transient, callers must not retry
+        SdkError::Shutdown => StorageError::shutting_down(),
 
         // Proof verification - indicates data integrity issue
         SdkError::ProofVerification { reason } => {
@@ -277,8 +277,8 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
             StorageError::connection_with_source("Rate limited", err)
         },
 
-        // Request cancelled by caller
-        SdkError::Cancelled => StorageError::internal_with_source("Request cancelled", err),
+        // Request cancelled — the cancellation token was triggered (shutdown)
+        SdkError::Cancelled => StorageError::shutting_down(),
 
         // Client-side validation error
         SdkError::Validation { message } => {
@@ -497,8 +497,15 @@ mod tests {
         let sdk_err = SdkError::Shutdown;
         let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
 
-        assert!(matches!(storage_err, StorageError::Connection { .. }));
-        assert!(storage_err.source().is_some());
+        assert!(matches!(storage_err, StorageError::ShuttingDown { .. }));
+    }
+
+    #[test]
+    fn test_cancelled_error_mapping() {
+        let sdk_err = SdkError::Cancelled;
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
+
+        assert!(matches!(storage_err, StorageError::ShuttingDown { .. }));
     }
 
     #[test]
