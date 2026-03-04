@@ -1733,9 +1733,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-proto"
-version = "0.1.0-dev.20260304.83"
+version = "0.1.0-dev.20260304.90"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7137fda7a89b11901d3db1bd0ba7837c9051d61f69d4ed76fa929b7476b098e8"
+checksum = "80e8e0c6defae41367d470551a997c2494cf71189ac2518591b9da73db805387"
 dependencies = [
  "chrono",
  "inferadb-ledger-types",
@@ -1751,9 +1751,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-raft"
-version = "0.1.0-dev.20260304.83"
+version = "0.1.0-dev.20260304.90"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5fd562005894c8fd8e3aa14f6b0580e41d733daa8aea4be1cd0d309d0366d44"
+checksum = "bcb95a42684bd46cd2e9cc2628fb880f1524a7b95045ca1e35f00f303f9474fa"
 dependencies = [
  "arc-swap",
  "async-compression",
@@ -1761,7 +1761,6 @@ dependencies = [
  "bon",
  "bytes",
  "chrono",
- "dashmap",
  "fs2",
  "futures",
  "hmac",
@@ -1790,7 +1789,6 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-prost",
- "tonic-reflection",
  "tower",
  "tracing",
  "uuid",
@@ -1799,9 +1797,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-sdk"
-version = "0.1.0-dev.20260304.83"
+version = "0.1.0-dev.20260304.90"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0dc04198c21ef2217249191b775803cd4ce10984aac2a386c2bd75e1c2564e4b"
+checksum = "5cea69eb9d507b13b91cfb349020a1b6e6d597d80c334f930b055f86e22642e4"
 dependencies = [
  "base64",
  "bon",
@@ -1834,9 +1832,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-state"
-version = "0.1.0-dev.20260304.83"
+version = "0.1.0-dev.20260304.90"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b9be64bbc2860f827c5fcb9e7f65c0b06933e5e56feef77df2efadb0295f384"
+checksum = "725893689713cc7ed631aa90d260686e5d87a485610a7fec72f56c8798330aae"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1861,9 +1859,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-store"
-version = "0.1.0-dev.20260304.83"
+version = "0.1.0-dev.20260304.90"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9b990e1ce86aaaea6b964aa452740a6d027e65bd750a7d0721d99592034e08b"
+checksum = "d2e7d71d30d9a5595de5a917e6b7bf3f7942d07b75accdd0ea748041a487b49a"
 dependencies = [
  "aes-gcm",
  "aes-kw",
@@ -1885,9 +1883,9 @@ dependencies = [
 
 [[package]]
 name = "inferadb-ledger-types"
-version = "0.1.0-dev.20260304.83"
+version = "0.1.0-dev.20260304.90"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9270397e8016c6a5355a957af3e7df76cda7248bb472491782a16ac8c1a95533"
+checksum = "8fd6a80121c4346eafa1a617ab6c6d5247e45fa403fd190db00f463b82f6973d"
 dependencies = [
  "bon",
  "chrono",
@@ -3741,9 +3739,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.25.3+spec-1.1.0"
+version = "0.25.4+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0a07913e63758bc95142d9863a5a45173b71515e68b690cad70cf99c3255ce1"
+checksum = "7193cbd0ce53dc966037f54351dbbcf0d5a642c7f0038c382ef9e677ce8c13f2"
 dependencies = [
  "indexmap",
  "toml_datetime",
@@ -3830,20 +3828,6 @@ dependencies = [
  "syn 2.0.117",
  "tempfile",
  "tonic-build",
-]
-
-[[package]]
-name = "tonic-reflection"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aaf0685a51e6d02b502ba0764002e766b7f3042aed13d9234925b6ffbfa3fca7"
-dependencies = [
- "prost",
- "prost-types",
- "tokio",
- "tokio-stream",
- "tonic",
- "tonic-prost",
 ]
 
 [[package]]
@@ -4876,11 +4860,3 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
-
-[[patch.unused]]
-name = "inferadb-ledger-sdk"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "inferadb-ledger-types"
-version = "0.1.0"
