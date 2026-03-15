@@ -81,6 +81,38 @@
 //! to use eventual consistency for read-heavy workloads where staleness is
 //! acceptable.
 //!
+//! # Circuit Breaking
+//!
+//! Circuit breaking is handled by the Ledger SDK at the transport layer.
+//! Configure it via [`CircuitBreakerConfig`] on [`ClientConfig`]:
+//!
+//! ```no_run
+//! use inferadb_common_storage_ledger::{
+//!     CircuitBreakerConfig, ClientConfig, LedgerBackend, LedgerBackendConfig, ServerSource,
+//! };
+//!
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let client = ClientConfig::builder()
+//!     .servers(ServerSource::from_static(["http://localhost:50051"]))
+//!     .client_id("my-service")
+//!     .circuit_breaker(CircuitBreakerConfig::builder().build())
+//!     .build()?;
+//!
+//! let config = LedgerBackendConfig::builder()
+//!     .client(client)
+//!     .organization(1)
+//!     .build()?;
+//!
+//! let backend = LedgerBackend::new(config).await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! When the circuit is open, SDK operations return
+//! [`SdkError::CircuitOpen`](inferadb_ledger_sdk::SdkError::CircuitOpen), which is mapped to
+//! [`StorageError::Connection`](inferadb_common_storage::StorageError::Connection).
+//!
 //! # Distributed Tracing
 //!
 //! The backend supports [W3C Trace Context] propagation through to the
@@ -125,8 +157,6 @@
 #![warn(missing_docs)]
 
 mod backend;
-/// Circuit breaker for Ledger connectivity with automatic recovery.
-pub mod circuit_breaker;
 mod config;
 mod error;
 mod keys;
@@ -141,11 +171,6 @@ pub mod testutil;
 
 /// Ledger-backed storage backend.
 pub use backend::LedgerBackend;
-/// Circuit breaker types for fail-fast during backend outages.
-pub use circuit_breaker::{
-    CircuitBreaker, CircuitBreakerConfig, CircuitBreakerMetrics, CircuitState,
-    DEFAULT_FAILURE_THRESHOLD, DEFAULT_HALF_OPEN_SUCCESS_THRESHOLD, DEFAULT_RECOVERY_TIMEOUT,
-};
 /// Configuration types and default constants for the Ledger backend.
 pub use config::{
     DEFAULT_LIST_TIMEOUT, DEFAULT_MAX_RANGE_RESULTS, DEFAULT_PAGE_SIZE, DEFAULT_READ_TIMEOUT,
@@ -160,6 +185,10 @@ pub use inferadb_common_storage::{
     CasRetryConfig, DEFAULT_CAS_RETRY_BASE_DELAY, DEFAULT_MAX_CAS_RETRIES,
 };
 /// Re-exported SDK types needed to build [`LedgerBackendConfig`].
-pub use inferadb_ledger_sdk::{ClientConfig, ReadConsistency, Region, ServerSource, TraceConfig};
+pub use inferadb_ledger_sdk::{
+    CircuitBreakerConfig, ClientConfig, ReadConsistency, Region, ServerSource, TraceConfig,
+};
+/// Re-exported SDK token types for consumer convenience.
+pub use inferadb_ledger_sdk::{PublicKeyInfo, TokenPair, ValidatedToken};
 /// Ledger-backed transaction implementation.
 pub use transaction::LedgerTransaction;

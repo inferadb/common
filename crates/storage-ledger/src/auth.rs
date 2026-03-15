@@ -474,6 +474,61 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         result
     }
 
+    /// Retrieves multiple signing keys by ID using a single batch read.
+    ///
+    /// Uses the SDK's `batch_read` to fetch all keys in one RPC call,
+    /// reducing round-trip latency compared to sequential `get_key` calls.
+    #[tracing::instrument(skip(self, kids), fields(count = kids.len()))]
+    async fn get_keys(
+        &self,
+        organization: OrganizationSlug,
+        kids: &[&str],
+    ) -> StorageResult<Vec<Option<PublicSigningKey>>> {
+        let start = Instant::now();
+        let storage_keys: Vec<String> = kids.iter().map(|kid| Self::storage_key(kid)).collect();
+
+        let result = self
+            .client
+            .batch_read(
+                organization,
+                None,
+                storage_keys,
+                Some(self.read_consistency),
+                self.cancellation_token.clone(),
+            )
+            .await
+            .map_err(|e| StorageError::from(LedgerStorageError::from(e)));
+
+        let batch_result = match result {
+            Ok(entries) => {
+                let mut keys = Vec::with_capacity(entries.len());
+                for (_key, value) in entries {
+                    match value {
+                        Some(bytes) => match Self::deserialize_key(&bytes) {
+                            Ok(key) => keys.push(Some(key)),
+                            Err(e) => {
+                                self.record_error(SigningKeyErrorKind::Serialization);
+                                return Err(e);
+                            },
+                        },
+                        None => keys.push(None),
+                    }
+                }
+                Ok(keys)
+            },
+            Err(e) => {
+                self.record_error(Self::error_to_kind(&e));
+                Err(e)
+            },
+        };
+
+        if let Some(metrics) = &self.metrics {
+            metrics.record_get(start.elapsed());
+        }
+
+        batch_result
+    }
+
     /// Lists all active signing keys in the organization.
     ///
     /// Returns up to `MAX_SIGNING_KEYS_PER_ORG` keys. If more keys exist, the

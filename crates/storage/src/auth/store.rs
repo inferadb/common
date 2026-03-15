@@ -207,6 +207,33 @@ pub trait PublicSigningKeyStore: Send + Sync {
     /// Returns [`StorageError::NotFound`] if the key doesn't exist.
     async fn delete_key(&self, organization: OrganizationSlug, kid: &str) -> StorageResult<()>;
 
+    /// Retrieves multiple public signing keys by their IDs.
+    ///
+    /// Returns a `Vec<Option<PublicSigningKey>>` with one entry per input
+    /// `kid`, in the same order as the input. Returns `None` for keys that
+    /// do not exist.
+    ///
+    /// The default implementation calls [`get_key`](Self::get_key)
+    /// sequentially. Implementations may override this for efficiency
+    /// (e.g., single lock acquisition for in-memory, batched reads for
+    /// ledger backends).
+    ///
+    /// # Arguments
+    ///
+    /// * `organization` — Organization ID
+    /// * `kids` — The key identifiers to look up
+    async fn get_keys(
+        &self,
+        organization: OrganizationSlug,
+        kids: &[&str],
+    ) -> StorageResult<Vec<Option<PublicSigningKey>>> {
+        let mut results = Vec::with_capacity(kids.len());
+        for kid in kids {
+            results.push(self.get_key(organization, kid).await?);
+        }
+        Ok(results)
+    }
+
     /// Stores multiple public signing keys in bulk.
     ///
     /// Returns a `Vec<StorageResult<()>>` with one result per input key,
@@ -472,6 +499,24 @@ impl PublicSigningKeyStore for MemorySigningKeyStore {
             return Err(StorageError::not_found(kid));
         }
         Ok(())
+    }
+
+    /// Optimized bulk get: single read-lock acquisition for all keys.
+    #[tracing::instrument(skip(self, kids), fields(count = kids.len()))]
+    async fn get_keys(
+        &self,
+        organization: OrganizationSlug,
+        kids: &[&str],
+    ) -> StorageResult<Vec<Option<PublicSigningKey>>> {
+        let keys = self.keys.read();
+        let results = kids
+            .iter()
+            .map(|kid| {
+                let map_key = Self::make_key(organization, kid);
+                keys.get(&map_key).cloned()
+            })
+            .collect();
+        Ok(results)
     }
 
     /// Optimized bulk create: single write-lock acquisition for all keys.
@@ -920,6 +965,37 @@ mod tests {
         let second = store.get_key(organization, "idempotent-reason").await.expect("get");
         let second = second.expect("exists");
         assert_eq!(second.revocation_reason.as_deref(), Some("compromised"));
+    }
+
+    // ── Bulk get tests ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_keys_bulk() {
+        let store = MemorySigningKeyStore::new();
+        let organization = OrganizationSlug::from(100);
+
+        for i in 0..5 {
+            let key = make_test_key(&format!("bulk-get-{i}"));
+            store.create_key(organization, &key).await.expect("create");
+        }
+
+        let kids: Vec<&str> = vec!["bulk-get-0", "bulk-get-2", "nonexistent", "bulk-get-4"];
+        let results = store.get_keys(organization, &kids).await.expect("get_keys");
+
+        assert_eq!(results.len(), 4);
+        assert_eq!(results[0].as_ref().map(|k| k.kid.as_str()), Some("bulk-get-0"));
+        assert_eq!(results[1].as_ref().map(|k| k.kid.as_str()), Some("bulk-get-2"));
+        assert!(results[2].is_none()); // nonexistent
+        assert_eq!(results[3].as_ref().map(|k| k.kid.as_str()), Some("bulk-get-4"));
+    }
+
+    #[tokio::test]
+    async fn test_get_keys_empty() {
+        let store = MemorySigningKeyStore::new();
+        let organization = OrganizationSlug::from(100);
+
+        let results = store.get_keys(organization, &[]).await.expect("get_keys");
+        assert!(results.is_empty());
     }
 
     // ── Bulk operation tests ────────────────────────────────────────

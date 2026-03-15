@@ -206,23 +206,36 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
         },
 
         // RPC errors - map based on gRPC status code
-        SdkError::Rpc { code, message, .. } => match code {
-            Code::NotFound => StorageError::not_found(message.clone()),
-            Code::AlreadyExists => StorageError::conflict(),
-            Code::Aborted | Code::FailedPrecondition => StorageError::conflict(),
-            Code::InvalidArgument => StorageError::serialization_with_source(message.clone(), err),
-            Code::Unavailable | Code::DeadlineExceeded | Code::ResourceExhausted => {
-                StorageError::connection_with_source(message.clone(), err)
-            },
-            Code::PermissionDenied | Code::Unauthenticated => {
-                StorageError::internal_with_source(format!("Auth error: {message}"), err)
-            },
-            Code::DataLoss => {
-                StorageError::internal_with_source(format!("Data loss: {message}"), err)
-            },
-            _ => {
-                StorageError::internal_with_source(format!("gRPC error ({code:?}): {message}"), err)
-            },
+        SdkError::Rpc { code, message, error_details, .. } => {
+            if let Some(details) = error_details {
+                tracing::debug!(
+                    error_code = %details.error_code,
+                    is_retryable = details.is_retryable,
+                    suggested_action = details.suggested_action.as_deref().unwrap_or("none"),
+                    "SDK error details from server"
+                );
+            }
+            match code {
+                Code::NotFound => StorageError::not_found(message.clone()),
+                Code::AlreadyExists => StorageError::conflict(),
+                Code::Aborted | Code::FailedPrecondition => StorageError::conflict(),
+                Code::InvalidArgument => {
+                    StorageError::serialization_with_source(message.clone(), err)
+                },
+                Code::Unavailable | Code::DeadlineExceeded | Code::ResourceExhausted => {
+                    StorageError::connection_with_source(message.clone(), err)
+                },
+                Code::PermissionDenied | Code::Unauthenticated => {
+                    StorageError::internal_with_source(format!("Auth error: {message}"), err)
+                },
+                Code::DataLoss => {
+                    StorageError::internal_with_source(format!("Data loss: {message}"), err)
+                },
+                _ => StorageError::internal_with_source(
+                    format!("gRPC error ({code:?}): {message}"),
+                    err,
+                ),
+            }
         },
 
         // Retry exhausted - preserve the full context
@@ -269,9 +282,11 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
         },
 
         // Rate limiting - connection-level retry
-        SdkError::RateLimited { retry_after, .. } => {
+        SdkError::RateLimited { retry_after, error_details, .. } => {
             tracing::warn!(
                 retry_after_ms = retry_after.as_millis() as u64,
+                error_code =
+                    error_details.as_ref().map(|d| d.error_code.as_str()).unwrap_or("unknown"),
                 "Rate limited by Ledger"
             );
             StorageError::connection_with_source("Rate limited", err)

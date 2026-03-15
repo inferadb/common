@@ -31,9 +31,26 @@ pub const DEFAULT_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 ///
 /// Provides separate timeout durations for reads, writes, and list
 /// operations, reflecting their different expected latency profiles.
-/// The timeout bounds the total wall-clock time of an operation.
-/// Transient error retries are handled by the SDK's built-in retry
-/// logic within this timeout window.
+/// The timeout bounds the total wall-clock time of an operation,
+/// including any SDK-level retries within that window.
+///
+/// # Interaction with SDK Retry
+///
+/// The SDK's [`RetryPolicy`](inferadb_ledger_sdk::RetryPolicy) handles
+/// transient error retries (connection failures, rate limiting) at the
+/// transport layer. These per-operation timeouts cap the total wall-clock
+/// time allowed for the operation, including all SDK retry attempts:
+///
+/// ```text
+/// ┌───── per-operation timeout ──────────────────────────────────────┐
+/// │  ┌─ SDK try 1 ─┐  ┌─ SDK try 2 ─┐  ┌─ SDK try 3 ─┐           │
+/// │  │  RPC call   │  │  RPC call   │  │  RPC call   │  (timeout!) │
+/// │  └─────────────┘  └─────────────┘  └─────────────┘             │
+/// └─────────────────────────────────────────────────────────────────┘
+/// ```
+///
+/// If the SDK's `RetryPolicy.total_timeout` is also set, the shorter of
+/// the two timeouts takes effect.
 ///
 /// # Validation
 ///
@@ -148,6 +165,13 @@ impl Default for TimeoutConfig {
 /// If `vault` is `None`, keys are stored at the organization level.
 /// If `vault` is `Some(id)`, keys are scoped to that specific vault.
 ///
+/// # Circuit Breaking
+///
+/// Circuit breaking is configured on [`ClientConfig`] via
+/// [`CircuitBreakerConfig`](inferadb_ledger_sdk::CircuitBreakerConfig).
+/// The SDK handles circuit state transitions, fail-fast, and recovery
+/// probing at the transport layer.
+///
 /// # Validation
 ///
 /// - `page_size` must be `>= 1`
@@ -214,13 +238,6 @@ pub struct LedgerBackendConfig {
     /// provides clear error messages instead of opaque downstream failures.
     pub(crate) size_limits: Option<SizeLimits>,
 
-    /// Optional circuit breaker configuration.
-    ///
-    /// When set, a circuit breaker protects the backend from cascading
-    /// failures by failing fast when the ledger is unreachable, and
-    /// periodically probing to detect recovery.
-    pub(crate) circuit_breaker_config: Option<crate::circuit_breaker::CircuitBreakerConfig>,
-
     /// Optional cancellation token for graceful shutdown.
     ///
     /// When set and cancelled, the backend rejects new operations with
@@ -236,7 +253,7 @@ impl LedgerBackendConfig {
     ///
     /// # Arguments
     ///
-    /// * `client` — SDK client configuration (servers, timeouts, TLS, etc.).
+    /// * `client` — SDK client configuration (servers, timeouts, TLS, circuit breaker, etc.).
     /// * `organization` — Organization ID for key scoping.
     ///
     /// # Optional Fields
@@ -247,7 +264,6 @@ impl LedgerBackendConfig {
     /// * `max_range_results` — Safety cap on total range results (default: 100,000).
     /// * `timeout_config` — Per-operation timeouts (default: 5s read, 10s write, 30s list).
     /// * `size_limits` — Key/value size validation (default: none).
-    /// * `circuit_breaker_config` — Circuit breaker for fail-fast during outages (default: none).
     /// * `cancellation_token` — Token for graceful shutdown (default: none).
     ///
     /// # Errors
@@ -263,7 +279,6 @@ impl LedgerBackendConfig {
         #[builder(default = DEFAULT_MAX_RANGE_RESULTS)] max_range_results: usize,
         #[builder(default)] timeout_config: TimeoutConfig,
         size_limits: Option<SizeLimits>,
-        circuit_breaker_config: Option<crate::circuit_breaker::CircuitBreakerConfig>,
         cancellation_token: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<Self, ConfigError> {
         if page_size == 0 {
@@ -289,7 +304,6 @@ impl LedgerBackendConfig {
             max_range_results,
             timeout_config,
             size_limits,
-            circuit_breaker_config,
             cancellation_token,
         })
     }
@@ -340,12 +354,6 @@ impl LedgerBackendConfig {
     #[must_use = "returns the configured value without side effects"]
     pub fn size_limits(&self) -> Option<SizeLimits> {
         self.size_limits
-    }
-
-    /// Returns the configured circuit breaker configuration, if any.
-    #[must_use = "returns the configured value without side effects"]
-    pub fn circuit_breaker_config(&self) -> Option<&crate::circuit_breaker::CircuitBreakerConfig> {
-        self.circuit_breaker_config.as_ref()
     }
 
     /// Returns the configured cancellation token, if any.

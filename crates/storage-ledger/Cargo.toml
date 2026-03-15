@@ -33,7 +33,6 @@ tokio.workspace = true
 tokio-util.workspace = true
 tonic.workspace = true
 tracing.workspace = true
-parking_lot.workspace = true
 
 [dev-dependencies]
 inferadb-common-storage-ledger = { path = ".", features = ["testutil"] }

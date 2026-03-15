@@ -49,6 +49,12 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
 /// - Ensure compatibility with Ledger's string-based key format
 /// - Support arbitrary binary keys
 ///
+/// # Circuit Breaking
+///
+/// Circuit breaking is handled by the SDK at the transport layer. Configure it
+/// on [`ClientConfig`](inferadb_ledger_sdk::ClientConfig) via
+/// [`CircuitBreakerConfig`](inferadb_ledger_sdk::CircuitBreakerConfig).
+///
 /// # Thread Safety
 ///
 /// `LedgerBackend` is `Send + Sync` and can be safely shared across threads.
@@ -110,9 +116,6 @@ pub struct LedgerBackend {
 
     /// Optional key/value size limits.
     size_limits: Option<SizeLimits>,
-
-    /// Optional circuit breaker for fail-fast during backend outages.
-    circuit_breaker: Option<crate::circuit_breaker::CircuitBreaker>,
 
     /// Metrics collector for per-organization operation tracking.
     metrics: Metrics,
@@ -177,10 +180,6 @@ impl LedgerBackend {
         let max_range_results = config.max_range_results();
         let timeout_config = config.timeout_config().clone();
         let size_limits = config.size_limits();
-        let circuit_breaker = config
-            .circuit_breaker_config()
-            .cloned()
-            .map(crate::circuit_breaker::CircuitBreaker::new);
         let cancellation_token = config.cancellation_token().cloned();
 
         let client = LedgerClient::new(config.into_client_config())
@@ -197,7 +196,6 @@ impl LedgerBackend {
             max_range_results,
             timeout_config,
             size_limits,
-            circuit_breaker,
             metrics: Metrics::new(),
             cancellation_token,
         })
@@ -205,8 +203,8 @@ impl LedgerBackend {
 
     /// Creates a backend from an existing SDK client with default settings.
     ///
-    /// Uses default timeouts, pagination, no circuit breaker, and no size
-    /// limits. For customization, use [`LedgerBackendConfig::builder`] with
+    /// Uses default timeouts, pagination, and no size limits.
+    /// For customization, use [`LedgerBackendConfig::builder`] with
     /// [`ClientConfig`](inferadb_ledger_sdk::ClientConfig) instead.
     #[must_use = "constructing a backend has no side effects"]
     pub fn from_client(
@@ -226,7 +224,6 @@ impl LedgerBackend {
             max_range_results: DEFAULT_MAX_RANGE_RESULTS,
             timeout_config: TimeoutConfig::default(),
             size_limits: None,
-            circuit_breaker: None,
             metrics: Metrics::new(),
             cancellation_token: None,
         }
@@ -236,7 +233,7 @@ impl LedgerBackend {
     ///
     /// This is a convenience constructor for simple deployments where a
     /// single Ledger server is used with default settings (linearizable
-    /// reads, default pagination, no circuit breaker).
+    /// reads, default pagination).
     ///
     /// For more control over the configuration, use
     /// [`LedgerBackendConfig::builder`] directly.
@@ -352,16 +349,6 @@ impl LedgerBackend {
         Ok(())
     }
 
-    /// Returns [`StorageError::CircuitOpen`] if the circuit breaker is open, `Ok(())` otherwise.
-    fn check_circuit(&self) -> StorageResult<()> {
-        if let Some(ref cb) = self.circuit_breaker
-            && !cb.allow_request()
-        {
-            return Err(StorageError::circuit_open());
-        }
-        Ok(())
-    }
-
     /// Returns [`StorageError::ShuttingDown`] if shutdown has been signalled, `Ok(())` otherwise.
     fn check_cancelled(&self) -> StorageResult<()> {
         if let Some(ref token) = self.cancellation_token
@@ -395,34 +382,6 @@ impl LedgerBackend {
     #[must_use = "returns a value without side effects"]
     pub fn is_shutting_down(&self) -> bool {
         self.cancellation_token.as_ref().is_some_and(|t| t.is_cancelled())
-    }
-
-    /// Records a storage result with the circuit breaker.
-    ///
-    /// Only transient errors (connection, timeout) are recorded as failures.
-    fn record_circuit_result<T>(&self, result: &StorageResult<T>) {
-        if let Some(ref cb) = self.circuit_breaker {
-            match result {
-                Ok(_) => cb.record_success(),
-                Err(e) if e.is_transient() => cb.record_failure(),
-                Err(_) => {
-                    // Non-transient errors (NotFound, Conflict, etc.) don't indicate
-                    // backend health issues — don't affect circuit breaker state.
-                },
-            }
-        }
-    }
-
-    /// Returns the circuit breaker metrics, if a circuit breaker is configured.
-    #[must_use = "returns a value without side effects"]
-    pub fn circuit_breaker_metrics(&self) -> Option<crate::circuit_breaker::CircuitBreakerMetrics> {
-        self.circuit_breaker.as_ref().map(crate::circuit_breaker::CircuitBreaker::metrics)
-    }
-
-    /// Returns the current circuit breaker state, if a circuit breaker is configured.
-    #[must_use = "returns a value without side effects"]
-    pub fn circuit_breaker_state(&self) -> Option<crate::circuit_breaker::CircuitState> {
-        self.circuit_breaker.as_ref().map(crate::circuit_breaker::CircuitBreaker::state)
     }
 
     /// Returns a reference to the metrics collector.
@@ -473,7 +432,7 @@ impl LedgerBackend {
             })
     }
 
-    /// Internal range query without metrics/circuit-breaker wrapping.
+    /// Internal range query without metrics wrapping.
     ///
     /// Used by both `get_range` (via `ledger_op!`) and `clear_range` to avoid
     /// double-counting metrics when `clear_range` fetches keys to delete.
@@ -588,8 +547,8 @@ impl inferadb_common_storage::MetricsCollector for LedgerBackend {
 
 /// Wraps a [`LedgerBackend`] operation with standard prologue and epilogue:
 ///
-/// **Prologue:** `check_cancelled`, `check_circuit`, optional `check_sizes`.
-/// **Epilogue:** `record_circuit_result`, per-operation metric, error metric.
+/// **Prologue:** `check_cancelled`, optional `check_sizes`.
+/// **Epilogue:** per-operation metric, error metric.
 ///
 /// # Usage
 ///
@@ -600,11 +559,9 @@ impl inferadb_common_storage::MetricsCollector for LedgerBackend {
 macro_rules! ledger_op {
     ($self:expr, $metric:ident,sizes($key:expr, $val:expr), $body:block) => {{
         $self.check_cancelled()?;
-        $self.check_circuit()?;
         $self.check_sizes($key, $val)?;
         let start = std::time::Instant::now();
         let result = $body;
-        $self.record_circuit_result(&result);
         let org = $self.org_str();
         $self.metrics.$metric(start.elapsed(), org);
         if result.is_err() {
@@ -614,10 +571,8 @@ macro_rules! ledger_op {
     }};
     ($self:expr, $metric:ident, $body:block) => {{
         $self.check_cancelled()?;
-        $self.check_circuit()?;
         let start = std::time::Instant::now();
         let result = $body;
-        $self.record_circuit_result(&result);
         let org = $self.org_str();
         $self.metrics.$metric(start.elapsed(), org);
         if result.is_err() {
@@ -775,9 +730,7 @@ impl StorageBackend for LedgerBackend {
     /// Stores a key-value pair with automatic expiration.
     ///
     /// Computes an absolute Unix timestamp by adding the `ttl` duration to the
-    /// current system time. The Ledger SDK's `set_entity` with `expires_at`
-    /// interprets this value as an absolute expiration timestamp in seconds
-    /// since the Unix epoch. Sub-second precision in `ttl` is truncated.
+    /// current system time. Sub-second precision in `ttl` is truncated.
     ///
     /// # Errors
     ///
@@ -863,7 +816,7 @@ impl StorageBackend for LedgerBackend {
         })
     }
 
-    /// Checks backend connectivity, bypassing the circuit breaker.
+    /// Checks backend connectivity.
     #[tracing::instrument(skip(self))]
     async fn health_check(&self, probe: HealthProbe) -> StorageResult<HealthStatus> {
         let start = std::time::Instant::now();
@@ -878,8 +831,6 @@ impl StorageBackend for LedgerBackend {
             },
             HealthProbe::Readiness | HealthProbe::Startup => {
                 // Readiness/Startup: probe the ledger connection.
-                // Health checks bypass the circuit breaker — they are used to probe
-                // backend health and should always attempt a real connection.
                 let result = tokio::time::timeout(self.timeout_config.read_timeout, async {
                     self.client
                         .health_check()
@@ -889,28 +840,14 @@ impl StorageBackend for LedgerBackend {
                 })
                 .await
                 .unwrap_or_else(|_| Err(StorageError::timeout()));
-                self.record_circuit_result(&result);
 
                 let check_duration = start.elapsed();
-                let mut metadata = HealthMetadata::new(check_duration, "ledger")
+                let metadata = HealthMetadata::new(check_duration, "ledger")
                     .with_detail("probe", probe.to_string())
                     .with_detail("connection_latency_ms", check_duration.as_millis().to_string());
 
-                if let Some(cb_state) = self.circuit_breaker_state() {
-                    metadata =
-                        metadata.with_detail("circuit_breaker_state", format!("{cb_state:?}"));
-                }
-
                 match result {
-                    Ok(()) => {
-                        if let Some(crate::circuit_breaker::CircuitState::HalfOpen) =
-                            self.circuit_breaker_state()
-                        {
-                            Ok(HealthStatus::degraded(metadata, "circuit breaker half-open"))
-                        } else {
-                            Ok(HealthStatus::healthy(metadata))
-                        }
-                    },
+                    Ok(()) => Ok(HealthStatus::healthy(metadata)),
                     Err(e) => Err(e),
                 }
             },
