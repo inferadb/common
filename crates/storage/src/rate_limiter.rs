@@ -453,8 +453,10 @@ impl<B: MetricsCollector> MetricsCollector for RateLimitedBackend<B> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
+    use std::ops::Bound;
+
     use super::*;
-    use crate::{MemoryBackend, assert_storage_error};
+    use crate::{MemoryBackend, assert_storage_error, to_storage_range};
 
     #[test]
     fn config_creation() {
@@ -684,5 +686,298 @@ mod tests {
         // Verify no third org bucket was created
         let orgs = limiter.organizations.lock();
         assert_eq!(orgs.len(), 2, "should not exceed max_organization_buckets");
+    }
+
+    #[test]
+    fn debug_impl_for_token_bucket_limiter() {
+        let config = RateLimitConfig::new(100, 20).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let debug = format!("{limiter:?}");
+        assert!(debug.contains("TokenBucketLimiter"), "debug output: {debug}");
+        assert!(debug.contains("has_extractor"), "debug output: {debug}");
+    }
+
+    #[tokio::test]
+    async fn debug_impl_for_rate_limited_backend() {
+        let backend = MemoryBackend::new();
+        let config = RateLimitConfig::new(100, 20).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let limited = RateLimitedBackend::new(backend, limiter);
+        let debug = format!("{limited:?}");
+        assert!(debug.contains("RateLimitedBackend"), "debug output: {debug}");
+    }
+
+    #[test]
+    fn metrics_snapshot_default() {
+        let snap = RateLimitMetricsSnapshot::default();
+        assert_eq!(snap.allowed, 0);
+        assert_eq!(snap.rejected, 0);
+    }
+
+    #[tokio::test]
+    async fn inner_and_limiter_accessors() {
+        let backend = MemoryBackend::new();
+        let config = RateLimitConfig::new(100, 20).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let limited = RateLimitedBackend::new(backend, limiter);
+        let _inner: &MemoryBackend = limited.inner();
+        let limiter_ref = limited.limiter();
+        let snap = limiter_ref.metrics_snapshot();
+        assert_eq!(snap.allowed, 0);
+    }
+
+    #[tokio::test]
+    async fn rate_limited_delete() {
+        let backend = MemoryBackend::new();
+        let config = RateLimitConfig::new(1000, 100).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let limited = RateLimitedBackend::new(backend, limiter);
+
+        limited.set(b"key".to_vec(), b"value".to_vec()).await.unwrap();
+        limited.delete(b"key").await.unwrap();
+        let val = limited.get(b"key").await.unwrap();
+        assert!(val.is_none());
+    }
+
+    #[tokio::test]
+    async fn rate_limited_compare_and_set() {
+        let backend = MemoryBackend::new();
+        let config = RateLimitConfig::new(1000, 100).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let limited = RateLimitedBackend::new(backend, limiter);
+
+        limited.compare_and_set(b"key", None, b"v1".to_vec()).await.unwrap();
+        let val = limited.get(b"key").await.unwrap();
+        assert_eq!(val, Some(Bytes::from("v1")));
+    }
+
+    #[tokio::test]
+    async fn rate_limited_compare_and_set_with_ttl() {
+        let backend = MemoryBackend::new();
+        let config = RateLimitConfig::new(1000, 100).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let limited = RateLimitedBackend::new(backend, limiter);
+
+        limited
+            .compare_and_set_with_ttl(b"key", None, b"v1".to_vec(), Duration::from_secs(60))
+            .await
+            .unwrap();
+        let val = limited.get(b"key").await.unwrap();
+        assert_eq!(val, Some(Bytes::from("v1")));
+    }
+
+    #[tokio::test]
+    async fn rate_limited_set_with_ttl() {
+        let backend = MemoryBackend::new();
+        let config = RateLimitConfig::new(1000, 100).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let limited = RateLimitedBackend::new(backend, limiter);
+
+        limited
+            .set_with_ttl(b"key".to_vec(), b"value".to_vec(), Duration::from_secs(60))
+            .await
+            .unwrap();
+        let val = limited.get(b"key").await.unwrap();
+        assert_eq!(val, Some(Bytes::from("value")));
+    }
+
+    #[tokio::test]
+    async fn rate_limited_get_range() {
+        let backend = MemoryBackend::new();
+        let config = RateLimitConfig::new(1000, 100).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let limited = RateLimitedBackend::new(backend, limiter);
+
+        limited.set(b"a".to_vec(), b"1".to_vec()).await.unwrap();
+        limited.set(b"b".to_vec(), b"2".to_vec()).await.unwrap();
+        limited.set(b"c".to_vec(), b"3".to_vec()).await.unwrap();
+
+        let range = (Bound::Included(b"a".to_vec()), Bound::Excluded(b"d".to_vec()));
+        let results = limited.get_range(range).await.unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn rate_limited_clear_range() {
+        let backend = MemoryBackend::new();
+        let config = RateLimitConfig::new(1000, 100).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let limited = RateLimitedBackend::new(backend, limiter);
+
+        limited.set(b"a".to_vec(), b"1".to_vec()).await.unwrap();
+        limited.set(b"b".to_vec(), b"2".to_vec()).await.unwrap();
+
+        let range = (Bound::Included(b"a".to_vec()), Bound::Excluded(b"c".to_vec()));
+        limited.clear_range(range).await.unwrap();
+
+        let val = limited.get(b"a").await.unwrap();
+        assert!(val.is_none());
+    }
+
+    #[tokio::test]
+    async fn rate_limited_delete_rejected_when_exhausted() {
+        let backend = MemoryBackend::new();
+        let config = RateLimitConfig::new(1, 1).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let limited = RateLimitedBackend::new(backend, limiter);
+
+        limited.set(b"a".to_vec(), b"v".to_vec()).await.unwrap();
+        assert_storage_error!(limited.delete(b"a").await, RateLimitExceeded);
+    }
+
+    #[tokio::test]
+    async fn rate_limited_get_rejected_when_exhausted() {
+        let backend = MemoryBackend::new();
+        let config = RateLimitConfig::new(1, 1).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let limited = RateLimitedBackend::new(backend, limiter);
+
+        limited.set(b"a".to_vec(), b"v".to_vec()).await.unwrap();
+        assert_storage_error!(limited.get(b"a").await, RateLimitExceeded);
+    }
+
+    #[tokio::test]
+    async fn rate_limited_cas_rejected_when_exhausted() {
+        let backend = MemoryBackend::new();
+        let config = RateLimitConfig::new(1, 1).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let limited = RateLimitedBackend::new(backend, limiter);
+
+        limited.set(b"a".to_vec(), b"v".to_vec()).await.unwrap();
+        assert_storage_error!(
+            limited.compare_and_set(b"a", Some(b"v"), b"v2".to_vec()).await,
+            RateLimitExceeded
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limited_cas_with_ttl_rejected_when_exhausted() {
+        let backend = MemoryBackend::new();
+        let config = RateLimitConfig::new(1, 1).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let limited = RateLimitedBackend::new(backend, limiter);
+
+        limited.set(b"a".to_vec(), b"v".to_vec()).await.unwrap();
+        assert_storage_error!(
+            limited
+                .compare_and_set_with_ttl(b"a", Some(b"v"), b"v2".to_vec(), Duration::from_secs(60))
+                .await,
+            RateLimitExceeded
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limited_set_with_ttl_rejected_when_exhausted() {
+        let backend = MemoryBackend::new();
+        let config = RateLimitConfig::new(1, 1).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let limited = RateLimitedBackend::new(backend, limiter);
+
+        limited.set(b"a".to_vec(), b"v".to_vec()).await.unwrap();
+        assert_storage_error!(
+            limited.set_with_ttl(b"b".to_vec(), b"v".to_vec(), Duration::from_secs(60)).await,
+            RateLimitExceeded
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limited_get_range_rejected_when_exhausted() {
+        let backend = MemoryBackend::new();
+        let config = RateLimitConfig::new(1, 1).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let limited = RateLimitedBackend::new(backend, limiter);
+
+        limited.set(b"a".to_vec(), b"v".to_vec()).await.unwrap();
+
+        assert_storage_error!(
+            limited.get_range(to_storage_range(b"a".to_vec()..b"z".to_vec())).await,
+            RateLimitExceeded
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limited_clear_range_rejected_when_exhausted() {
+        let backend = MemoryBackend::new();
+        let config = RateLimitConfig::new(1, 1).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let limited = RateLimitedBackend::new(backend, limiter);
+
+        limited.set(b"a".to_vec(), b"v".to_vec()).await.unwrap();
+
+        assert_storage_error!(
+            limited.clear_range(to_storage_range(b"a".to_vec()..b"z".to_vec())).await,
+            RateLimitExceeded
+        );
+    }
+
+    #[test]
+    fn per_organization_rejection_tracks_metrics() {
+        let config = RateLimitConfig::new(1000, 1).unwrap();
+        let limiter =
+            TokenBucketLimiter::new(config).with_organization_extractor(Arc::new(PrefixExtractor));
+
+        assert!(limiter.check(b"org1:k1").is_ok());
+        assert!(limiter.check(b"org1:k2").is_err());
+
+        let snap = limiter.metrics_snapshot();
+        assert_eq!(snap.allowed, 1);
+        assert_eq!(snap.rejected, 1);
+    }
+
+    #[test]
+    fn extractor_returning_none_uses_global_bucket() {
+        struct NeverExtractor;
+        impl OrganizationExtractor for NeverExtractor {
+            fn extract(&self, _key: &[u8]) -> Option<String> {
+                None
+            }
+        }
+
+        let config = RateLimitConfig::new(1000, 2).unwrap();
+        let limiter =
+            TokenBucketLimiter::new(config).with_organization_extractor(Arc::new(NeverExtractor));
+
+        assert!(limiter.check(b"anything").is_ok());
+        assert!(limiter.check(b"anything_else").is_ok());
+        assert!(limiter.check(b"third").is_err());
+
+        let orgs = limiter.organizations.lock();
+        assert!(orgs.is_empty());
+    }
+
+    #[test]
+    fn limiter_with_extractor_debug_shows_has_extractor() {
+        let config = RateLimitConfig::new(100, 20).unwrap();
+        let limiter =
+            TokenBucketLimiter::new(config).with_organization_extractor(Arc::new(PrefixExtractor));
+        let debug = format!("{limiter:?}");
+        assert!(debug.contains("has_extractor: true"), "debug output: {debug}");
+    }
+
+    #[test]
+    fn limiter_without_extractor_debug_shows_no_extractor() {
+        let config = RateLimitConfig::new(100, 20).unwrap();
+        let limiter = TokenBucketLimiter::new(config);
+        let debug = format!("{limiter:?}");
+        assert!(debug.contains("has_extractor: false"), "debug output: {debug}");
+    }
+
+    #[test]
+    fn metrics_snapshot_clone() {
+        let snap = RateLimitMetricsSnapshot { allowed: 10, rejected: 3 };
+        let cloned = snap.clone();
+        assert_eq!(cloned.allowed, 10);
+        assert_eq!(cloned.rejected, 3);
+    }
+
+    #[test]
+    fn config_clone_and_copy() {
+        let config = RateLimitConfig::new(50, 10).unwrap();
+        let copied = config;
+        assert_eq!(copied.rate(), 50);
+        assert_eq!(copied.burst(), 10);
+        #[allow(clippy::clone_on_copy)]
+        let cloned = config.clone();
+        assert_eq!(cloned.rate(), 50);
     }
 }

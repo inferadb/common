@@ -470,4 +470,184 @@ mod tests {
         let buffered = BufferedBackend::new(inner);
         buffered.commit().await.unwrap();
     }
+
+    #[tokio::test]
+    async fn set_with_ttl_buffered_and_committed() {
+        let inner = MemoryBackend::new();
+        let buffered = BufferedBackend::new(inner.clone());
+
+        buffered
+            .set_with_ttl(b"ttl-key".to_vec(), b"ttl-val".to_vec(), Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        assert_eq!(buffered.get(b"ttl-key").await.unwrap(), Some(Bytes::from("ttl-val")));
+        assert_eq!(inner.get(b"ttl-key").await.unwrap(), None);
+
+        buffered.commit().await.unwrap();
+        assert_eq!(inner.get(b"ttl-key").await.unwrap(), Some(Bytes::from("ttl-val")));
+    }
+
+    #[tokio::test]
+    async fn compare_and_set_buffered_and_committed() {
+        let inner = MemoryBackend::new();
+        let buffered = BufferedBackend::new(inner.clone());
+
+        buffered.compare_and_set(b"cas-key", None, b"cas-val".to_vec()).await.unwrap();
+
+        assert_eq!(buffered.get(b"cas-key").await.unwrap(), Some(Bytes::from("cas-val")));
+        assert_eq!(inner.get(b"cas-key").await.unwrap(), None);
+
+        buffered.commit().await.unwrap();
+        assert_eq!(inner.get(b"cas-key").await.unwrap(), Some(Bytes::from("cas-val")));
+    }
+
+    #[tokio::test]
+    async fn compare_and_set_with_ttl_buffered_and_committed() {
+        let inner = MemoryBackend::new();
+        let buffered = BufferedBackend::new(inner.clone());
+
+        buffered
+            .compare_and_set_with_ttl(
+                b"cas-ttl",
+                None,
+                b"cas-ttl-val".to_vec(),
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(buffered.get(b"cas-ttl").await.unwrap(), Some(Bytes::from("cas-ttl-val")));
+
+        buffered.commit().await.unwrap();
+        assert_eq!(inner.get(b"cas-ttl").await.unwrap(), Some(Bytes::from("cas-ttl-val")));
+    }
+
+    #[tokio::test]
+    async fn transaction_set_with_ttl_read_your_writes() {
+        let inner = MemoryBackend::new();
+        let buffered = BufferedBackend::new(inner.clone());
+
+        let mut txn = buffered.transaction().await.unwrap();
+        txn.set_with_ttl(b"txn-ttl".to_vec(), b"txn-ttl-val".to_vec(), Duration::from_secs(60));
+
+        assert_eq!(txn.get(b"txn-ttl").await.unwrap(), Some(Bytes::from("txn-ttl-val")));
+
+        txn.commit().await.unwrap();
+        buffered.commit().await.unwrap();
+        assert_eq!(inner.get(b"txn-ttl").await.unwrap(), Some(Bytes::from("txn-ttl-val")));
+    }
+
+    #[tokio::test]
+    async fn transaction_compare_and_set_read_your_writes() {
+        let inner = MemoryBackend::new();
+        let buffered = BufferedBackend::new(inner.clone());
+
+        let mut txn = buffered.transaction().await.unwrap();
+        txn.compare_and_set(b"txn-cas".to_vec(), None, b"txn-cas-val".to_vec()).unwrap();
+
+        assert_eq!(txn.get(b"txn-cas").await.unwrap(), Some(Bytes::from("txn-cas-val")));
+
+        txn.commit().await.unwrap();
+        buffered.commit().await.unwrap();
+        assert_eq!(inner.get(b"txn-cas").await.unwrap(), Some(Bytes::from("txn-cas-val")));
+    }
+
+    #[tokio::test]
+    async fn transaction_compare_and_set_with_ttl_read_your_writes() {
+        let inner = MemoryBackend::new();
+        let buffered = BufferedBackend::new(inner.clone());
+
+        let mut txn = buffered.transaction().await.unwrap();
+        txn.compare_and_set_with_ttl(
+            b"txn-cas-ttl".to_vec(),
+            None,
+            b"txn-cas-ttl-val".to_vec(),
+            Duration::from_secs(30),
+        )
+        .unwrap();
+
+        assert_eq!(txn.get(b"txn-cas-ttl").await.unwrap(), Some(Bytes::from("txn-cas-ttl-val")));
+
+        txn.commit().await.unwrap();
+        buffered.commit().await.unwrap();
+        assert_eq!(inner.get(b"txn-cas-ttl").await.unwrap(), Some(Bytes::from("txn-cas-ttl-val")));
+    }
+
+    #[tokio::test]
+    async fn transaction_delete_local_writes() {
+        let inner = MemoryBackend::new();
+        inner.set(b"existing".to_vec(), b"data".to_vec()).await.unwrap();
+
+        let buffered = BufferedBackend::new(inner.clone());
+
+        let mut txn = buffered.transaction().await.unwrap();
+        txn.delete(b"existing".to_vec());
+
+        assert_eq!(txn.get(b"existing").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn health_check_passes_through() {
+        let inner = MemoryBackend::new();
+        let buffered = BufferedBackend::new(inner);
+
+        let status = buffered.health_check(HealthProbe::Liveness).await.unwrap();
+        assert!(status.is_healthy());
+
+        let status = buffered.health_check(HealthProbe::Readiness).await.unwrap();
+        assert!(status.is_healthy());
+    }
+
+    #[tokio::test]
+    async fn get_range_passes_through() {
+        use std::ops::Bound;
+
+        let inner = MemoryBackend::new();
+        inner.set(b"r:a".to_vec(), b"1".to_vec()).await.unwrap();
+        inner.set(b"r:b".to_vec(), b"2".to_vec()).await.unwrap();
+        inner.set(b"r:c".to_vec(), b"3".to_vec()).await.unwrap();
+
+        let buffered = BufferedBackend::new(inner);
+
+        let range = (Bound::Included(b"r:a".to_vec()), Bound::Excluded(b"r:d".to_vec()));
+        let results = buffered.get_range(range).await.unwrap();
+        assert_eq!(results.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn clear_range_passes_through() {
+        use std::ops::Bound;
+
+        let inner = MemoryBackend::new();
+        inner.set(b"c:a".to_vec(), b"1".to_vec()).await.unwrap();
+        inner.set(b"c:b".to_vec(), b"2".to_vec()).await.unwrap();
+
+        let buffered = BufferedBackend::new(inner.clone());
+
+        let range = (Bound::Included(b"c:a".to_vec()), Bound::Excluded(b"c:c".to_vec()));
+        buffered.clear_range(range).await.unwrap();
+
+        assert_eq!(inner.get(b"c:a").await.unwrap(), None);
+        assert_eq!(inner.get(b"c:b").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn clone_shares_buffer() {
+        let inner = MemoryBackend::new();
+        let buffered = BufferedBackend::new(inner.clone());
+
+        buffered.set(b"shared".to_vec(), b"value".to_vec()).await.unwrap();
+
+        let cloned = buffered.clone();
+
+        assert_eq!(cloned.get(b"shared").await.unwrap(), Some(Bytes::from("value")));
+
+        cloned.set(b"from-clone".to_vec(), b"cloned".to_vec()).await.unwrap();
+        assert_eq!(buffered.get(b"from-clone").await.unwrap(), Some(Bytes::from("cloned")));
+
+        cloned.commit().await.unwrap();
+        assert_eq!(inner.get(b"shared").await.unwrap(), Some(Bytes::from("value")));
+        assert_eq!(inner.get(b"from-clone").await.unwrap(), Some(Bytes::from("cloned")));
+    }
 }

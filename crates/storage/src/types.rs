@@ -127,3 +127,87 @@ define_id!(
     /// ```
     CertId
 );
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use bytes::Bytes;
+
+    use super::*;
+
+    #[test]
+    fn key_value_new_creates_pair() {
+        let kv = KeyValue::new(Bytes::from("key"), Bytes::from("value"));
+        assert_eq!(kv.key, Bytes::from("key"));
+        assert_eq!(kv.value, Bytes::from("value"));
+    }
+
+    #[test]
+    fn key_value_clone_and_eq() {
+        let kv1 = KeyValue::new(Bytes::from("k"), Bytes::from("v"));
+        let kv2 = kv1.clone();
+        assert_eq!(kv1, kv2);
+    }
+
+    #[test]
+    fn key_value_debug() {
+        let kv = KeyValue::new(Bytes::from("k"), Bytes::from("v"));
+        let debug = format!("{kv:?}");
+        assert!(debug.contains("KeyValue"));
+    }
+
+    #[test]
+    fn client_id_from_u64() {
+        let id = ClientId::from(42);
+        assert_eq!(id.0, 42);
+    }
+
+    #[test]
+    fn client_id_into_u64() {
+        let id = ClientId(99);
+        let val: u64 = id.into();
+        assert_eq!(val, 99);
+    }
+
+    #[test]
+    fn client_id_display() {
+        let id = ClientId(12345);
+        assert_eq!(format!("{id}"), "12345");
+    }
+
+    #[test]
+    fn cert_id_from_u64() {
+        let id = CertId::from(7);
+        assert_eq!(id.0, 7);
+    }
+
+    #[test]
+    fn cert_id_into_u64() {
+        let id = CertId(100);
+        let val: u64 = id.into();
+        assert_eq!(val, 100);
+    }
+
+    #[test]
+    fn cert_id_display() {
+        let id = CertId(0);
+        assert_eq!(format!("{id}"), "0");
+    }
+
+    #[test]
+    fn id_serde_roundtrip() {
+        let client = ClientId(42);
+        let json = serde_json::to_string(&client).unwrap();
+        assert_eq!(json, "42");
+        let deserialized: ClientId = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, client);
+    }
+
+    #[test]
+    fn id_ordering() {
+        let a = ClientId(1);
+        let b = ClientId(2);
+        assert!(a < b);
+        assert!(b > a);
+    }
+}

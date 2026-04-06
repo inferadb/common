@@ -610,3 +610,151 @@ impl StorageBackend for Arc<dyn StorageBackend> {
         (**self).health_check(probe).await
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::ops::Bound;
+
+    use super::*;
+    use crate::MemoryBackend;
+
+    #[test]
+    fn to_storage_range_included_excluded() {
+        let range = to_storage_range(b"a".to_vec()..b"z".to_vec());
+        assert!(matches!(range.0, Bound::Included(ref v) if v == b"a"));
+        assert!(matches!(range.1, Bound::Excluded(ref v) if v == b"z"));
+    }
+
+    #[test]
+    fn to_storage_range_included_included() {
+        let range = to_storage_range(b"a".to_vec()..=b"z".to_vec());
+        assert!(matches!(range.0, Bound::Included(ref v) if v == b"a"));
+        assert!(matches!(range.1, Bound::Included(ref v) if v == b"z"));
+    }
+
+    #[test]
+    fn to_storage_range_unbounded_end() {
+        let range = to_storage_range(b"prefix:".to_vec()..);
+        assert!(matches!(range.0, Bound::Included(ref v) if v == b"prefix:"));
+        assert!(matches!(range.1, Bound::Unbounded));
+    }
+
+    #[test]
+    fn to_storage_range_full_unbounded() {
+        let range: StorageRange = (Bound::Unbounded, Bound::Unbounded);
+        let converted = to_storage_range(range);
+        assert!(matches!(converted.0, Bound::Unbounded));
+        assert!(matches!(converted.1, Bound::Unbounded));
+    }
+
+    #[test]
+    fn to_storage_range_range_to() {
+        let range = to_storage_range(..b"end".to_vec());
+        assert!(matches!(range.0, Bound::Unbounded));
+        assert!(matches!(range.1, Bound::Excluded(ref v) if v == b"end"));
+    }
+
+    #[test]
+    fn to_storage_range_range_to_inclusive() {
+        let range = to_storage_range(..=b"end".to_vec());
+        assert!(matches!(range.0, Bound::Unbounded));
+        assert!(matches!(range.1, Bound::Included(ref v) if v == b"end"));
+    }
+
+    #[test]
+    fn to_storage_range_with_excluded_start() {
+        let range: StorageRange =
+            (Bound::Excluded(b"start".to_vec()), Bound::Included(b"end".to_vec()));
+        let converted = to_storage_range(range);
+        assert!(matches!(converted.0, Bound::Excluded(ref v) if v == b"start"));
+        assert!(matches!(converted.1, Bound::Included(ref v) if v == b"end"));
+    }
+
+    #[tokio::test]
+    async fn dyn_backend_get_set_delete() {
+        let backend: DynBackend = Arc::new(MemoryBackend::new());
+
+        backend.set(b"key".to_vec(), b"value".to_vec()).await.unwrap();
+        let val = backend.get(b"key").await.unwrap();
+        assert_eq!(val, Some(Bytes::from("value")));
+
+        backend.delete(b"key").await.unwrap();
+        let val = backend.get(b"key").await.unwrap();
+        assert_eq!(val, None);
+    }
+
+    #[tokio::test]
+    async fn dyn_backend_get_range_and_clear_range() {
+        let backend: DynBackend = Arc::new(MemoryBackend::new());
+
+        backend.set(b"a".to_vec(), b"1".to_vec()).await.unwrap();
+        backend.set(b"b".to_vec(), b"2".to_vec()).await.unwrap();
+        backend.set(b"c".to_vec(), b"3".to_vec()).await.unwrap();
+
+        let results =
+            backend.get_range(to_storage_range(b"a".to_vec()..=b"c".to_vec())).await.unwrap();
+        assert_eq!(results.len(), 3);
+
+        backend.clear_range(to_storage_range(b"a".to_vec()..=b"c".to_vec())).await.unwrap();
+        let results =
+            backend.get_range(to_storage_range(b"a".to_vec()..=b"c".to_vec())).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dyn_backend_set_with_ttl() {
+        let backend: DynBackend = Arc::new(MemoryBackend::new());
+        backend
+            .set_with_ttl(b"ttl-key".to_vec(), b"val".to_vec(), Duration::from_secs(60))
+            .await
+            .unwrap();
+        let val = backend.get(b"ttl-key").await.unwrap();
+        assert_eq!(val, Some(Bytes::from("val")));
+    }
+
+    #[tokio::test]
+    async fn dyn_backend_compare_and_set() {
+        let backend: DynBackend = Arc::new(MemoryBackend::new());
+
+        backend.compare_and_set(b"cas-key", None, b"v1".to_vec()).await.unwrap();
+        let val = backend.get(b"cas-key").await.unwrap();
+        assert_eq!(val, Some(Bytes::from("v1")));
+
+        backend.compare_and_set(b"cas-key", Some(b"v1"), b"v2".to_vec()).await.unwrap();
+        let val = backend.get(b"cas-key").await.unwrap();
+        assert_eq!(val, Some(Bytes::from("v2")));
+    }
+
+    #[tokio::test]
+    async fn dyn_backend_compare_and_set_with_ttl() {
+        let backend: DynBackend = Arc::new(MemoryBackend::new());
+
+        backend
+            .compare_and_set_with_ttl(b"cas-ttl", None, b"v1".to_vec(), Duration::from_secs(60))
+            .await
+            .unwrap();
+        let val = backend.get(b"cas-ttl").await.unwrap();
+        assert_eq!(val, Some(Bytes::from("v1")));
+    }
+
+    #[tokio::test]
+    async fn dyn_backend_transaction() {
+        let backend: DynBackend = Arc::new(MemoryBackend::new());
+
+        let mut txn = backend.transaction().await.unwrap();
+        txn.set(b"txn-key".to_vec(), b"txn-val".to_vec());
+        txn.commit().await.unwrap();
+
+        let val = backend.get(b"txn-key").await.unwrap();
+        assert_eq!(val, Some(Bytes::from("txn-val")));
+    }
+
+    #[tokio::test]
+    async fn dyn_backend_health_check() {
+        let backend: DynBackend = Arc::new(MemoryBackend::new());
+
+        let status = backend.health_check(HealthProbe::Liveness).await.unwrap();
+        assert!(matches!(status, HealthStatus::Healthy(_)));
+    }
+}

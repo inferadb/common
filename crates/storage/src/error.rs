@@ -1002,4 +1002,148 @@ mod tests {
         let err = StorageError::internal("standalone error");
         assert!(err.source().is_none(), "internal without source should have no chain");
     }
+
+    #[test]
+    fn config_error_must_be_positive_display() {
+        let err = ConfigError::MustBePositive { field: "rate", value: "0".into() };
+        assert_eq!(err.to_string(), "invalid rate: must be positive (got 0)");
+    }
+
+    #[test]
+    fn config_error_below_minimum_display() {
+        let err = ConfigError::BelowMinimum {
+            field: "timeout",
+            min: "100ms".into(),
+            value: "10ms".into(),
+        };
+        assert_eq!(err.to_string(), "invalid timeout: must be >= 100ms (got 10ms)");
+    }
+
+    #[test]
+    fn config_error_invalid_relation_display() {
+        let err = ConfigError::InvalidRelation {
+            field_a: "min_connections",
+            value_a: "10".into(),
+            field_b: "max_connections",
+            value_b: "5".into(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "invalid config: min_connections (10) must be <= max_connections (5)"
+        );
+    }
+
+    #[test]
+    fn format_key_for_display_valid_utf8() {
+        let result = format_key_for_display(b"hello");
+        assert_eq!(result.as_ref(), "hello");
+    }
+
+    #[test]
+    fn format_key_for_display_invalid_utf8() {
+        let result = format_key_for_display(&[0xff, 0xfe, 0x00]);
+        assert_eq!(result.as_ref(), "fffe00");
+    }
+
+    #[test]
+    fn not_found_detail_with_non_utf8_key() {
+        let err = StorageError::NotFound { key: vec![0xff, 0xfe], span_id: None };
+        assert_eq!(err.detail(), "Key not found: fffe");
+    }
+
+    #[test]
+    fn size_limit_exceeded_display() {
+        let err = StorageError::size_limit_exceeded("key", 512, 256);
+        assert_eq!(err.to_string(), "Size limit exceeded: key is 512 bytes, limit is 256 bytes");
+    }
+
+    #[test]
+    fn size_limit_exceeded_detail_matches_display() {
+        let err = StorageError::size_limit_exceeded("value", 1024, 512);
+        assert_eq!(err.detail(), err.to_string());
+    }
+
+    #[test]
+    fn range_limit_exceeded_display() {
+        let err = StorageError::range_limit_exceeded(5000, 1000);
+        assert_eq!(err.to_string(), "Range query exceeded limit: 5000 results, limit is 1000");
+    }
+
+    #[test]
+    fn range_limit_exceeded_detail_matches_display() {
+        let err = StorageError::range_limit_exceeded(5000, 1000);
+        assert_eq!(err.detail(), err.to_string());
+    }
+
+    #[test]
+    fn rate_limit_exceeded_display() {
+        let err = StorageError::rate_limit_exceeded(std::time::Duration::from_millis(500));
+        assert_eq!(err.to_string(), "Rate limit exceeded, retry after 500ms");
+    }
+
+    #[test]
+    fn rate_limit_exceeded_detail_matches_display() {
+        let err = StorageError::rate_limit_exceeded(std::time::Duration::from_millis(500));
+        assert_eq!(err.detail(), err.to_string());
+    }
+
+    #[test]
+    fn cas_retries_exhausted_display() {
+        let err = StorageError::cas_retries_exhausted(5);
+        assert_eq!(err.to_string(), "CAS retries exhausted after 5 attempts");
+    }
+
+    #[test]
+    fn cas_retries_exhausted_detail_matches_display() {
+        let err = StorageError::cas_retries_exhausted(5);
+        assert_eq!(err.detail(), err.to_string());
+    }
+
+    #[test]
+    fn circuit_open_display() {
+        let err = StorageError::circuit_open();
+        assert_eq!(err.to_string(), "Circuit breaker is open");
+    }
+
+    #[test]
+    fn circuit_open_detail_matches_display() {
+        let err = StorageError::circuit_open();
+        assert_eq!(err.detail(), err.to_string());
+    }
+
+    #[test]
+    fn serialization_detail() {
+        let err = StorageError::serialization("invalid json at byte 42");
+        assert_eq!(err.detail(), "Serialization error: invalid json at byte 42");
+    }
+
+    #[test]
+    fn conflict_display() {
+        let err = StorageError::conflict();
+        assert_eq!(err.to_string(), "Transaction conflict");
+    }
+
+    #[test]
+    fn conflict_detail_matches_display() {
+        let err = StorageError::conflict();
+        assert_eq!(err.detail(), err.to_string());
+    }
+
+    #[test]
+    fn size_limit_exceeded_is_not_transient() {
+        let err = StorageError::size_limit_exceeded("key", 512, 256);
+        assert!(!err.is_transient());
+    }
+
+    #[test]
+    fn range_limit_exceeded_is_not_transient() {
+        let err = StorageError::range_limit_exceeded(5000, 1000);
+        assert!(!err.is_transient());
+    }
+
+    #[test]
+    fn cas_retries_exhausted_is_not_transient() {
+        let err = StorageError::cas_retries_exhausted(5);
+        assert!(!err.is_transient());
+    }
 }

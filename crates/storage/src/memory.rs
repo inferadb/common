@@ -132,6 +132,14 @@ pub struct MemoryBackend {
     size_limits: Option<SizeLimits>,
 }
 
+impl std::fmt::Debug for MemoryBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryBackend")
+            .field("size_limits", &self.size_limits)
+            .finish_non_exhaustive()
+    }
+}
+
 impl MemoryBackend {
     /// Creates a new in-memory storage backend.
     ///

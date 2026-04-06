@@ -712,4 +712,220 @@ mod tests {
             assert!(display.contains("[span="), "Display must include span: {display}");
         });
     }
+
+    #[test]
+    fn sdk_error_display_is_generic() {
+        let sdk_err = SdkError::Connection { message: "secret-host:9200".into() };
+        let err = LedgerStorageError::from(sdk_err);
+        let display = err.to_string();
+        assert_eq!(display, "Ledger SDK error");
+        assert!(!display.contains("secret-host"));
+    }
+
+    #[test]
+    fn sdk_error_detail_preserves_context() {
+        let sdk_err = SdkError::Connection { message: "connection refused".into() };
+        let err = LedgerStorageError::from(sdk_err);
+        let detail = err.detail();
+        assert!(detail.contains("connection refused"), "detail: {detail}");
+        assert!(detail.starts_with("Ledger SDK error:"), "detail: {detail}");
+    }
+
+    #[test]
+    fn sdk_error_span_id_accessor() {
+        let sdk_err = SdkError::Connection { message: "test".into() };
+        let err = LedgerStorageError::from(sdk_err);
+        assert!(err.span_id().is_none());
+    }
+
+    #[test]
+    fn sdk_error_span_id_captured_in_span() {
+        with_subscriber(|| {
+            let span = tracing::info_span!("sdk_span_test");
+            let _guard = span.enter();
+
+            let sdk_err = SdkError::Timeout { duration_ms: 5000 };
+            let err = LedgerStorageError::from(sdk_err);
+            assert!(err.span_id().is_some(), "span_id should be captured for Sdk variant");
+        });
+    }
+
+    #[test]
+    fn sdk_display_includes_span_when_present() {
+        with_subscriber(|| {
+            let span = tracing::info_span!("sdk_display_span");
+            let _guard = span.enter();
+
+            let sdk_err = SdkError::Shutdown;
+            let err = LedgerStorageError::from(sdk_err);
+            let display = err.to_string();
+            assert!(display.contains("[span="), "Sdk Display must include span: {display}");
+        });
+    }
+
+    #[test]
+    fn from_config_error_conversion() {
+        let config_err =
+            ConfigError::BelowMinimum { field: "rate", min: "1".into(), value: "0".into() };
+        let err = LedgerStorageError::from(config_err);
+        assert!(matches!(err, LedgerStorageError::Config { .. }));
+        let display = err.to_string();
+        assert_eq!(display, "Configuration error");
+    }
+
+    #[test]
+    fn from_config_error_detail_contains_message() {
+        let config_err =
+            ConfigError::BelowMinimum { field: "burst", min: "1".into(), value: "0".into() };
+        let err = LedgerStorageError::from(config_err);
+        let detail = err.detail();
+        assert!(detail.contains("burst"), "detail should contain field name: {detail}");
+    }
+
+    #[test]
+    fn from_config_error_to_storage_error() {
+        let config_err =
+            ConfigError::BelowMinimum { field: "rate", min: "1".into(), value: "0".into() };
+        let ledger_err = LedgerStorageError::from(config_err);
+        let storage_err: StorageError = ledger_err.into();
+        assert!(matches!(storage_err, StorageError::Internal { .. }));
+    }
+
+    #[test]
+    fn rpc_unavailable_maps_to_connection() {
+        let sdk_err = SdkError::Rpc {
+            code: Code::Unavailable,
+            message: "server overloaded".into(),
+            request_id: None,
+            trace_id: None,
+            error_details: None,
+        };
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
+        assert!(matches!(storage_err, StorageError::Connection { .. }));
+        assert!(storage_err.is_transient());
+    }
+
+    #[test]
+    fn rpc_deadline_exceeded_maps_to_connection() {
+        let sdk_err = SdkError::Rpc {
+            code: Code::DeadlineExceeded,
+            message: "timeout".into(),
+            request_id: None,
+            trace_id: None,
+            error_details: None,
+        };
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
+        assert!(matches!(storage_err, StorageError::Connection { .. }));
+        assert!(storage_err.is_transient());
+    }
+
+    #[test]
+    fn rpc_resource_exhausted_maps_to_connection() {
+        let sdk_err = SdkError::Rpc {
+            code: Code::ResourceExhausted,
+            message: "too many requests".into(),
+            request_id: None,
+            trace_id: None,
+            error_details: None,
+        };
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
+        assert!(matches!(storage_err, StorageError::Connection { .. }));
+        assert!(storage_err.is_transient());
+    }
+
+    #[test]
+    fn rpc_with_request_and_trace_ids() {
+        let sdk_err = SdkError::Rpc {
+            code: Code::NotFound,
+            message: "key missing".into(),
+            request_id: Some("req-123".into()),
+            trace_id: Some("trace-456".into()),
+            error_details: None,
+        };
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
+        assert!(matches!(storage_err, StorageError::NotFound { .. }));
+    }
+
+    #[test]
+    fn rate_limited_sdk_error_mapping() {
+        let sdk_err = SdkError::RateLimited {
+            message: "slow down".into(),
+            retry_after: std::time::Duration::from_millis(500),
+            request_id: None,
+            trace_id: None,
+            error_details: None,
+        };
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
+        assert!(matches!(storage_err, StorageError::Connection { .. }));
+        assert!(storage_err.is_transient());
+        assert!(storage_err.source().is_some());
+    }
+
+    #[test]
+    fn validation_sdk_error_mapping() {
+        let sdk_err = SdkError::Validation { message: "key too long".into() };
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
+        assert!(matches!(storage_err, StorageError::Serialization { .. }));
+        assert!(storage_err.source().is_some());
+    }
+
+    #[test]
+    fn circuit_open_sdk_error_mapping() {
+        let sdk_err = SdkError::CircuitOpen {
+            endpoint: "ledger.example.com:443".into(),
+            retry_after: std::time::Duration::from_secs(10),
+        };
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
+        assert!(matches!(storage_err, StorageError::Connection { .. }));
+        assert!(storage_err.source().is_some());
+    }
+
+    #[test]
+    fn rate_limited_with_request_id() {
+        let sdk_err = SdkError::RateLimited {
+            message: "quota exceeded".into(),
+            retry_after: std::time::Duration::from_secs(1),
+            request_id: Some("req-789".into()),
+            trace_id: None,
+            error_details: None,
+        };
+        let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
+        assert!(matches!(storage_err, StorageError::Connection { .. }));
+    }
+
+    #[test]
+    fn key_encoding_span_id_none_outside_span() {
+        let err = LedgerStorageError::key_encoding("bad hex");
+        assert!(err.span_id().is_none());
+    }
+
+    #[test]
+    fn transaction_span_id_none_outside_span() {
+        let err = LedgerStorageError::transaction("commit failed");
+        assert!(err.span_id().is_none());
+    }
+
+    #[test]
+    fn key_encoding_display_with_span() {
+        with_subscriber(|| {
+            let span = tracing::info_span!("key_enc_test");
+            let _guard = span.enter();
+
+            let err = LedgerStorageError::key_encoding("invalid");
+            let display = err.to_string();
+            assert!(display.contains("[span="), "KeyEncoding Display must include span: {display}");
+        });
+    }
+
+    #[test]
+    fn transaction_display_with_span() {
+        with_subscriber(|| {
+            let span = tracing::info_span!("txn_test");
+            let _guard = span.enter();
+
+            let err = LedgerStorageError::transaction("oops");
+            let display = err.to_string();
+            assert!(display.contains("[span="), "Transaction Display must include span: {display}");
+        });
+    }
 }

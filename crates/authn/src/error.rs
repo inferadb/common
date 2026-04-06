@@ -864,4 +864,148 @@ mod tests {
     fn test_permanent_variant_not_transient(#[case] err: AuthError) {
         assert!(!err.is_transient(), "{:?} should NOT be transient", std::mem::discriminant(&err),);
     }
+
+    #[rstest]
+    #[case::token_not_yet_valid(AuthError::token_not_yet_valid(), "Token not yet valid")]
+    #[case::invalid_signature(AuthError::invalid_signature(), "Invalid signature")]
+    #[case::invalid_scope(AuthError::invalid_scope("write:admin"), "Invalid scope")]
+    #[case::unsupported_algorithm(
+        AuthError::unsupported_algorithm("HS256"),
+        "Unsupported algorithm"
+    )]
+    #[case::token_too_old(AuthError::token_too_old(1_000_000, 86400), "Token too old")]
+    #[case::invalid_public_key(AuthError::invalid_public_key("bad PEM"), "Invalid public key")]
+    #[case::invalid_kid(AuthError::invalid_kid("too long"), "Invalid kid")]
+    #[case::invalid_audience(AuthError::invalid_audience("wrong aud"), "Invalid audience")]
+    fn test_display_additional_variants(#[case] err: AuthError, #[case] expected: &str) {
+        assert_eq!(err.to_string(), expected);
+    }
+
+    #[rstest]
+    #[case::invalid_scope(
+        AuthError::invalid_scope("requires 'admin', has 'read'"),
+        "Invalid scope: requires 'admin', has 'read'"
+    )]
+    #[case::unsupported_algorithm(
+        AuthError::unsupported_algorithm("HS256 is not allowed"),
+        "Unsupported algorithm: HS256 is not allowed"
+    )]
+    #[case::key_inactive(
+        AuthError::key_inactive("key-abc"),
+        "Signing key is inactive: kid=key-abc"
+    )]
+    #[case::key_not_yet_valid(
+        AuthError::key_not_yet_valid("key-future"),
+        "Signing key is not yet valid: kid=key-future"
+    )]
+    #[case::key_expired(AuthError::key_expired("key-old"), "Signing key has expired: kid=key-old")]
+    #[case::invalid_public_key(
+        AuthError::invalid_public_key("invalid PEM encoding"),
+        "Invalid public key: invalid PEM encoding"
+    )]
+    #[case::invalid_kid(
+        AuthError::invalid_kid("too long, exceeds 256 chars"),
+        "Invalid kid: too long, exceeds 256 chars"
+    )]
+    #[case::token_too_old(
+        AuthError::token_too_old(1_000_000, 86400),
+        "Token too old: iat=1000000, max_age=86400s"
+    )]
+    fn test_detail_additional_variants(#[case] err: AuthError, #[case] expected: &str) {
+        assert_eq!(err.detail(), expected);
+    }
+
+    #[test]
+    fn test_detail_fallback_variants_match_display() {
+        let cases: Vec<AuthError> = vec![
+            AuthError::token_expired(),
+            AuthError::token_not_yet_valid(),
+            AuthError::invalid_signature(),
+            AuthError::missing_tenant_id(),
+            AuthError::missing_jti(),
+        ];
+        for err in cases {
+            assert_eq!(
+                err.detail(),
+                err.to_string(),
+                "detail() should match Display for {:?}",
+                std::mem::discriminant(&err)
+            );
+        }
+    }
+
+    #[test]
+    fn test_from_jsonwebtoken_invalid_token() {
+        let jwt_err =
+            jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidToken);
+        let auth_err: AuthError = jwt_err.into();
+        assert!(matches!(auth_err, AuthError::InvalidTokenFormat { .. }));
+    }
+
+    #[test]
+    fn test_from_jsonwebtoken_invalid_signature() {
+        let jwt_err =
+            jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidSignature);
+        let auth_err: AuthError = jwt_err.into();
+        assert!(matches!(auth_err, AuthError::InvalidSignature { .. }));
+    }
+
+    #[test]
+    fn test_from_jsonwebtoken_immature_signature() {
+        let jwt_err =
+            jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::ImmatureSignature);
+        let auth_err: AuthError = jwt_err.into();
+        assert!(matches!(auth_err, AuthError::TokenNotYetValid { .. }));
+    }
+
+    #[test]
+    fn test_from_jsonwebtoken_invalid_audience() {
+        let jwt_err =
+            jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidAudience);
+        let auth_err: AuthError = jwt_err.into();
+        assert!(matches!(auth_err, AuthError::InvalidAudience { .. }));
+    }
+
+    #[test]
+    fn test_from_jsonwebtoken_invalid_issuer() {
+        let jwt_err =
+            jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidIssuer);
+        let auth_err: AuthError = jwt_err.into();
+        assert!(matches!(auth_err, AuthError::InvalidIssuer { .. }));
+    }
+
+    #[test]
+    fn test_from_jsonwebtoken_invalid_algorithm() {
+        let jwt_err =
+            jsonwebtoken::errors::Error::from(jsonwebtoken::errors::ErrorKind::InvalidAlgorithm);
+        let auth_err: AuthError = jwt_err.into();
+        assert!(matches!(auth_err, AuthError::UnsupportedAlgorithm { .. }));
+    }
+
+    #[test]
+    fn test_from_jsonwebtoken_fallback() {
+        let jwt_err = jsonwebtoken::errors::Error::from(
+            jsonwebtoken::errors::ErrorKind::MissingRequiredClaim("sub".into()),
+        );
+        let auth_err: AuthError = jwt_err.into();
+        assert!(matches!(auth_err, AuthError::InvalidTokenFormat { .. }));
+    }
+
+    #[test]
+    fn test_span_id_returns_none_without_subscriber() {
+        let err = AuthError::token_expired();
+        assert!(err.span_id().is_none());
+    }
+
+    #[test]
+    fn test_missing_claim_detail() {
+        let err = AuthError::missing_claim("sub");
+        assert_eq!(err.detail(), "Missing required claim: sub");
+    }
+
+    #[test]
+    fn test_token_replayed_detail() {
+        let err = AuthError::token_replayed("unique-jti-value");
+        assert_eq!(err.detail(), "Token replayed: jti=unique-jti-value");
+    }
 }
