@@ -29,6 +29,7 @@ async fn create_backend_with_token(
 ) -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
         .client(test_client_config_with_id(server, "test-shutdown"))
+        .caller(1)
         .organization(1)
         .vault(VaultSlug::from(0))
         .cancellation_token(token)
@@ -419,6 +420,7 @@ async fn test_vault_isolation() {
     // Create two backends with different vaults
     let config1 = LedgerBackendConfig::builder()
         .client(test_client_config_with_id(&server, "client-vault-1"))
+        .caller(1)
         .organization(1)
         .vault(VaultSlug::from(100))
         .build()
@@ -426,6 +428,7 @@ async fn test_vault_isolation() {
 
     let config2 = LedgerBackendConfig::builder()
         .client(test_client_config_with_id(&server, "client-vault-2"))
+        .caller(1)
         .organization(1)
         .vault(VaultSlug::from(200))
         .build()
@@ -508,7 +511,7 @@ mod signing_key_store {
     };
     use inferadb_common_storage_ledger::auth::LedgerSigningKeyStore;
     use inferadb_ledger_sdk::{
-        ClientConfig, LedgerClient, Operation, ReadConsistency, ServerSource,
+        ClientConfig, LedgerClient, Operation, ReadConsistency, ServerSource, UserSlug,
         mock::MockLedgerServer,
     };
 
@@ -520,7 +523,7 @@ mod signing_key_store {
             .expect("valid config");
 
         let client = LedgerClient::new(config).await.expect("client creation");
-        LedgerSigningKeyStore::new(Arc::new(client))
+        LedgerSigningKeyStore::new(Arc::new(client), UserSlug::from(1))
     }
 
     fn create_test_key(kid: &str) -> PublicSigningKey {
@@ -771,7 +774,8 @@ mod signing_key_store {
 
         let client = LedgerClient::new(config).await.expect("client");
         let metrics = SigningKeyMetrics::new();
-        let store = LedgerSigningKeyStore::new(Arc::new(client)).with_metrics(metrics.clone());
+        let store = LedgerSigningKeyStore::new(Arc::new(client), UserSlug::from(1))
+            .with_metrics(metrics.clone());
 
         // Verify metrics is attached
         assert!(store.metrics().is_some());
@@ -799,6 +803,7 @@ mod signing_key_store {
         let client = LedgerClient::new(config).await.expect("client");
         let store = LedgerSigningKeyStore::with_read_consistency(
             Arc::new(client),
+            UserSlug::from(1),
             ReadConsistency::Eventual,
         );
 
@@ -901,7 +906,8 @@ mod signing_key_store {
 
         let client = Arc::new(LedgerClient::new(config).await.expect("client"));
         let metrics = SigningKeyMetrics::new();
-        let store = LedgerSigningKeyStore::new(Arc::clone(&client)).with_metrics(metrics.clone());
+        let store = LedgerSigningKeyStore::new(Arc::clone(&client), UserSlug::from(1))
+            .with_metrics(metrics.clone());
 
         let organization = OrganizationSlug::from(100);
 
@@ -913,6 +919,7 @@ mod signing_key_store {
         // bypassing the serialize_key path to simulate corruption
         client
             .write(
+                UserSlug::from(1),
                 organization,
                 None,
                 vec![Operation::set_entity(
@@ -954,7 +961,7 @@ mod signing_key_store {
             .expect("valid config");
 
         let client = Arc::new(LedgerClient::new(config).await.expect("client"));
-        let store = LedgerSigningKeyStore::new(Arc::clone(&client));
+        let store = LedgerSigningKeyStore::new(Arc::clone(&client), UserSlug::from(1));
 
         let organization = OrganizationSlug::from(200);
 
@@ -968,6 +975,7 @@ mod signing_key_store {
         for (key, value) in malformed_entries {
             client
                 .write(
+                    UserSlug::from(1),
                     organization,
                     None,
                     vec![Operation::set_entity(key.to_string(), value, None, None)],
@@ -1089,7 +1097,7 @@ mod backend_tests {
     use inferadb_common_storage::{OrganizationSlug, StorageBackend, VaultSlug};
     use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
     use inferadb_ledger_sdk::{
-        ClientConfig, LedgerClient, ReadConsistency, ServerSource, mock::MockLedgerServer,
+        ClientConfig, LedgerClient, ReadConsistency, ServerSource, UserSlug, mock::MockLedgerServer,
     };
 
     fn test_client(server: &MockLedgerServer, client_id: &str) -> ClientConfig {
@@ -1105,6 +1113,7 @@ mod backend_tests {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
             .client(test_client(&server, "test-client"))
+            .caller(1)
             .organization(42)
             .vault(VaultSlug::from(100))
             .build()
@@ -1123,6 +1132,7 @@ mod backend_tests {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
             .client(test_client(&server, "test-client"))
+            .caller(1)
             .organization(123)
             .vault(VaultSlug::from(456))
             .build()
@@ -1154,6 +1164,7 @@ mod backend_tests {
 
         let backend = LedgerBackend::from_client(
             client.clone(),
+            UserSlug::from(1),
             OrganizationSlug::from(999),
             Some(VaultSlug::from(888)),
             ReadConsistency::Eventual,
@@ -1168,6 +1179,7 @@ mod backend_tests {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
             .client(test_client(&server, "test-client"))
+            .caller(1)
             .organization(1)
             .read_consistency(ReadConsistency::Eventual)
             .build()
@@ -1186,6 +1198,7 @@ mod backend_tests {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
             .client(test_client(&server, "test-client"))
+            .caller(1)
             .organization(1)
             .build()
             .expect("valid config");
@@ -1220,6 +1233,7 @@ mod transaction_tests {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
             .client(test_client(&server))
+            .caller(1)
             .organization(1)
             .read_consistency(ReadConsistency::Eventual)
             .build()
@@ -1242,6 +1256,7 @@ mod transaction_tests {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = LedgerBackendConfig::builder()
             .client(test_client(&server))
+            .caller(1)
             .organization(1)
             .build()
             .expect("valid config");
@@ -1280,6 +1295,7 @@ async fn create_paginated_backend(
 ) -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
         .client(test_client_config_with_id(server, "test-pagination"))
+        .caller(1)
         .organization(1)
         .vault(VaultSlug::from(0))
         .page_size(page_size)
@@ -2055,6 +2071,7 @@ async fn test_trace_enabled_backend_operations_succeed() {
 
     let config = LedgerBackendConfig::builder()
         .client(client)
+        .caller(1)
         .organization(1)
         .vault(VaultSlug::from(0))
         .build()

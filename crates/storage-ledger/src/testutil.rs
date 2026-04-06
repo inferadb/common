@@ -59,6 +59,7 @@ pub fn test_client_config_with_id(server: &MockLedgerServer, client_id: &str) ->
 pub async fn create_test_backend(server: &MockLedgerServer) -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
         .client(test_client_config(server))
+        .caller(1)
         .organization(1)
         .vault(VaultSlug::from(0))
         .build()
@@ -81,6 +82,7 @@ pub async fn create_paginated_backend(
 ) -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
         .client(test_client_config(server))
+        .caller(1)
         .organization(1)
         .vault(VaultSlug::from(0))
         .page_size(page_size)

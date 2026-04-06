@@ -11,7 +11,7 @@ use bytes::Bytes;
 use inferadb_common_storage::{
     OrganizationSlug, StorageError, StorageResult, Transaction, VaultSlug,
 };
-use inferadb_ledger_sdk::{LedgerClient, Operation, ReadConsistency, SetCondition};
+use inferadb_ledger_sdk::{LedgerClient, Operation, ReadConsistency, SetCondition, UserSlug};
 
 use crate::{error::LedgerStorageError, keys::encode_key};
 
@@ -106,6 +106,9 @@ pub struct LedgerTransaction {
     /// The SDK client for reads and final commit.
     client: Arc<LedgerClient>,
 
+    /// Caller identity for audit trails.
+    caller: UserSlug,
+
     /// Organization ID.
     organization: OrganizationSlug,
 
@@ -142,6 +145,7 @@ impl LedgerTransaction {
     /// Creates a new transaction.
     pub(crate) fn new(
         client: Arc<LedgerClient>,
+        caller: UserSlug,
         organization: OrganizationSlug,
         vault: Option<VaultSlug>,
         read_consistency: ReadConsistency,
@@ -149,6 +153,7 @@ impl LedgerTransaction {
     ) -> Self {
         Self {
             client,
+            caller,
             organization,
             vault,
             read_consistency,
@@ -161,6 +166,7 @@ impl LedgerTransaction {
     async fn do_read(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, LedgerStorageError> {
         self.client
             .read(
+                self.caller,
                 self.organization,
                 self.vault,
                 key,
@@ -277,7 +283,11 @@ impl Transaction for LedgerTransaction {
 
         // Submit all operations atomically.
         // If any CAS condition fails, the whole transaction fails.
-        match self.client.write(organization, vault, operations, self.cancellation_token).await {
+        match self
+            .client
+            .write(self.caller, organization, vault, operations, self.cancellation_token)
+            .await
+        {
             Ok(_) => Ok(()),
             Err(e) if e.is_cas_conflict() => Err(StorageError::conflict()),
             Err(e) => Err(StorageError::from(LedgerStorageError::from(e))),
@@ -297,7 +307,7 @@ impl Transaction for LedgerTransaction {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use inferadb_ledger_sdk::{ClientConfig, ServerSource, mock::MockLedgerServer};
+    use inferadb_ledger_sdk::{ClientConfig, ServerSource, UserSlug, mock::MockLedgerServer};
 
     use super::*;
 
@@ -314,6 +324,7 @@ mod tests {
         let client = Arc::new(LedgerClient::new(config).await.expect("client"));
         LedgerTransaction::new(
             client,
+            UserSlug::from(1),
             OrganizationSlug::from(1),
             Some(VaultSlug::from(100)),
             consistency,

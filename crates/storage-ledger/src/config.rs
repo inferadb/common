@@ -9,7 +9,7 @@
 use std::time::Duration;
 
 use inferadb_common_storage::{ConfigError, OrganizationSlug, SizeLimits, VaultSlug};
-use inferadb_ledger_sdk::{ClientConfig, ReadConsistency};
+use inferadb_ledger_sdk::{ClientConfig, ReadConsistency, UserSlug};
 
 /// Default number of entities fetched per page during range queries.
 pub const DEFAULT_PAGE_SIZE: u32 = 10_000;
@@ -191,6 +191,7 @@ impl Default for TimeoutConfig {
 ///
 /// let config = LedgerBackendConfig::builder()
 ///     .client(client)
+///     .caller(1)
 ///     .organization(1)
 ///     .vault(VaultSlug::from(100))  // Optional
 ///     .build()?;
@@ -200,6 +201,9 @@ impl Default for TimeoutConfig {
 pub struct LedgerBackendConfig {
     /// SDK client configuration.
     pub(crate) client: ClientConfig,
+
+    /// Caller identity for audit trails in the ledger.
+    pub(crate) caller: UserSlug,
 
     /// Organization ID for data scoping.
     pub(crate) organization: OrganizationSlug,
@@ -254,6 +258,7 @@ impl LedgerBackendConfig {
     /// # Arguments
     ///
     /// * `client` — SDK client configuration (servers, timeouts, TLS, circuit breaker, etc.).
+    /// * `caller` — User identity for audit trails in the ledger.
     /// * `organization` — Organization ID for key scoping.
     ///
     /// # Optional Fields
@@ -272,6 +277,7 @@ impl LedgerBackendConfig {
     #[builder]
     pub fn new(
         client: ClientConfig,
+        #[builder(into)] caller: UserSlug,
         #[builder(into)] organization: OrganizationSlug,
         vault: Option<VaultSlug>,
         #[builder(default = ReadConsistency::Linearizable)] read_consistency: ReadConsistency,
@@ -297,6 +303,7 @@ impl LedgerBackendConfig {
         }
         Ok(Self {
             client,
+            caller,
             organization,
             vault,
             read_consistency,
@@ -312,6 +319,12 @@ impl LedgerBackendConfig {
     #[must_use = "returns the configured value without side effects"]
     pub fn client(&self) -> &ClientConfig {
         &self.client
+    }
+
+    /// Returns the configured caller identity.
+    #[must_use = "returns the configured value without side effects"]
+    pub fn caller(&self) -> UserSlug {
+        self.caller
     }
 
     /// Returns the configured organization ID.
@@ -421,8 +434,12 @@ mod tests {
 
     #[test]
     fn ledger_config_defaults_pass_validation() {
-        let config =
-            LedgerBackendConfig::builder().client(test_client()).organization(1).build().unwrap();
+        let config = LedgerBackendConfig::builder()
+            .client(test_client())
+            .caller(1)
+            .organization(1)
+            .build()
+            .unwrap();
 
         assert_eq!(config.organization(), OrganizationSlug::from(1));
         assert!(config.vault().is_none());
@@ -434,6 +451,7 @@ mod tests {
     fn ledger_config_with_vault() {
         let config = LedgerBackendConfig::builder()
             .client(test_client())
+            .caller(1)
             .organization(1)
             .vault(VaultSlug::from(100))
             .build()
@@ -444,8 +462,12 @@ mod tests {
 
     #[test]
     fn ledger_config_read_consistency_default_is_linearizable() {
-        let config =
-            LedgerBackendConfig::builder().client(test_client()).organization(1).build().unwrap();
+        let config = LedgerBackendConfig::builder()
+            .client(test_client())
+            .caller(1)
+            .organization(1)
+            .build()
+            .unwrap();
 
         assert!(matches!(config.read_consistency(), ReadConsistency::Linearizable));
     }
@@ -454,6 +476,7 @@ mod tests {
     fn ledger_config_read_consistency_eventual() {
         let config = LedgerBackendConfig::builder()
             .client(test_client())
+            .caller(1)
             .organization(1)
             .read_consistency(ReadConsistency::Eventual)
             .build()
@@ -466,6 +489,7 @@ mod tests {
     fn ledger_config_all_optional_fields() {
         let config = LedgerBackendConfig::builder()
             .client(test_client())
+            .caller(1)
             .organization(1)
             .vault(VaultSlug::from(100))
             .read_consistency(ReadConsistency::Eventual)
@@ -478,16 +502,24 @@ mod tests {
 
     #[test]
     fn ledger_config_client_accessor() {
-        let config =
-            LedgerBackendConfig::builder().client(test_client()).organization(1).build().unwrap();
+        let config = LedgerBackendConfig::builder()
+            .client(test_client())
+            .caller(1)
+            .organization(1)
+            .build()
+            .unwrap();
 
         let _client = config.client();
     }
 
     #[test]
     fn ledger_config_pagination_defaults() {
-        let config =
-            LedgerBackendConfig::builder().client(test_client()).organization(1).build().unwrap();
+        let config = LedgerBackendConfig::builder()
+            .client(test_client())
+            .caller(1)
+            .organization(1)
+            .build()
+            .unwrap();
 
         assert_eq!(config.page_size(), DEFAULT_PAGE_SIZE);
         assert_eq!(config.max_range_results(), DEFAULT_MAX_RANGE_RESULTS);
@@ -497,6 +529,7 @@ mod tests {
     fn ledger_config_custom_pagination() {
         let config = LedgerBackendConfig::builder()
             .client(test_client())
+            .caller(1)
             .organization(1)
             .page_size(500)
             .max_range_results(50_000)
@@ -511,6 +544,7 @@ mod tests {
     fn ledger_config_zero_page_size_rejected() {
         let err = LedgerBackendConfig::builder()
             .client(test_client())
+            .caller(1)
             .organization(1)
             .page_size(0)
             .build()
@@ -522,6 +556,7 @@ mod tests {
     fn ledger_config_zero_max_range_results_rejected() {
         let err = LedgerBackendConfig::builder()
             .client(test_client())
+            .caller(1)
             .organization(1)
             .max_range_results(0)
             .build()
@@ -534,8 +569,12 @@ mod tests {
 
     #[test]
     fn ledger_config_timeout_defaults() {
-        let config =
-            LedgerBackendConfig::builder().client(test_client()).organization(1).build().unwrap();
+        let config = LedgerBackendConfig::builder()
+            .client(test_client())
+            .caller(1)
+            .organization(1)
+            .build()
+            .unwrap();
 
         let tc = config.timeout_config();
         assert_eq!(tc.read_timeout(), DEFAULT_READ_TIMEOUT);
@@ -554,6 +593,7 @@ mod tests {
 
         let config = LedgerBackendConfig::builder()
             .client(test_client())
+            .caller(1)
             .organization(1)
             .timeout_config(timeout)
             .build()
@@ -569,8 +609,12 @@ mod tests {
 
     #[test]
     fn ledger_config_trace_disabled_by_default() {
-        let config =
-            LedgerBackendConfig::builder().client(test_client()).organization(1).build().unwrap();
+        let config = LedgerBackendConfig::builder()
+            .client(test_client())
+            .caller(1)
+            .organization(1)
+            .build()
+            .unwrap();
 
         assert!(
             !config.client().trace().is_enabled(),
@@ -587,7 +631,12 @@ mod tests {
             .build()
             .unwrap();
 
-        let config = LedgerBackendConfig::builder().client(client).organization(1).build().unwrap();
+        let config = LedgerBackendConfig::builder()
+            .client(client)
+            .caller(1)
+            .organization(1)
+            .build()
+            .unwrap();
 
         assert!(
             config.client().trace().is_enabled(),

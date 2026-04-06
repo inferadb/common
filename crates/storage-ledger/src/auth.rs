@@ -38,7 +38,7 @@
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! // Assume we have a configured LedgerClient
 //! # let client: Arc<LedgerClient> = todo!();
-//! let store = LedgerSigningKeyStore::new(client);
+//! let store = LedgerSigningKeyStore::new(client, inferadb_ledger_sdk::UserSlug::from(1));
 //!
 //! let key = PublicSigningKey::builder()
 //!     .kid("key-2024-001")
@@ -70,7 +70,7 @@ use inferadb_common_storage::{
     },
 };
 use inferadb_ledger_sdk::{
-    LedgerClient, ListEntitiesOpts, Operation, ReadConsistency, SetCondition,
+    LedgerClient, ListEntitiesOpts, Operation, ReadConsistency, SetCondition, UserSlug,
 };
 
 use crate::LedgerStorageError;
@@ -133,6 +133,8 @@ const MAX_SIGNING_KEYS_PER_ORG: u32 = 1000;
 pub struct LedgerSigningKeyStore {
     /// SDK client for Ledger operations.
     client: Arc<LedgerClient>,
+    /// Caller identity for audit trails.
+    caller: UserSlug,
     /// Consistency level for key lookups.
     read_consistency: ReadConsistency,
     /// Optional metrics collector for key store operations.
@@ -146,6 +148,7 @@ pub struct LedgerSigningKeyStore {
 impl std::fmt::Debug for LedgerSigningKeyStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LedgerSigningKeyStore")
+            .field("caller", &self.caller)
             .field("read_consistency", &self.read_consistency)
             .field("cas_retry_config", &self.cas_retry_config)
             .finish_non_exhaustive()
@@ -158,9 +161,10 @@ impl LedgerSigningKeyStore {
     /// The store uses linearizable consistency by default to ensure
     /// Engine always sees the latest key state.
     #[must_use = "constructing a store has no side effects"]
-    pub fn new(client: Arc<LedgerClient>) -> Self {
+    pub fn new(client: Arc<LedgerClient>, caller: UserSlug) -> Self {
         Self {
             client,
+            caller,
             read_consistency: ReadConsistency::Linearizable,
             metrics: None,
             cas_retry_config: CasRetryConfig::default(),
@@ -178,9 +182,14 @@ impl LedgerSigningKeyStore {
     /// To customize both read consistency and CAS retries, call
     /// [`with_cas_retry_config`](Self::with_cas_retry_config) on the returned instance.
     #[must_use = "constructing a store has no side effects"]
-    pub fn with_read_consistency(client: Arc<LedgerClient>, consistency: ReadConsistency) -> Self {
+    pub fn with_read_consistency(
+        client: Arc<LedgerClient>,
+        caller: UserSlug,
+        consistency: ReadConsistency,
+    ) -> Self {
         Self {
             client,
+            caller,
             read_consistency: consistency,
             metrics: None,
             cas_retry_config: CasRetryConfig::default(),
@@ -206,7 +215,7 @@ impl LedgerSigningKeyStore {
     /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
     /// # let client: Arc<LedgerClient> = todo!();
     /// let metrics = SigningKeyMetrics::new();
-    /// let store = LedgerSigningKeyStore::new(client).with_metrics(metrics.clone());
+    /// let store = LedgerSigningKeyStore::new(client, inferadb_ledger_sdk::UserSlug::from(1)).with_metrics(metrics.clone());
     ///
     /// // Use store... metrics are automatically recorded
     /// # Ok(())
@@ -267,6 +276,7 @@ impl LedgerSigningKeyStore {
     ) -> Result<Option<Vec<u8>>, LedgerStorageError> {
         self.client
             .read(
+                self.caller,
                 organization,
                 None,
                 key,
@@ -311,6 +321,7 @@ impl LedgerSigningKeyStore {
         match self
             .client
             .set_entity(
+                self.caller,
                 organization,
                 None,
                 storage_key,
@@ -342,6 +353,7 @@ impl LedgerSigningKeyStore {
         match self
             .client
             .write(
+                self.caller,
                 organization,
                 None,
                 vec![
@@ -417,6 +429,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         let result = self
             .client
             .set_entity(
+                self.caller,
                 organization,
                 None,
                 storage_key,
@@ -490,6 +503,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
         let result = self
             .client
             .batch_read(
+                self.caller,
                 organization,
                 None,
                 storage_keys,
@@ -553,7 +567,7 @@ impl PublicSigningKeyStore for LedgerSigningKeyStore {
 
         let result = self
             .client
-            .list_entities(organization, opts)
+            .list_entities(self.caller, organization, opts)
             .await
             .map_err(|e| StorageError::from(LedgerStorageError::from(e)));
 

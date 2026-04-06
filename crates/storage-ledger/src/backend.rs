@@ -18,7 +18,7 @@ use inferadb_common_storage::{
     validate_sizes,
 };
 use inferadb_ledger_sdk::{
-    LedgerClient, ListEntitiesOpts, Operation, ReadConsistency, SetCondition,
+    LedgerClient, ListEntitiesOpts, Operation, ReadConsistency, SetCondition, UserSlug,
 };
 
 use crate::{
@@ -78,6 +78,7 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
 ///
 ///     let config = LedgerBackendConfig::builder()
 ///         .client(client)
+///         .caller(1)
 ///         .organization(1)
 ///         .build()?;
 ///
@@ -95,6 +96,9 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
 pub struct LedgerBackend {
     /// The underlying SDK client.
     client: Arc<LedgerClient>,
+
+    /// Caller identity for audit trails.
+    caller: UserSlug,
 
     /// Organization ID for all operations.
     organization: OrganizationSlug,
@@ -165,6 +169,7 @@ impl LedgerBackend {
     ///
     /// let config = LedgerBackendConfig::builder()
     ///     .client(client)
+    ///     .caller(1)
     ///     .organization(1)
     ///     .build()?;
     ///
@@ -173,6 +178,7 @@ impl LedgerBackend {
     /// # }
     /// ```
     pub async fn new(config: LedgerBackendConfig) -> Result<Self> {
+        let caller = config.caller();
         let organization = config.organization();
         let vault = config.vault();
         let read_consistency = config.read_consistency();
@@ -188,6 +194,7 @@ impl LedgerBackend {
 
         Ok(Self {
             client: Arc::new(client),
+            caller,
             org_str_cached: organization.to_string(),
             organization,
             vault,
@@ -209,6 +216,7 @@ impl LedgerBackend {
     #[must_use = "constructing a backend has no side effects"]
     pub fn from_client(
         client: Arc<LedgerClient>,
+        caller: UserSlug,
         organization: OrganizationSlug,
         vault: Option<VaultSlug>,
         read_consistency: ReadConsistency,
@@ -216,6 +224,7 @@ impl LedgerBackend {
         use crate::config::{DEFAULT_MAX_RANGE_RESULTS, DEFAULT_PAGE_SIZE};
         Self {
             client,
+            caller,
             org_str_cached: organization.to_string(),
             organization,
             vault,
@@ -261,6 +270,7 @@ impl LedgerBackend {
     ///     "http://localhost:50051",
     ///     "my-service",
     ///     1u64,
+    ///     1u64,
     ///     None::<u64>,
     /// ).await?;
     ///
@@ -268,6 +278,7 @@ impl LedgerBackend {
     /// let backend = LedgerBackend::from_endpoint(
     ///     "http://localhost:50051",
     ///     "my-service",
+    ///     1u64,
     ///     1u64,
     ///     Some(100u64),
     /// ).await?;
@@ -277,6 +288,7 @@ impl LedgerBackend {
     pub async fn from_endpoint(
         endpoint: &str,
         client_id: &str,
+        caller: impl Into<UserSlug>,
         organization: impl Into<OrganizationSlug>,
         vault: Option<impl Into<VaultSlug>>,
     ) -> Result<Self> {
@@ -292,6 +304,7 @@ impl LedgerBackend {
 
         let config = LedgerBackendConfig::builder()
             .client(client_config)
+            .caller(caller)
             .organization(organization)
             .maybe_vault(vault.map(Into::into))
             .build()
@@ -399,6 +412,7 @@ impl LedgerBackend {
     async fn do_read(&self, key: &str) -> std::result::Result<Option<Vec<u8>>, LedgerStorageError> {
         self.client
             .read(
+                self.caller,
                 self.organization,
                 self.vault,
                 key,
@@ -481,7 +495,7 @@ impl LedgerBackend {
 
                 let result = self
                     .client
-                    .list_entities(self.organization, opts)
+                    .list_entities(self.caller, self.organization, opts)
                     .await
                     .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
 
@@ -609,6 +623,7 @@ impl StorageBackend for LedgerBackend {
             tokio::time::timeout(self.timeout_config.write_timeout, async {
                 self.client
                     .set_entity(
+                        self.caller,
                         self.organization,
                         self.vault,
                         encoded_key,
@@ -644,6 +659,7 @@ impl StorageBackend for LedgerBackend {
                 match self
                     .client
                     .set_entity(
+                        self.caller,
                         self.organization,
                         self.vault,
                         encoded_key,
@@ -672,6 +688,7 @@ impl StorageBackend for LedgerBackend {
             tokio::time::timeout(self.timeout_config.write_timeout, async {
                 self.client
                     .delete_entity(
+                        self.caller,
                         self.organization,
                         self.vault,
                         encoded_key,
@@ -713,6 +730,7 @@ impl StorageBackend for LedgerBackend {
             tokio::time::timeout(self.timeout_config.list_timeout, async {
                 self.client
                     .write(
+                        self.caller,
                         self.organization,
                         self.vault,
                         operations,
@@ -744,6 +762,7 @@ impl StorageBackend for LedgerBackend {
             tokio::time::timeout(self.timeout_config.write_timeout, async {
                 self.client
                     .set_entity(
+                        self.caller,
                         self.organization,
                         self.vault,
                         encoded_key,
@@ -781,6 +800,7 @@ impl StorageBackend for LedgerBackend {
                 match self
                     .client
                     .set_entity(
+                        self.caller,
                         self.organization,
                         self.vault,
                         encoded_key,
@@ -807,6 +827,7 @@ impl StorageBackend for LedgerBackend {
         ledger_op!(self, record_transaction_org, {
             let txn = LedgerTransaction::new(
                 Arc::clone(&self.client),
+                self.caller,
                 self.organization,
                 self.vault,
                 self.read_consistency,

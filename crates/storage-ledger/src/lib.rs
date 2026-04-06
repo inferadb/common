@@ -50,6 +50,7 @@
 //!
 //!     let config = LedgerBackendConfig::builder()
 //!         .client(client)
+//!         .caller(1)
 //!         .organization(1)
 //!         .build()?;
 //!
@@ -101,6 +102,7 @@
 //!
 //! let config = LedgerBackendConfig::builder()
 //!     .client(client)
+//!     .caller(1)
 //!     .organization(1)
 //!     .build()?;
 //!
@@ -137,6 +139,7 @@
 //!
 //! let config = LedgerBackendConfig::builder()
 //!     .client(client)
+//!     .caller(1)
 //!     .organization(1)
 //!     .build()?;
 //!

@@ -77,6 +77,7 @@ fn test_client_config(client_id: &str) -> ClientConfig {
 async fn create_test_backend() -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
         .client(test_client_config(&format!("test-client-{}", unique_vault_slug())))
+        .caller(1)
         .organization(ledger_organization())
         .vault(unique_vault_slug())
         .build()
@@ -89,6 +90,7 @@ async fn create_test_backend() -> LedgerBackend {
 async fn create_backend_with_vault(vault: VaultSlug) -> LedgerBackend {
     let config = LedgerBackendConfig::builder()
         .client(test_client_config(&format!("test-client-vault-{}", vault)))
+        .caller(1)
         .organization(ledger_organization())
         .vault(vault)
         .build()
@@ -621,7 +623,7 @@ async fn test_real_ledger_concurrent_revoke_conflict() {
         auth::{PublicSigningKey, PublicSigningKeyStore},
     };
     use inferadb_common_storage_ledger::auth::LedgerSigningKeyStore;
-    use inferadb_ledger_sdk::LedgerClient;
+    use inferadb_ledger_sdk::{LedgerClient, UserSlug};
 
     let config = test_client_config("conflict-test");
     let client = Arc::new(LedgerClient::new(config).await.expect("client"));
@@ -640,12 +642,12 @@ async fn test_real_ledger_concurrent_revoke_conflict() {
         .valid_from(now)
         .build();
 
-    let setup_store = LedgerSigningKeyStore::new(Arc::clone(&client));
+    let setup_store = LedgerSigningKeyStore::new(Arc::clone(&client), UserSlug::from(1));
     setup_store.create_key(organization, &key).await.expect("create");
 
     // Launch two concurrent revocations from independent store instances
-    let store_a = LedgerSigningKeyStore::new(Arc::clone(&client));
-    let store_b = LedgerSigningKeyStore::new(Arc::clone(&client));
+    let store_a = LedgerSigningKeyStore::new(Arc::clone(&client), UserSlug::from(1));
+    let store_b = LedgerSigningKeyStore::new(Arc::clone(&client), UserSlug::from(1));
 
     let kid_a = kid.clone();
     let handle_a =
