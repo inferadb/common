@@ -210,43 +210,77 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_healthy_status() {
+    fn healthy_status_reports_healthy_predicate_only() {
         let meta = HealthMetadata::new(Duration::from_millis(5), "memory");
+
         let status = HealthStatus::healthy(meta);
 
         assert!(status.is_healthy());
         assert!(!status.is_degraded());
         assert!(!status.is_unhealthy());
+    }
+
+    #[test]
+    fn healthy_status_has_no_reason() {
+        let meta = HealthMetadata::new(Duration::from_millis(5), "memory");
+
+        let status = HealthStatus::healthy(meta);
+
         assert!(status.reason().is_none());
+    }
+
+    #[test]
+    fn healthy_status_preserves_metadata() {
+        let meta = HealthMetadata::new(Duration::from_millis(5), "memory");
+
+        let status = HealthStatus::healthy(meta);
+
         assert_eq!(status.metadata().backend, "memory");
         assert_eq!(status.metadata().check_duration, Duration::from_millis(5));
     }
 
     #[test]
-    fn test_degraded_status() {
+    fn degraded_status_reports_degraded_predicate_only() {
         let meta = HealthMetadata::new(Duration::from_millis(50), "ledger");
+
         let status = HealthStatus::degraded(meta, "circuit breaker half-open");
 
         assert!(!status.is_healthy());
         assert!(status.is_degraded());
         assert!(!status.is_unhealthy());
-        assert_eq!(status.reason(), Some("circuit breaker half-open"));
-        assert_eq!(status.metadata().backend, "ledger");
     }
 
     #[test]
-    fn test_unhealthy_status() {
+    fn degraded_status_preserves_reason() {
+        let meta = HealthMetadata::new(Duration::from_millis(50), "ledger");
+
+        let status = HealthStatus::degraded(meta, "circuit breaker half-open");
+
+        assert_eq!(status.reason(), Some("circuit breaker half-open"));
+    }
+
+    #[test]
+    fn unhealthy_status_reports_unhealthy_predicate_only() {
         let meta = HealthMetadata::new(Duration::from_millis(1000), "ledger");
+
         let status = HealthStatus::unhealthy(meta, "connection refused");
 
         assert!(!status.is_healthy());
         assert!(!status.is_degraded());
         assert!(status.is_unhealthy());
+    }
+
+    #[test]
+    fn unhealthy_status_preserves_reason() {
+        let meta = HealthMetadata::new(Duration::from_millis(1000), "ledger");
+
+        let status = HealthStatus::unhealthy(meta, "connection refused");
+
         assert_eq!(status.reason(), Some("connection refused"));
     }
 
     #[test]
-    fn test_metadata_with_details() {
+    fn metadata_with_detail_adds_key_value_pairs() {
         let meta = HealthMetadata::new(Duration::from_millis(3), "memory")
             .with_detail("entry_count", "42")
             .with_detail("memory_bytes", "8192");
@@ -257,44 +291,50 @@ mod tests {
     }
 
     #[test]
-    fn test_display_healthy() {
+    fn metadata_with_detail_overwrites_duplicate_key() {
+        let meta = HealthMetadata::new(Duration::from_millis(1), "memory")
+            .with_detail("count", "10")
+            .with_detail("count", "20");
+
+        assert_eq!(meta.details.len(), 1);
+        assert_eq!(meta.details.get("count"), Some(&"20".to_owned()));
+    }
+
+    #[test]
+    fn display_healthy_includes_duration() {
         let meta = HealthMetadata::new(Duration::from_millis(2), "memory");
         let status = HealthStatus::healthy(meta);
+
         assert_eq!(status.to_string(), "healthy (2ms)");
     }
 
     #[test]
-    fn test_display_degraded() {
+    fn display_degraded_includes_reason_and_duration() {
         let meta = HealthMetadata::new(Duration::from_millis(50), "ledger");
         let status = HealthStatus::degraded(meta, "elevated latency");
+
         assert_eq!(status.to_string(), "degraded: elevated latency (50ms)");
     }
 
     #[test]
-    fn test_display_unhealthy() {
+    fn display_unhealthy_includes_reason_and_duration() {
         let meta = HealthMetadata::new(Duration::from_secs(5), "ledger");
         let status = HealthStatus::unhealthy(meta, "timeout");
+
         assert_eq!(status.to_string(), "unhealthy: timeout (5000ms)");
     }
 
     #[test]
-    fn test_health_probe_display() {
+    fn health_probe_display_matches_lowercase_name() {
         assert_eq!(HealthProbe::Liveness.to_string(), "liveness");
         assert_eq!(HealthProbe::Readiness.to_string(), "readiness");
         assert_eq!(HealthProbe::Startup.to_string(), "startup");
     }
 
     #[test]
-    fn test_health_probe_equality() {
+    fn health_probe_equality_distinguishes_variants() {
         assert_eq!(HealthProbe::Liveness, HealthProbe::Liveness);
         assert_ne!(HealthProbe::Liveness, HealthProbe::Readiness);
         assert_ne!(HealthProbe::Readiness, HealthProbe::Startup);
-    }
-
-    #[test]
-    fn test_health_probe_clone_copy() {
-        let probe = HealthProbe::Readiness;
-        let cloned = probe;
-        assert_eq!(probe, cloned);
     }
 }

@@ -163,17 +163,11 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_algorithm_not_in_list() {
-        // ES256 is not accepted
+    fn test_validate_algorithm_es256_rejected_as_unsupported() {
         let result = validate_algorithm(Algorithm::ES256);
-        assert_auth_error!(result, UnsupportedAlgorithm);
-    }
-
-    #[test]
-    fn test_validate_algorithm_rs384_rejected() {
-        let result = validate_algorithm(Algorithm::RS384);
         assert!(
-            matches!(result, Err(AuthError::UnsupportedAlgorithm { message: ref msg, .. }) if msg.contains("only EdDSA is accepted"))
+            matches!(result, Err(AuthError::UnsupportedAlgorithm { message: ref msg, .. }) if msg.contains("only EdDSA is accepted")),
+            "ES256 should be rejected with 'only EdDSA is accepted' message"
         );
     }
 

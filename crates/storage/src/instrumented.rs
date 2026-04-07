@@ -212,16 +212,23 @@ mod tests {
     use crate::{MemoryBackend, to_storage_range};
 
     #[tokio::test]
-    async fn records_get_and_set_metrics() {
+    async fn set_increments_set_count() {
         let backend = InstrumentedBackend::new(MemoryBackend::new());
 
         backend.set(b"key".to_vec(), b"value".to_vec()).await.unwrap();
-        let _ = backend.get(b"key").await.unwrap();
 
         let snap = backend.metrics().snapshot();
         assert_eq!(snap.set_count, 1);
+    }
+
+    #[tokio::test]
+    async fn get_increments_get_count() {
+        let backend = InstrumentedBackend::new(MemoryBackend::new());
+
+        let _ = backend.get(b"key").await.unwrap();
+
+        let snap = backend.metrics().snapshot();
         assert_eq!(snap.get_count, 1);
-        assert!(snap.get_latency_us > 0 || snap.get_count == 1);
     }
 
     #[tokio::test]
@@ -236,16 +243,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn records_range_metrics() {
+    async fn get_range_increments_get_range_count() {
         let backend = InstrumentedBackend::new(MemoryBackend::new());
 
-        backend.set(b"a".to_vec(), b"1".to_vec()).await.unwrap();
-        backend.set(b"b".to_vec(), b"2".to_vec()).await.unwrap();
         let _ = backend.get_range(to_storage_range(b"a".to_vec()..b"z".to_vec())).await.unwrap();
-        backend.clear_range(to_storage_range(b"a".to_vec()..b"z".to_vec())).await.unwrap();
 
         let snap = backend.metrics().snapshot();
         assert_eq!(snap.get_range_count, 1);
+    }
+
+    #[tokio::test]
+    async fn clear_range_increments_clear_range_count() {
+        let backend = InstrumentedBackend::new(MemoryBackend::new());
+
+        backend.clear_range(to_storage_range(b"a".to_vec()..b"z".to_vec())).await.unwrap();
+
+        let snap = backend.metrics().snapshot();
         assert_eq!(snap.clear_range_count, 1);
     }
 
@@ -322,5 +335,32 @@ mod tests {
 
         let snap = backend.metrics().snapshot();
         assert_eq!(snap.set_count, 1);
+    }
+
+    #[tokio::test]
+    async fn compare_and_set_with_ttl_records_cas_and_ttl() {
+        let backend = InstrumentedBackend::new(MemoryBackend::new());
+
+        backend
+            .compare_and_set_with_ttl(b"key", None, b"val".to_vec(), Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        let snap = backend.metrics().snapshot();
+        assert_eq!(snap.cas_count, 1);
+        assert_eq!(snap.ttl_operations, 1);
+    }
+
+    #[tokio::test]
+    async fn clone_creates_fresh_metrics() {
+        let backend = InstrumentedBackend::new(MemoryBackend::new());
+        backend.set(b"key".to_vec(), b"val".to_vec()).await.unwrap();
+
+        let cloned = backend.clone();
+
+        let original_snap = backend.metrics().snapshot();
+        let cloned_snap = cloned.metrics().snapshot();
+        assert_eq!(original_snap.set_count, 1);
+        assert_eq!(cloned_snap.set_count, 0);
     }
 }

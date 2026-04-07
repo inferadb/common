@@ -546,18 +546,36 @@ mod tests {
     use crate::{StorageBackendExt, assert_storage_error, to_storage_range};
 
     #[tokio::test]
-    async fn test_basic_operations() {
+    async fn test_set_then_get_returns_value() {
         let backend = MemoryBackend::new();
 
-        // Set and get
         backend.set(b"key1".to_vec(), b"value1".to_vec()).await.unwrap();
         let value = backend.get(b"key1").await.unwrap();
         assert_eq!(value, Some(Bytes::from("value1")));
+    }
 
-        // Delete
+    #[tokio::test]
+    async fn test_get_nonexistent_key_returns_none() {
+        let backend = MemoryBackend::new();
+        let value = backend.get(b"missing").await.unwrap();
+        assert_eq!(value, None);
+    }
+
+    #[tokio::test]
+    async fn test_delete_removes_key() {
+        let backend = MemoryBackend::new();
+
+        backend.set(b"key1".to_vec(), b"value1".to_vec()).await.unwrap();
         backend.delete(b"key1").await.unwrap();
         let value = backend.get(b"key1").await.unwrap();
         assert_eq!(value, None);
+    }
+
+    #[tokio::test]
+    async fn test_delete_nonexistent_key_is_noop() {
+        let backend = MemoryBackend::new();
+        // Should not error
+        backend.delete(b"ghost").await.unwrap();
     }
 
     #[tokio::test]

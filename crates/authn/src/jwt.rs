@@ -612,18 +612,161 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_jwt_header_malformed() {
+    fn test_decode_jwt_header_malformed_returns_invalid_token_format() {
         let result = decode_jwt_header("not.a.jwt");
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(AuthError::InvalidTokenFormat { .. })),
+            "malformed header should return InvalidTokenFormat, got: {result:?}"
+        );
     }
 
     #[test]
-    fn test_decode_jwt_claims_malformed_parts() {
+    fn test_decode_jwt_claims_two_parts_returns_invalid_token_format() {
         let result = decode_jwt_claims("only.two");
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(AuthError::InvalidTokenFormat { message: ref msg, .. }) if msg.contains("3 parts")),
+            "JWT with 2 parts should be rejected, got: {result:?}"
+        );
+    }
 
+    #[test]
+    fn test_decode_jwt_claims_four_parts_returns_invalid_token_format() {
         let result = decode_jwt_claims("too.many.parts.here");
-        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(AuthError::InvalidTokenFormat { message: ref msg, .. }) if msg.contains("3 parts")),
+            "JWT with 4 parts should be rejected, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_vault_present_returns_value() {
+        let claims = JwtClaims {
+            iss: "https://api.inferadb.com".into(),
+            sub: "client:test".into(),
+            aud: "https://api.inferadb.com/evaluate".into(),
+            exp: 1000000000,
+            iat: 1000000000,
+            nbf: None,
+            jti: None,
+            scope: "vault:read".into(),
+            vault: Some("vault-123".into()),
+            org: None,
+        };
+        assert_eq!(claims.vault(), Some("vault-123"));
+    }
+
+    #[test]
+    fn test_vault_absent_returns_none() {
+        let claims = JwtClaims {
+            iss: "https://api.inferadb.com".into(),
+            sub: "client:test".into(),
+            aud: "https://api.inferadb.com/evaluate".into(),
+            exp: 1000000000,
+            iat: 1000000000,
+            nbf: None,
+            jti: None,
+            scope: "vault:read".into(),
+            vault: None,
+            org: None,
+        };
+        assert_eq!(claims.vault(), None);
+    }
+
+    #[test]
+    fn test_parse_scopes_whitespace_only_returns_empty() {
+        let claims = JwtClaims {
+            iss: "test".into(),
+            sub: "test".into(),
+            aud: "test".into(),
+            exp: 1000000000,
+            iat: 1000000000,
+            nbf: None,
+            jti: None,
+            scope: "   ".into(),
+            vault: None,
+            org: None,
+        };
+        assert!(claims.parse_scopes().is_empty());
+    }
+
+    #[test]
+    fn test_validate_claims_future_iat_returns_invalid_token_format() {
+        let now = Utc::now().timestamp() as u64;
+        let claims = make_claims(now + 600, now + 7200);
+        let result = validate_claims(&claims, None, Some(DEFAULT_MAX_IAT_AGE));
+        assert!(
+            matches!(result, Err(AuthError::InvalidTokenFormat { message: ref msg, .. }) if msg.contains("future")),
+            "future iat should be rejected, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_claims_audience_mismatch_returns_invalid_audience() {
+        let now = Utc::now().timestamp() as u64;
+        let claims = make_claims(now, now + 3600);
+        let result =
+            validate_claims(&claims, Some("https://wrong.example.com"), Some(DEFAULT_MAX_IAT_AGE));
+        assert!(
+            matches!(result, Err(AuthError::InvalidAudience { .. })),
+            "audience mismatch should return InvalidAudience, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_validate_claims_audience_match_accepted() {
+        let now = Utc::now().timestamp() as u64;
+        let claims = make_claims(now, now + 3600);
+        let result = validate_claims(
+            &claims,
+            Some("https://api.inferadb.com/evaluate"),
+            Some(DEFAULT_MAX_IAT_AGE),
+        );
+        assert!(result.is_ok(), "matching audience should be accepted, got: {result:?}");
+    }
+
+    #[test]
+    fn test_decode_jwt_claims_empty_iss_returns_missing_claim() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(
+            br#"{"iss":"","sub":"test","aud":"test","exp":9999999999,"iat":1,"scope":"x"}"#,
+        );
+        let token = format!("{header}.{payload}.sig");
+        let result = decode_jwt_claims(&token);
+        assert!(
+            matches!(result, Err(AuthError::MissingClaim { ref claim, .. }) if claim == "iss"),
+            "empty iss should return MissingClaim, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_decode_jwt_claims_empty_sub_returns_missing_claim() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(
+            br#"{"iss":"https://api.inferadb.com","sub":"","aud":"test","exp":9999999999,"iat":1,"scope":"x"}"#,
+        );
+        let token = format!("{header}.{payload}.sig");
+        let result = decode_jwt_claims(&token);
+        assert!(
+            matches!(result, Err(AuthError::MissingClaim { ref claim, .. }) if claim == "sub"),
+            "empty sub should return MissingClaim, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_decode_jwt_claims_empty_aud_returns_missing_claim() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(
+            br#"{"iss":"https://api.inferadb.com","sub":"client:test","aud":"","exp":9999999999,"iat":1,"scope":"x"}"#,
+        );
+        let token = format!("{header}.{payload}.sig");
+        let result = decode_jwt_claims(&token);
+        assert!(
+            matches!(result, Err(AuthError::MissingClaim { ref claim, .. }) if claim == "aud"),
+            "empty aud should return MissingClaim, got: {result:?}"
+        );
     }
 
     // ========== validate_claims max_iat_age tests ==========

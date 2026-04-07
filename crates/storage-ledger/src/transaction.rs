@@ -351,7 +351,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_transaction_with_eventual_consistency() {
+    async fn test_transaction_get_eventual_consistency_reads_pending_then_backend() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let mut txn = create_test_transaction(&server, ReadConsistency::Eventual).await;
 
@@ -365,5 +365,59 @@ mod tests {
         // Read a nonexistent key (should use eventual consistency do_read path)
         let value = txn.get(b"nonexistent").await.expect("get");
         assert!(value.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_transaction_set_with_ttl_buffers_value() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let mut txn = create_test_transaction(&server, ReadConsistency::Linearizable).await;
+
+        txn.set_with_ttl(b"ttl-key".to_vec(), b"ttl-value".to_vec(), Duration::from_secs(60));
+
+        // Read-your-writes: should see the buffered value
+        let value = txn.get(b"ttl-key").await.expect("get");
+        assert_eq!(value.map(|b| b.to_vec()), Some(b"ttl-value".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_transaction_compare_and_set_buffers_new_value() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let mut txn = create_test_transaction(&server, ReadConsistency::Linearizable).await;
+
+        txn.compare_and_set(b"cas-key".to_vec(), None, b"cas-value".to_vec()).expect("CAS buffer");
+
+        // Read-your-writes: CAS should expose the speculative new_value
+        let value = txn.get(b"cas-key").await.expect("get");
+        assert_eq!(value.map(|b| b.to_vec()), Some(b"cas-value".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_transaction_compare_and_set_with_ttl_buffers_new_value() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let mut txn = create_test_transaction(&server, ReadConsistency::Linearizable).await;
+
+        txn.compare_and_set_with_ttl(
+            b"cas-ttl-key".to_vec(),
+            None,
+            b"cas-ttl-value".to_vec(),
+            Duration::from_secs(120),
+        )
+        .expect("CAS with TTL buffer");
+
+        // Read-your-writes: should see the speculative new_value
+        let value = txn.get(b"cas-ttl-key").await.expect("get");
+        assert_eq!(value.map(|b| b.to_vec()), Some(b"cas-ttl-value".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_transaction_debug_cas_count() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let mut txn = create_test_transaction(&server, ReadConsistency::Linearizable).await;
+
+        txn.compare_and_set(b"a".to_vec(), None, b"v".to_vec()).expect("CAS");
+        txn.compare_and_set(b"b".to_vec(), Some(b"old".to_vec()), b"new".to_vec()).expect("CAS");
+
+        let debug_str = format!("{:?}", txn);
+        assert!(debug_str.contains("pending_cas: 2"));
     }
 }

@@ -119,10 +119,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_test_client_config_with_id() {
+    async fn test_client_config_with_id_produces_functional_client() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let config = test_client_config_with_id(&server, "custom-client");
-        // Just verify it builds without panic
-        let _ = config;
+        let backend_config = LedgerBackendConfig::builder()
+            .client(config)
+            .caller(1)
+            .organization(1)
+            .vault(VaultSlug::from(0))
+            .build()
+            .expect("valid backend config");
+
+        let backend = LedgerBackend::new(backend_config).await.expect("backend");
+        backend.set(b"key".to_vec(), b"val".to_vec()).await.expect("set");
+        let val = backend.get(b"key").await.expect("get");
+        assert_eq!(val.map(|b| b.to_vec()), Some(b"val".to_vec()));
     }
 }

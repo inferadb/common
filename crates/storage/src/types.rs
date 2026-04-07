@@ -143,17 +143,10 @@ mod tests {
     }
 
     #[test]
-    fn key_value_clone_and_eq() {
-        let kv1 = KeyValue::new(Bytes::from("k"), Bytes::from("v"));
-        let kv2 = kv1.clone();
-        assert_eq!(kv1, kv2);
-    }
-
-    #[test]
-    fn key_value_debug() {
-        let kv = KeyValue::new(Bytes::from("k"), Bytes::from("v"));
-        let debug = format!("{kv:?}");
-        assert!(debug.contains("KeyValue"));
+    fn test_key_value_ne_when_values_differ() {
+        let kv1 = KeyValue::new(Bytes::from("k"), Bytes::from("v1"));
+        let kv2 = KeyValue::new(Bytes::from("k"), Bytes::from("v2"));
+        assert_ne!(kv1, kv2);
     }
 
     #[test]

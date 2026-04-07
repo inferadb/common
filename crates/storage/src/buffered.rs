@@ -633,6 +633,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_buffer_lookup_last_write_wins() {
+        let inner = MemoryBackend::new();
+        let buffered = BufferedBackend::new(inner);
+
+        // set -> delete -> set same key; last set should win
+        buffered.set(b"key".to_vec(), b"v1".to_vec()).await.unwrap();
+        buffered.delete(b"key").await.unwrap();
+        buffered.set(b"key".to_vec(), b"v2".to_vec()).await.unwrap();
+
+        let val = buffered.get(b"key").await.unwrap();
+        assert_eq!(val, Some(Bytes::from("v2")), "last set should win over earlier delete");
+    }
+
+    #[tokio::test]
+    async fn test_delete_after_set_returns_none() {
+        let inner = MemoryBackend::new();
+        let buffered = BufferedBackend::new(inner);
+
+        buffered.set(b"key".to_vec(), b"v1".to_vec()).await.unwrap();
+        buffered.delete(b"key").await.unwrap();
+
+        let val = buffered.get(b"key").await.unwrap();
+        assert_eq!(val, None, "delete after set should return None");
+    }
+
+    #[tokio::test]
     async fn clone_shares_buffer() {
         let inner = MemoryBackend::new();
         let buffered = BufferedBackend::new(inner.clone());

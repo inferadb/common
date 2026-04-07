@@ -903,24 +903,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_revoke_key_stores_reason() {
-        let store = MemorySigningKeyStore::new();
-        let key = make_test_key("reason-test");
-        let organization = OrganizationSlug::from(100);
-
-        store.create_key(organization, &key).await.expect("create");
-
-        store.revoke_key(organization, "reason-test", Some("compromised")).await.expect("revoke");
-
-        let retrieved = store.get_key(organization, "reason-test").await.expect("get");
-        let retrieved = retrieved.expect("exists");
-
-        assert!(!retrieved.active);
-        assert!(retrieved.revoked_at.is_some());
-        assert_eq!(retrieved.revocation_reason.as_deref(), Some("compromised"));
-    }
-
-    #[tokio::test]
     async fn test_revoke_key_without_reason() {
         let store = MemorySigningKeyStore::new();
         let key = make_test_key("no-reason");

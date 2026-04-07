@@ -416,18 +416,27 @@ mod tests {
     }
 
     #[test]
-    fn policy_constructors() {
-        let hourly = RateLimitPolicy::per_hour(100).unwrap();
-        assert_eq!(hourly.max_requests, 100);
-        assert_eq!(hourly.window.seconds(), 3600);
+    fn policy_per_hour_sets_max_requests_and_window() {
+        let policy = RateLimitPolicy::per_hour(100).unwrap();
 
-        let daily = RateLimitPolicy::per_day(5).unwrap();
-        assert_eq!(daily.max_requests, 5);
-        assert_eq!(daily.window.seconds(), 86400);
+        assert_eq!(policy.max_requests, 100);
+        assert_eq!(policy.window.seconds(), 3600);
+    }
 
-        let custom = RateLimitPolicy::custom(50, Duration::from_secs(300)).unwrap();
-        assert_eq!(custom.max_requests, 50);
-        assert_eq!(custom.window.seconds(), 300);
+    #[test]
+    fn policy_per_day_sets_max_requests_and_window() {
+        let policy = RateLimitPolicy::per_day(5).unwrap();
+
+        assert_eq!(policy.max_requests, 5);
+        assert_eq!(policy.window.seconds(), 86400);
+    }
+
+    #[test]
+    fn policy_custom_sets_max_requests_and_window() {
+        let policy = RateLimitPolicy::custom(50, Duration::from_secs(300)).unwrap();
+
+        assert_eq!(policy.max_requests, 50);
+        assert_eq!(policy.window.seconds(), 300);
     }
 
     #[test]
@@ -457,13 +466,6 @@ mod tests {
         let time = UNIX_EPOCH + Duration::from_secs(100);
         let until = window.seconds_until_reset(time);
         assert_eq!(until, 10);
-    }
-
-    #[test]
-    fn custom_window_duration() {
-        let policy = RateLimitPolicy::custom(10, Duration::from_secs(120)).unwrap();
-        assert_eq!(policy.window.seconds(), 120);
-        assert_eq!(policy.max_requests, 10);
     }
 
     #[test]
@@ -636,7 +638,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn custom_window_rate_limiting() {
+    async fn check_with_custom_window_enforces_limit() {
         let limiter = AppRateLimiter::new(MemoryBackend::new());
         let policy = RateLimitPolicy::custom(3, Duration::from_secs(60)).unwrap();
 
@@ -647,5 +649,77 @@ mod tests {
 
         let outcome = limiter.check("test", "user1", &policy).await.unwrap();
         assert!(matches!(outcome, RateLimitOutcome::Limited { .. }));
+    }
+
+    #[tokio::test]
+    async fn check_response_allowed_returns_flat_response() {
+        let limiter = AppRateLimiter::new(MemoryBackend::new());
+        let policy = RateLimitPolicy::per_hour(5).unwrap();
+
+        let response = limiter.check_response("test", "user1", &policy).await.unwrap();
+
+        assert!(response.allowed);
+        assert_eq!(response.remaining, 4);
+        assert!(response.reset_after_secs > 0);
+        assert!(response.reset_after_secs <= 3600);
+    }
+
+    #[tokio::test]
+    async fn check_response_limited_returns_zero_remaining() {
+        let limiter = AppRateLimiter::new(MemoryBackend::new());
+        let policy = RateLimitPolicy::per_hour(1).unwrap();
+
+        let _ = limiter.check_response("test", "user1", &policy).await.unwrap();
+        let response = limiter.check_response("test", "user1", &policy).await.unwrap();
+
+        assert!(!response.allowed);
+        assert_eq!(response.remaining, 0);
+        assert!(response.reset_after_secs > 0);
+    }
+
+    #[test]
+    fn rate_limit_response_from_allowed_outcome() {
+        let outcome = RateLimitOutcome::Allowed { remaining: 42, reset_after_secs: 1800 };
+
+        let response = RateLimitResponse::from(outcome);
+
+        assert!(response.allowed);
+        assert_eq!(response.remaining, 42);
+        assert_eq!(response.reset_after_secs, 1800);
+    }
+
+    #[test]
+    fn rate_limit_response_from_limited_outcome() {
+        let outcome = RateLimitOutcome::Limited { retry_after_secs: 600 };
+
+        let response = RateLimitResponse::from(outcome);
+
+        assert!(!response.allowed);
+        assert_eq!(response.remaining, 0);
+        assert_eq!(response.reset_after_secs, 600);
+    }
+
+    #[tokio::test]
+    async fn storage_accessor_returns_backend_reference() {
+        let backend = MemoryBackend::new();
+        let limiter = AppRateLimiter::new(backend);
+
+        let _storage: &MemoryBackend = limiter.storage();
+    }
+
+    #[test]
+    fn counter_key_includes_category_identifier_and_window() {
+        let key =
+            AppRateLimiter::<MemoryBackend>::counter_key("login_ip", "192.168.1.1", 1704067200);
+
+        let key_str = String::from_utf8(key).unwrap();
+        assert_eq!(key_str, "rate_limit:login_ip:192.168.1.1:1704067200");
+    }
+
+    #[test]
+    fn counter_parse_rejects_empty_bytes() {
+        let err = AppRateLimiter::<MemoryBackend>::parse_counter(&[]).unwrap_err();
+
+        assert!(matches!(err, StorageError::Internal { .. }));
     }
 }

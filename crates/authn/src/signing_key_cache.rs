@@ -1417,6 +1417,25 @@ mod tests {
         assert!(!is_transient_error(&error));
     }
 
+    #[test]
+    fn test_is_transient_error_rate_limit_excluded() {
+        // Rate limiting is intentionally NOT considered transient for fallback purposes.
+        // Unlike StorageError::is_transient() which includes rate limits, the cache's
+        // is_transient_error() excludes them because the backend is reachable but
+        // rejecting requests — falling back to stale cache would mask the signal.
+        let error = StorageError::rate_limit_exceeded(Duration::from_millis(100));
+        assert!(
+            !is_transient_error(&error),
+            "rate limit should NOT be treated as transient for fallback"
+        );
+    }
+
+    #[test]
+    fn test_is_transient_error_conflict() {
+        let error = StorageError::conflict();
+        assert!(!is_transient_error(&error));
+    }
+
     #[tokio::test]
     async fn test_invalidate_removes_from_fallback() {
         let store = Arc::new(FailingStore::new());

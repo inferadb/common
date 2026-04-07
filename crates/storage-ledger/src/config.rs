@@ -501,15 +501,15 @@ mod tests {
     }
 
     #[test]
-    fn ledger_config_client_accessor() {
+    fn ledger_config_caller_accessor_returns_configured_value() {
         let config = LedgerBackendConfig::builder()
             .client(test_client())
-            .caller(1)
+            .caller(42)
             .organization(1)
             .build()
             .unwrap();
 
-        let _client = config.client();
+        assert_eq!(config.caller(), inferadb_ledger_sdk::UserSlug::from(42));
     }
 
     #[test]
@@ -603,6 +603,60 @@ mod tests {
         assert_eq!(tc.read_timeout(), Duration::from_secs(2));
         assert_eq!(tc.write_timeout(), Duration::from_secs(4));
         assert_eq!(tc.list_timeout(), Duration::from_secs(15));
+    }
+
+    // ── Optional field accessors ──────────────────────────────────
+
+    #[test]
+    fn ledger_config_size_limits_none_by_default() {
+        let config = LedgerBackendConfig::builder()
+            .client(test_client())
+            .caller(1)
+            .organization(1)
+            .build()
+            .unwrap();
+
+        assert!(config.size_limits().is_none());
+    }
+
+    #[test]
+    fn ledger_config_size_limits_when_set() {
+        let limits = SizeLimits::new(1024, 65536).unwrap();
+        let config = LedgerBackendConfig::builder()
+            .client(test_client())
+            .caller(1)
+            .organization(1)
+            .size_limits(limits)
+            .build()
+            .unwrap();
+
+        assert!(config.size_limits().is_some());
+    }
+
+    #[test]
+    fn ledger_config_cancellation_token_none_by_default() {
+        let config = LedgerBackendConfig::builder()
+            .client(test_client())
+            .caller(1)
+            .organization(1)
+            .build()
+            .unwrap();
+
+        assert!(config.cancellation_token().is_none());
+    }
+
+    #[test]
+    fn ledger_config_cancellation_token_when_set() {
+        let token = tokio_util::sync::CancellationToken::new();
+        let config = LedgerBackendConfig::builder()
+            .client(test_client())
+            .caller(1)
+            .organization(1)
+            .cancellation_token(token)
+            .build()
+            .unwrap();
+
+        assert!(config.cancellation_token().is_some());
     }
 
     // ── Trace propagation ──────────────────────────────────────────

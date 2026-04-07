@@ -124,29 +124,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_limits() {
+    fn test_size_limits_default_values_match_constants() {
         let limits = SizeLimits::default();
         assert_eq!(limits.max_key_size(), DEFAULT_MAX_KEY_SIZE);
         assert_eq!(limits.max_value_size(), DEFAULT_MAX_VALUE_SIZE);
     }
 
     #[test]
-    fn custom_limits() {
+    fn test_size_limits_new_custom_values_stored() {
         let limits = SizeLimits::new(64, 1024).unwrap();
         assert_eq!(limits.max_key_size(), 64);
         assert_eq!(limits.max_value_size(), 1024);
     }
 
     #[test]
-    fn zero_key_size_rejected() {
+    fn test_size_limits_new_zero_key_size_returns_config_error() {
         let err = SizeLimits::new(0, 1024).unwrap_err();
         assert!(err.to_string().contains("max_key_size"), "error should name the field: {err}");
     }
 
     #[test]
-    fn zero_value_size_rejected() {
+    fn test_size_limits_new_zero_value_size_returns_config_error() {
         let err = SizeLimits::new(1, 0).unwrap_err();
         assert!(err.to_string().contains("max_value_size"), "error should name the field: {err}");
+    }
+
+    #[test]
+    fn test_size_limits_equality_same_values() {
+        let a = SizeLimits::new(10, 20).unwrap();
+        let b = SizeLimits::new(10, 20).unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_size_limits_equality_different_values() {
+        let a = SizeLimits::new(10, 20).unwrap();
+        let b = SizeLimits::new(20, 40).unwrap();
+        assert_ne!(a, b);
     }
 
     #[rstest]
@@ -156,7 +170,7 @@ mod tests {
     #[case::value_exceeds(10, 20, 5, 21, false)]
     #[case::key_one_byte_over(5, 10, 6, 10, false)]
     #[case::value_one_byte_over(5, 10, 5, 11, false)]
-    fn validate_sizes_parametric(
+    fn test_validate_sizes_boundary_conditions(
         #[case] max_key: usize,
         #[case] max_val: usize,
         #[case] key_size: usize,
@@ -169,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_key_exceeds_limit_error_details() {
+    fn test_validate_sizes_key_exceeds_limit_returns_error_with_details() {
         let limits = SizeLimits::new(10, 20).unwrap();
         let err = validate_sizes(&[0u8; 11], &[0u8; 5], &limits).unwrap_err();
         assert!(matches!(
@@ -180,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_value_exceeds_limit_error_details() {
+    fn test_validate_sizes_value_exceeds_limit_returns_error_with_details() {
         let limits = SizeLimits::new(10, 20).unwrap();
         let err = validate_sizes(&[0u8; 5], &[0u8; 21], &limits).unwrap_err();
         assert!(matches!(
@@ -190,11 +204,37 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_validate_sizes_key_checked_before_value() {
+        let limits = SizeLimits::new(5, 5).unwrap();
+        // Both key and value exceed limits — key error should be returned first
+        let err = validate_sizes(&[0u8; 10], &[0u8; 10], &limits).unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::SizeLimitExceeded { kind, .. }
+            if kind == "key"
+        ));
+    }
+
     #[rstest]
     #[case::at_limit(10, true)]
     #[case::over_limit(11, false)]
-    fn validate_key_size_parametric(#[case] key_size: usize, #[case] should_pass: bool) {
+    fn test_validate_key_size_boundary_conditions(
+        #[case] key_size: usize,
+        #[case] should_pass: bool,
+    ) {
         let limits = SizeLimits::new(10, 20).unwrap();
         assert_eq!(validate_key_size(&vec![0u8; key_size], &limits).is_ok(), should_pass);
+    }
+
+    #[test]
+    fn test_validate_key_size_exceeds_limit_returns_error_with_details() {
+        let limits = SizeLimits::new(10, 20).unwrap();
+        let err = validate_key_size(&[0u8; 15], &limits).unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::SizeLimitExceeded { kind, actual: 15, limit: 10, .. }
+            if kind == "key"
+        ));
     }
 }

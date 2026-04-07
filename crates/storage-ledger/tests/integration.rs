@@ -590,6 +590,40 @@ mod signing_key_store {
     }
 
     #[tokio::test]
+    async fn test_get_keys_batch_read() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+        let organization = OrganizationSlug::from(100);
+
+        let key1 = create_test_key("batch-key-1");
+        let key2 = create_test_key("batch-key-2");
+        store.create_key(organization, &key1).await.expect("create key1");
+        store.create_key(organization, &key2).await.expect("create key2");
+
+        let results = store
+            .get_keys(organization, &["batch-key-1", "batch-key-2", "nonexistent"])
+            .await
+            .expect("get_keys should succeed");
+
+        assert_eq!(results.len(), 3);
+        assert!(results[0].is_some());
+        assert_eq!(results[0].as_ref().unwrap().kid, "batch-key-1");
+        assert!(results[1].is_some());
+        assert_eq!(results[1].as_ref().unwrap().kid, "batch-key-2");
+        assert!(results[2].is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_keys_empty_batch() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+        let organization = OrganizationSlug::from(100);
+
+        let results = store.get_keys(organization, &[]).await.expect("get_keys empty");
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
     async fn test_list_active_keys() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
@@ -816,12 +850,11 @@ mod signing_key_store {
     }
 
     #[tokio::test]
-    async fn test_store_client_accessor() {
+    async fn test_store_without_metrics_returns_none() {
         let server = MockLedgerServer::start().await.expect("mock server");
         let store = create_signing_key_store(&server).await;
 
-        // Should be able to access the client
-        let _client = store.client();
+        assert!(store.metrics().is_none(), "default store should have no metrics");
     }
 
     #[tokio::test]
@@ -1085,6 +1118,71 @@ mod signing_key_store {
         let retrieved = store.get_key(organization, "cas-delete").await.expect("get");
         assert!(retrieved.is_none(), "key should be deleted");
     }
+
+    #[tokio::test]
+    async fn test_store_with_cas_retry_config() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let config = ClientConfig::builder()
+            .servers(ServerSource::from_static([server.endpoint()]))
+            .client_id("cas-config-test")
+            .build()
+            .expect("valid config");
+
+        let client = Arc::new(LedgerClient::new(config).await.expect("client"));
+        let cas_config = inferadb_common_storage::CasRetryConfig::builder().max_retries(5).build();
+        let store =
+            LedgerSigningKeyStore::new(client, UserSlug::from(1)).with_cas_retry_config(cas_config);
+
+        // Verify the store is functional with custom CAS config
+        let key = create_test_key("cas-config-key");
+        store.create_key(OrganizationSlug::from(100), &key).await.expect("create");
+        let retrieved =
+            store.get_key(OrganizationSlug::from(100), "cas-config-key").await.expect("get");
+        assert!(retrieved.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_store_with_cancellation_token() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let config = ClientConfig::builder()
+            .servers(ServerSource::from_static([server.endpoint()]))
+            .client_id("cancel-token-test")
+            .build()
+            .expect("valid config");
+
+        let client = Arc::new(LedgerClient::new(config).await.expect("client"));
+        let token = tokio_util::sync::CancellationToken::new();
+        let store = LedgerSigningKeyStore::new(client, UserSlug::from(1))
+            .with_cancellation_token(token.clone());
+
+        // Operations work before cancellation
+        let key = create_test_key("cancel-key");
+        store.create_key(OrganizationSlug::from(100), &key).await.expect("create");
+        let retrieved =
+            store.get_key(OrganizationSlug::from(100), "cancel-key").await.expect("get");
+        assert!(retrieved.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_revoke_key_without_reason() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let store = create_signing_key_store(&server).await;
+        let organization = OrganizationSlug::from(100);
+
+        let key = create_test_key("revoke-no-reason");
+        store.create_key(organization, &key).await.expect("create");
+
+        store.revoke_key(organization, "revoke-no-reason", None).await.expect("revoke");
+
+        let retrieved = store
+            .get_key(organization, "revoke-no-reason")
+            .await
+            .expect("get")
+            .expect("key exists");
+        assert!(retrieved.revoked_at.is_some());
+        assert!(retrieved.revocation_reason.is_none());
+        assert!(!retrieved.active);
+    }
 }
 
 // ============================================================================
@@ -1094,7 +1192,8 @@ mod signing_key_store {
 mod backend_tests {
     use std::sync::Arc;
 
-    use inferadb_common_storage::{OrganizationSlug, StorageBackend, VaultSlug};
+    use bytes::Bytes;
+    use inferadb_common_storage::{MetricsCollector, OrganizationSlug, StorageBackend, VaultSlug};
     use inferadb_common_storage_ledger::{LedgerBackend, LedgerBackendConfig};
     use inferadb_ledger_sdk::{
         ClientConfig, LedgerClient, ReadConsistency, ServerSource, UserSlug, mock::MockLedgerServer,
@@ -1204,6 +1303,61 @@ mod backend_tests {
             .expect("valid config");
 
         let backend = LedgerBackend::new(config).await.expect("backend");
+
+        assert_eq!(backend.vault(), None);
+    }
+
+    #[tokio::test]
+    async fn test_backend_storage_metrics_records_operations() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+        let config = LedgerBackendConfig::builder()
+            .client(test_client(&server, "test-metrics"))
+            .caller(1)
+            .organization(1)
+            .build()
+            .expect("valid config");
+
+        let backend = LedgerBackend::new(config).await.expect("backend");
+
+        backend.set(b"k".to_vec(), b"v".to_vec()).await.expect("set");
+        backend.get(b"k").await.expect("get");
+
+        let snapshot = backend.metrics().snapshot();
+        assert!(snapshot.total_operations() >= 2, "metrics should record at least 2 operations");
+    }
+
+    #[tokio::test]
+    async fn test_backend_from_endpoint() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+
+        let backend = LedgerBackend::from_endpoint(
+            server.endpoint(),
+            "from-endpoint-client",
+            1u64,
+            1u64,
+            Some(0u64),
+        )
+        .await
+        .expect("from_endpoint should succeed");
+
+        backend.set(b"ep-key".to_vec(), b"ep-value".to_vec()).await.expect("set");
+        let val = backend.get(b"ep-key").await.expect("get");
+        assert_eq!(val, Some(Bytes::from("ep-value")));
+    }
+
+    #[tokio::test]
+    async fn test_backend_from_endpoint_without_vault() {
+        let server = MockLedgerServer::start().await.expect("mock server");
+
+        let backend = LedgerBackend::from_endpoint(
+            server.endpoint(),
+            "from-endpoint-no-vault",
+            1u64,
+            1u64,
+            None::<u64>,
+        )
+        .await
+        .expect("from_endpoint without vault should succeed");
 
         assert_eq!(backend.vault(), None);
     }
@@ -1403,6 +1557,91 @@ async fn test_clear_range_with_pagination() {
         .await
         .expect("get_range");
     assert!(results.is_empty(), "all keys should be deleted after clear_range");
+}
+
+// ============================================================================
+// Compare-and-Set with TTL Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_compare_and_set_with_ttl_succeeds() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    // Set initial value
+    backend.set(b"cas-ttl".to_vec(), b"original".to_vec()).await.expect("set");
+
+    // CAS with TTL
+    backend
+        .compare_and_set_with_ttl(
+            b"cas-ttl",
+            Some(b"original"),
+            b"updated".to_vec(),
+            Duration::from_secs(3600),
+        )
+        .await
+        .expect("compare_and_set_with_ttl should succeed");
+
+    let result = backend.get(b"cas-ttl").await.expect("get");
+    assert_eq!(result, Some(Bytes::from("updated")));
+}
+
+#[tokio::test]
+async fn test_compare_and_set_with_ttl_insert_not_exists() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    // CAS insert (expected: None) with TTL
+    backend
+        .compare_and_set_with_ttl(
+            b"new-cas-ttl",
+            None,
+            b"created".to_vec(),
+            Duration::from_secs(60),
+        )
+        .await
+        .expect("CAS insert with TTL should succeed on mock");
+
+    let result = backend.get(b"new-cas-ttl").await.expect("get");
+    assert_eq!(result, Some(Bytes::from("created")));
+}
+
+// ============================================================================
+// Transaction set_with_ttl Integration Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_transaction_set_with_ttl_commits_successfully() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    let mut txn = backend.transaction().await.expect("transaction");
+    txn.set_with_ttl(b"txn-ttl".to_vec(), b"ephemeral".to_vec(), Duration::from_secs(300));
+    txn.commit().await.expect("commit with TTL operations");
+
+    let result = backend.get(b"txn-ttl").await.expect("get");
+    assert_eq!(result, Some(Bytes::from("ephemeral")));
+}
+
+#[tokio::test]
+async fn test_transaction_compare_and_set_with_ttl_commits_successfully() {
+    let server = MockLedgerServer::start().await.expect("mock server start");
+    let backend = create_test_backend(&server).await;
+
+    backend.set(b"txn-cas-ttl".to_vec(), b"old".to_vec()).await.expect("set");
+
+    let mut txn = backend.transaction().await.expect("transaction");
+    txn.compare_and_set_with_ttl(
+        b"txn-cas-ttl".to_vec(),
+        Some(b"old".to_vec()),
+        b"new-with-ttl".to_vec(),
+        Duration::from_secs(600),
+    )
+    .expect("CAS with TTL buffer");
+    txn.commit().await.expect("commit CAS with TTL");
+
+    let result = backend.get(b"txn-cas-ttl").await.expect("get");
+    assert_eq!(result, Some(Bytes::from("new-with-ttl")));
 }
 
 // ============================================================================

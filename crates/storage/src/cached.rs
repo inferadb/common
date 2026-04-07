@@ -431,18 +431,111 @@ mod tests {
         assert_eq!(v, Some(Bytes::from("v2")));
     }
 
-    #[tokio::test]
-    async fn config_validation() {
-        // Zero entries
+    #[test]
+    fn test_config_zero_max_entries_rejected() {
         let result = CacheConfig::builder().max_entries(0).build();
         assert!(result.is_err());
+    }
 
-        // TTL too short
+    #[test]
+    fn test_config_ttl_below_minimum_rejected() {
         let result = CacheConfig::builder().ttl(Duration::from_millis(500)).build();
         assert!(result.is_err());
+    }
 
-        // Valid
+    #[test]
+    fn test_config_minimum_valid_values_accepted() {
         let result = CacheConfig::builder().max_entries(1).ttl(Duration::from_secs(1)).build();
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_config_defaults_are_valid() {
+        let config = CacheConfig::builder().build().unwrap();
+        assert!(config.enabled());
+        assert!(config.max_entries() > 0);
+        assert!(config.ttl() >= Duration::from_secs(1));
+    }
+
+    #[test]
+    fn test_config_disabled_reports_not_enabled() {
+        let config = CacheConfig::disabled();
+        assert!(!config.enabled());
+    }
+
+    #[tokio::test]
+    async fn test_set_with_ttl_invalidates_cache() {
+        let inner = MemoryBackend::new();
+        let cached = CachedBackend::new(inner, test_config());
+
+        cached.set(b"key".to_vec(), b"v1".to_vec()).await.unwrap();
+        cached.get(b"key").await.unwrap(); // populate cache
+
+        cached
+            .set_with_ttl(b"key".to_vec(), b"v2".to_vec(), Duration::from_secs(60))
+            .await
+            .unwrap();
+        let v = cached.get(b"key").await.unwrap();
+        assert_eq!(v, Some(Bytes::from("v2")));
+    }
+
+    #[tokio::test]
+    async fn test_compare_and_set_with_ttl_invalidates_cache() {
+        let inner = MemoryBackend::new();
+        let cached = CachedBackend::new(inner, test_config());
+
+        cached.set(b"key".to_vec(), b"v1".to_vec()).await.unwrap();
+        cached.get(b"key").await.unwrap(); // populate cache
+
+        cached
+            .compare_and_set_with_ttl(b"key", Some(b"v1"), b"v2".to_vec(), Duration::from_secs(60))
+            .await
+            .unwrap();
+        let v = cached.get(b"key").await.unwrap();
+        assert_eq!(v, Some(Bytes::from("v2")));
+    }
+
+    #[tokio::test]
+    async fn test_cache_stats_reflects_entries() {
+        let inner = MemoryBackend::new();
+        let cached = CachedBackend::new(inner, test_config());
+
+        let (count, max) = cached.cache_stats();
+        assert_eq!(count, 0);
+        assert_eq!(max, 100);
+
+        cached.set(b"k1".to_vec(), b"v1".to_vec()).await.unwrap();
+        cached.get(b"k1").await.unwrap(); // populate cache
+
+        // moka may not immediately reflect the insert, but entry_count should
+        // eventually be >= 1. For synchronous assertion, verify max.
+        let (_, max) = cached.cache_stats();
+        assert_eq!(max, 100);
+    }
+
+    #[tokio::test]
+    async fn test_inner_returns_underlying_backend() {
+        let inner = MemoryBackend::new();
+        inner.set(b"key".to_vec(), b"val".to_vec()).await.unwrap();
+
+        let cached = CachedBackend::new(inner, test_config());
+        let val = cached.inner().get(b"key").await.unwrap();
+        assert_eq!(val, Some(Bytes::from("val")));
+    }
+
+    #[tokio::test]
+    async fn test_clear_cache_evicts_all_entries() {
+        let inner = MemoryBackend::new();
+        let cached = CachedBackend::new(inner.clone(), test_config());
+
+        cached.set(b"key".to_vec(), b"v1".to_vec()).await.unwrap();
+        cached.get(b"key").await.unwrap(); // populate cache
+
+        cached.clear_cache();
+
+        // Mutate inner directly, then read through cache to confirm miss
+        inner.set(b"key".to_vec(), b"v2".to_vec()).await.unwrap();
+        let v = cached.get(b"key").await.unwrap();
+        assert_eq!(v, Some(Bytes::from("v2")), "cache should be cleared");
     }
 }

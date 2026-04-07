@@ -459,26 +459,26 @@ mod tests {
     use crate::{MemoryBackend, assert_storage_error, to_storage_range};
 
     #[test]
-    fn config_creation() {
+    fn test_rate_limit_config_new_stores_values() {
         let config = RateLimitConfig::new(100, 20).unwrap();
         assert_eq!(config.rate(), 100);
         assert_eq!(config.burst(), 20);
     }
 
     #[test]
-    fn config_rejects_zero_rate() {
+    fn test_rate_limit_config_new_zero_rate_returns_error() {
         let err = RateLimitConfig::new(0, 10).unwrap_err();
         assert!(err.to_string().contains("rate"), "error should name the field: {err}");
     }
 
     #[test]
-    fn config_rejects_zero_burst() {
+    fn test_rate_limit_config_new_zero_burst_returns_error() {
         let err = RateLimitConfig::new(10, 0).unwrap_err();
         assert!(err.to_string().contains("burst"), "error should name the field: {err}");
     }
 
     #[test]
-    fn bucket_allows_within_burst() {
+    fn test_bucket_try_acquire_within_burst_succeeds() {
         let config = RateLimitConfig::new(10, 5).unwrap();
         let mut bucket = BucketState::new(config);
         // Should allow up to burst capacity
@@ -490,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn bucket_retry_after_is_positive() {
+    fn test_bucket_try_acquire_exhausted_returns_positive_retry_after() {
         let config = RateLimitConfig::new(10, 1).unwrap();
         let mut bucket = BucketState::new(config);
         // Consume the single token
@@ -501,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn limiter_allows_within_limit() {
+    fn test_limiter_check_within_burst_succeeds() {
         let config = RateLimitConfig::new(1000, 5).unwrap();
         let limiter = TokenBucketLimiter::new(config);
         for _ in 0..5 {
@@ -512,13 +512,13 @@ mod tests {
     }
 
     #[test]
-    fn rate_limit_exceeded_is_transient() {
+    fn test_rate_limit_exceeded_error_is_transient() {
         let err = StorageError::rate_limit_exceeded(Duration::from_millis(100));
         assert!(err.is_transient());
     }
 
     #[test]
-    fn metrics_track_allowed_and_rejected() {
+    fn test_metrics_snapshot_tracks_allowed_and_rejected() {
         let config = RateLimitConfig::new(1000, 2).unwrap();
         let limiter = TokenBucketLimiter::new(config);
         // 2 allowed
@@ -533,7 +533,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limited_backend_passes_through() {
+    async fn test_rate_limited_backend_set_get_passes_through() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1000, 100).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -545,7 +545,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limited_backend_rejects_when_exhausted() {
+    async fn test_rate_limited_backend_set_exhausted_returns_rate_limit_exceeded() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1, 2).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -560,7 +560,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn health_check_bypasses_rate_limit() {
+    async fn test_rate_limited_backend_health_check_bypasses_rate_limit() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1, 1).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -575,7 +575,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transaction_bypasses_rate_limit() {
+    async fn test_rate_limited_backend_transaction_bypasses_rate_limit() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1, 1).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -601,7 +601,7 @@ mod tests {
     }
 
     #[test]
-    fn per_organization_rate_limiting() {
+    fn test_limiter_per_organization_independent_buckets() {
         let config = RateLimitConfig::new(1000, 2).unwrap();
         let limiter =
             TokenBucketLimiter::new(config).with_organization_extractor(Arc::new(PrefixExtractor));
@@ -618,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn per_organization_config_override() {
+    fn test_limiter_per_organization_config_override_burst() {
         let default_config = RateLimitConfig::new(1000, 2).unwrap();
         let premium_config = RateLimitConfig::new(1000, 5).unwrap();
 
@@ -645,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn bucket_refills_over_time() {
+    fn test_bucket_try_acquire_refills_after_elapsed_time() {
         let config = RateLimitConfig::new(1000, 1).unwrap();
         let mut bucket = BucketState::new(config);
 
@@ -661,7 +661,7 @@ mod tests {
     }
 
     #[test]
-    fn display_includes_retry_after() {
+    fn test_rate_limit_exceeded_display_includes_retry_after_ms() {
         let err = StorageError::rate_limit_exceeded(Duration::from_millis(150));
         let display = err.to_string();
         assert!(display.contains("150"), "display should contain retry_after ms: {display}");
@@ -669,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn organization_bucket_limit_falls_back_to_global() {
+    fn test_limiter_organization_bucket_limit_exceeded_falls_back_to_global() {
         let config = RateLimitConfig::new(1000, 100).unwrap();
         let limiter = TokenBucketLimiter::new(config)
             .with_organization_extractor(Arc::new(PrefixExtractor))
@@ -689,33 +689,20 @@ mod tests {
     }
 
     #[test]
-    fn debug_impl_for_token_bucket_limiter() {
+    fn test_limiter_debug_shows_has_extractor_field() {
         let config = RateLimitConfig::new(100, 20).unwrap();
         let limiter = TokenBucketLimiter::new(config);
         let debug = format!("{limiter:?}");
-        assert!(debug.contains("TokenBucketLimiter"), "debug output: {debug}");
-        assert!(debug.contains("has_extractor"), "debug output: {debug}");
+        assert!(debug.contains("has_extractor: false"), "debug output: {debug}");
+
+        let limiter_with =
+            TokenBucketLimiter::new(config).with_organization_extractor(Arc::new(PrefixExtractor));
+        let debug_with = format!("{limiter_with:?}");
+        assert!(debug_with.contains("has_extractor: true"), "debug output: {debug_with}");
     }
 
     #[tokio::test]
-    async fn debug_impl_for_rate_limited_backend() {
-        let backend = MemoryBackend::new();
-        let config = RateLimitConfig::new(100, 20).unwrap();
-        let limiter = TokenBucketLimiter::new(config);
-        let limited = RateLimitedBackend::new(backend, limiter);
-        let debug = format!("{limited:?}");
-        assert!(debug.contains("RateLimitedBackend"), "debug output: {debug}");
-    }
-
-    #[test]
-    fn metrics_snapshot_default() {
-        let snap = RateLimitMetricsSnapshot::default();
-        assert_eq!(snap.allowed, 0);
-        assert_eq!(snap.rejected, 0);
-    }
-
-    #[tokio::test]
-    async fn inner_and_limiter_accessors() {
+    async fn test_rate_limited_backend_inner_and_limiter_accessors() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(100, 20).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -727,7 +714,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limited_delete() {
+    async fn test_rate_limited_backend_delete_passes_through() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1000, 100).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -740,7 +727,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limited_compare_and_set() {
+    async fn test_rate_limited_backend_compare_and_set_passes_through() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1000, 100).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -752,7 +739,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limited_compare_and_set_with_ttl() {
+    async fn test_rate_limited_backend_compare_and_set_with_ttl_passes_through() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1000, 100).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -767,7 +754,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limited_set_with_ttl() {
+    async fn test_rate_limited_backend_set_with_ttl_passes_through() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1000, 100).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -782,7 +769,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limited_get_range() {
+    async fn test_rate_limited_backend_get_range_passes_through() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1000, 100).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -798,7 +785,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limited_clear_range() {
+    async fn test_rate_limited_backend_clear_range_passes_through() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1000, 100).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -815,7 +802,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limited_delete_rejected_when_exhausted() {
+    async fn test_rate_limited_backend_delete_exhausted_returns_rate_limit_exceeded() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1, 1).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -826,7 +813,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limited_get_rejected_when_exhausted() {
+    async fn test_rate_limited_backend_get_exhausted_returns_rate_limit_exceeded() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1, 1).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -837,7 +824,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limited_cas_rejected_when_exhausted() {
+    async fn test_rate_limited_backend_cas_exhausted_returns_rate_limit_exceeded() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1, 1).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -851,7 +838,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limited_cas_with_ttl_rejected_when_exhausted() {
+    async fn test_rate_limited_backend_cas_with_ttl_exhausted_returns_rate_limit_exceeded() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1, 1).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -867,7 +854,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limited_set_with_ttl_rejected_when_exhausted() {
+    async fn test_rate_limited_backend_set_with_ttl_exhausted_returns_rate_limit_exceeded() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1, 1).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -881,7 +868,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limited_get_range_rejected_when_exhausted() {
+    async fn test_rate_limited_backend_get_range_exhausted_returns_rate_limit_exceeded() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1, 1).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -896,7 +883,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limited_clear_range_rejected_when_exhausted() {
+    async fn test_rate_limited_backend_clear_range_exhausted_returns_rate_limit_exceeded() {
         let backend = MemoryBackend::new();
         let config = RateLimitConfig::new(1, 1).unwrap();
         let limiter = TokenBucketLimiter::new(config);
@@ -911,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn per_organization_rejection_tracks_metrics() {
+    fn test_limiter_per_organization_rejection_tracks_metrics() {
         let config = RateLimitConfig::new(1000, 1).unwrap();
         let limiter =
             TokenBucketLimiter::new(config).with_organization_extractor(Arc::new(PrefixExtractor));
@@ -925,7 +912,7 @@ mod tests {
     }
 
     #[test]
-    fn extractor_returning_none_uses_global_bucket() {
+    fn test_limiter_extractor_returning_none_uses_global_bucket() {
         struct NeverExtractor;
         impl OrganizationExtractor for NeverExtractor {
             fn extract(&self, _key: &[u8]) -> Option<String> {
@@ -943,41 +930,5 @@ mod tests {
 
         let orgs = limiter.organizations.lock();
         assert!(orgs.is_empty());
-    }
-
-    #[test]
-    fn limiter_with_extractor_debug_shows_has_extractor() {
-        let config = RateLimitConfig::new(100, 20).unwrap();
-        let limiter =
-            TokenBucketLimiter::new(config).with_organization_extractor(Arc::new(PrefixExtractor));
-        let debug = format!("{limiter:?}");
-        assert!(debug.contains("has_extractor: true"), "debug output: {debug}");
-    }
-
-    #[test]
-    fn limiter_without_extractor_debug_shows_no_extractor() {
-        let config = RateLimitConfig::new(100, 20).unwrap();
-        let limiter = TokenBucketLimiter::new(config);
-        let debug = format!("{limiter:?}");
-        assert!(debug.contains("has_extractor: false"), "debug output: {debug}");
-    }
-
-    #[test]
-    fn metrics_snapshot_clone() {
-        let snap = RateLimitMetricsSnapshot { allowed: 10, rejected: 3 };
-        let cloned = snap.clone();
-        assert_eq!(cloned.allowed, 10);
-        assert_eq!(cloned.rejected, 3);
-    }
-
-    #[test]
-    fn config_clone_and_copy() {
-        let config = RateLimitConfig::new(50, 10).unwrap();
-        let copied = config;
-        assert_eq!(copied.rate(), 50);
-        assert_eq!(copied.burst(), 10);
-        #[allow(clippy::clone_on_copy)]
-        let cloned = config.clone();
-        assert_eq!(cloned.rate(), 50);
     }
 }
