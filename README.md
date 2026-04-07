@@ -73,6 +73,7 @@ let client = ClientConfig::builder()
 
 let config = LedgerBackendConfig::builder()
     .client(client)
+    .caller(1)
     .organization(1)
     .build()?;
 

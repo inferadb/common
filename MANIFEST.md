@@ -106,6 +106,7 @@ inferadb-common-storage              (core abstractions, no external DB deps)
 
 - **`testutil`** — Exposes `FailingBackend`, assertion macros, helper functions
 - **`failpoints`** — Enables `fail` crate injection points
+- **`stress`** — Gates concurrent stress tests (`concurrent_stress.rs`)
 
 ---
 
@@ -113,7 +114,7 @@ inferadb-common-storage              (core abstractions, no external DB deps)
 
 **Purpose:** Module organization and public API re-exports.
 
-**Key Re-exports:** `StorageBackend`, `StorageBackendExt`, `DynBackend`, `StorageRange`, `to_storage_range`, `StorageError`, `ConfigError`, `StorageResult`, `MemoryBackend`, `InstrumentedBackend`, `BufferedBackend`, `CachedBackend`, `CacheConfig`, `CasRetryConfig`, `with_cas_retry`, `DEFAULT_CAS_RETRY_BASE_DELAY`, `DEFAULT_MAX_CAS_RETRIES`, `Metrics`, `LatencyPercentiles`, `DEFAULT_MAX_TRACKED_ORGANIZATIONS`, `RateLimitConfig`, `RateLimitedBackend`, `TokenBucketLimiter`, `OrganizationExtractor`, `SizeLimits`, `Transaction`, `BatchConfig`, `BatchWriter`, `BatchResult`, `BatchFlushStats`, `BatchOperation`, `BoxError`, `TimeoutContext`, `HealthProbe`, `HealthStatus`, `HealthMetadata`, `MetricsCollector`, `MetricsSnapshot`, `OrganizationOperationSnapshot`, `RateLimitMetricsSnapshot`, `validate_key_size`, `validate_sizes`, `DEFAULT_MAX_KEY_SIZE`, `DEFAULT_MAX_VALUE_SIZE`, `KeyValue`, `OrganizationSlug`, `VaultSlug`, `ClientId`, `CertId`, `Zeroizing`
+**Key Re-exports:** `StorageBackend`, `StorageBackendExt`, `DynBackend`, `StorageRange`, `to_storage_range`, `StorageError`, `ConfigError`, `StorageResult`, `MemoryBackend`, `InstrumentedBackend`, `BufferedBackend`, `CachedBackend`, `CacheConfig`, `CasRetryConfig`, `with_cas_retry`, `DEFAULT_CAS_RETRY_BASE_DELAY`, `DEFAULT_MAX_CAS_RETRIES`, `Metrics`, `LatencyPercentiles`, `DEFAULT_MAX_TRACKED_ORGANIZATIONS`, `DEFAULT_MAX_ORGANIZATION_BUCKETS`, `RateLimitConfig`, `RateLimitedBackend`, `TokenBucketLimiter`, `OrganizationExtractor`, `SizeLimits`, `Transaction`, `BatchConfig`, `BatchWriter`, `BatchResult`, `BatchFlushStats`, `BatchOperation`, `BoxError`, `TimeoutContext`, `HealthProbe`, `HealthStatus`, `HealthMetadata`, `MetricsCollector`, `MetricsSnapshot`, `OrganizationOperationSnapshot`, `RateLimitMetricsSnapshot`, `validate_key_size`, `validate_sizes`, `DEFAULT_MAX_KEY_SIZE`, `DEFAULT_MAX_VALUE_SIZE`, `KeyValue`, `OrganizationSlug`, `VaultSlug`, `UserSlug`, `ClientId`, `CertId`, `Zeroizing`
 
 **Insights:**
 
@@ -238,6 +239,7 @@ Object-safe dynamic dispatch wrapper. `StorageBackend` is implemented for `Arc<d
 | `CasRetriesExhausted` | `attempts`, `span_id`                        | No         | CAS retries exceeded limit                      |
 | `CircuitOpen`         | `span_id`                                    | No         | Circuit breaker is open                         |
 | `SizeLimitExceeded`   | `kind`, `actual`, `limit`, `span_id`         | No         | Key or value too large                          |
+| `RangeLimitExceeded`  | `actual`, `limit`, `span_id`                 | No         | Range query exceeded safety limit               |
 | `RateLimitExceeded`   | `retry_after`, `span_id`                     | **Yes**    | Token bucket exhausted                          |
 | `ShuttingDown`        | `span_id`                                    | No         | Backend is shutting down                        |
 
@@ -248,7 +250,6 @@ Object-safe dynamic dispatch wrapper. `StorageBackend` is implemented for `Arc<d
 | `is_transient() -> bool`                                | Returns `true` for `Connection`, `Timeout`, `RateLimitExceeded` |
 | `is_not_found() -> bool`                                | Returns `true` for `NotFound` variant                           |
 | `is_conflict() -> bool`                                 | Returns `true` for `Conflict` variant                           |
-| `suggested_status_code() -> u16`                        | Maps variant to HTTP status (404, 409, 429, 400, 503, 504, 500) |
 | `detail() -> String`                                    | Full diagnostic context (server-side only)                      |
 | `span_id() -> Option<&tracing::span::Id>`               | Returns captured tracing span ID                                |
 | `not_found(key)`, `conflict()`, `connection(msg)`, etc. | Constructor helpers that capture current span ID                |
@@ -267,7 +268,7 @@ Object-safe dynamic dispatch wrapper. `StorageBackend` is implemented for `Arc<d
 | ----------------- | ----------------------------------------------------- | --------------------------------------------- |
 | `MustBePositive`  | `field: &'static str`, `value: String`                | Config value must be greater than zero        |
 | `BelowMinimum`    | `field: &'static str`, `min: String`, `value: String` | Config value below required minimum           |
-| `InvalidRelation` | `field: &'static str`, `min: String`, `value: String` | Config values violate a relational constraint |
+| `InvalidRelation` | `field_a: &'static str`, `value_a: String`, `field_b: &'static str`, `value_b: String` | Config values violate a relational constraint between two fields |
 
 **Insights:**
 
@@ -285,23 +286,26 @@ Object-safe dynamic dispatch wrapper. `StorageBackend` is implemented for `Arc<d
 
 #### Struct: `MemoryBackend` (Clone)
 
-| Field            | Type                                      | Description                  |
-| ---------------- | ----------------------------------------- | ---------------------------- |
-| `data`           | `Arc<RwLock<BTreeMap<Vec<u8>, Bytes>>>`   | Key-value store              |
-| `ttl_data`       | `Arc<RwLock<BTreeMap<Vec<u8>, Instant>>>` | TTL expiration times         |
-| `shutdown_guard` | `Arc<ShutdownGuard>`                      | Cancels cleanup task on drop |
-| `size_limits`    | `Option<SizeLimits>`                      | Optional size validation     |
+| Field            | Type                                              | Description                           |
+| ---------------- | ------------------------------------------------- | ------------------------------------- |
+| `data`           | `Arc<RwLock<BTreeMap<Vec<u8>, StoredEntry>>>`     | Key-value store (value + optional expiry) |
+| `shutdown_guard` | `Arc<ShutdownGuard>`                              | Cancels cleanup task on drop          |
+| `size_limits`    | `Option<SizeLimits>`                              | Optional size validation              |
 
 | Method                             | Description                                               |
 | ---------------------------------- | --------------------------------------------------------- |
 | `new() -> Self`                    | Creates backend with background TTL cleanup (1s interval) |
 | `with_size_limits(limits) -> Self` | Creates backend with size validation                      |
+| `shutdown()`                       | Gracefully shuts down the backend                         |
 
 **Internal: `MemoryTransaction`**
 
-| Field                                  | Description                                      |
-| -------------------------------------- | ------------------------------------------------ |
-| `pending: HashMap<Vec<u8>, PendingOp>` | Buffered operations (Set, Delete, CompareAndSet) |
+| Field                                               | Description                    |
+| --------------------------------------------------- | ------------------------------ |
+| `backend: MemoryBackend`                            | Reference to parent backend    |
+| `pending_writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>` | Buffered writes (None = delete) |
+| `pending_ttls: BTreeMap<Vec<u8>, Duration>`          | TTLs for buffered writes       |
+| `pending_cas: Vec<CasOperation>`                     | Buffered CAS operations        |
 
 **Insights:**
 
@@ -331,8 +335,8 @@ Object-safe dynamic dispatch wrapper. `StorageBackend` is implemented for `Arc<d
 | `new(backend, config) -> Self`                      | Creates writer                               |
 | `set(key, value)`                                   | Buffers a set operation                      |
 | `delete(key)`                                       | Buffers a delete operation                   |
-| `flush() -> BatchResult`                            | Commits current batch; writer remains usable |
-| `flush_all(self) -> StorageResult<BatchFlushStats>` | Final flush, consumes writer                 |
+| `async flush(&mut self) -> BatchResult`                            | Commits current batch; writer remains usable |
+| `async flush_all(&mut self) -> StorageResult<BatchFlushStats>` | Final flush; writer remains usable           |
 
 #### Struct: `BatchResult`
 
@@ -350,7 +354,7 @@ Object-safe dynamic dispatch wrapper. `StorageBackend` is implemented for `Arc<d
 - Auto-splits batches at 9 MB transaction limit (safety margin under FoundationDB's 10 MB hard limit)
 - `Arc<StorageError>` allows failed ops in a batch to share one error instance
 - Failpoint integration (`batch-before-commit`) for testing
-- Separate `flush()` (reusable) vs `flush_all()` (consuming) is good API design
+- Both `flush()` and `flush_all()` take `&mut self` — writer remains reusable after either call
 
 ---
 
@@ -372,15 +376,26 @@ Object-safe dynamic dispatch wrapper. `StorageBackend` is implemented for `Arc<d
 | `record_error_org(organization)`                                                                             | Per-organization error counter  |
 | `record_transaction`, `record_get_range`, `record_clear_range`, `record_health_check`, `record_set_with_ttl` | Other operation types           |
 
-**Retrieval Methods:**
+**Snapshot Retrieval:**
 
-| Method                                                    | Description                 |
-| --------------------------------------------------------- | --------------------------- |
-| `get_count() -> u64`                                      | Total get operations        |
-| `get_latency_percentiles() -> LatencyPercentiles`         | p50/p95/p99 in microseconds |
-| `error_counts() -> HashMap<String, u64>`                  | Error counts by variant     |
-| `organization_metrics(ns) -> Option<OrganizationMetrics>` | Per-organization breakdown  |
-| (plus matching getters for all operation types)           |                             |
+All metrics are accessed via `snapshot() -> MetricsSnapshot`. Key fields on `MetricsSnapshot`:
+
+| Field                  | Type                                | Description                                         |
+| ---------------------- | ----------------------------------- | --------------------------------------------------- |
+| `get_count`            | `u64`                               | Total get operations                                |
+| `set_count`            | `u64`                               | Total set operations                                |
+| `delete_count`         | `u64`                               | Total delete operations                             |
+| `get_range_count`      | `u64`                               | Total get_range operations                          |
+| `clear_range_count`    | `u64`                               | Total clear_range operations                        |
+| `transaction_count`    | `u64`                               | Total transaction operations                        |
+| `cas_count`            | `u64`                               | Total CAS operations                                |
+| `get_percentiles`      | `LatencyPercentiles`                | GET p50/p95/p99 in microseconds                     |
+| `error_count`          | `u64`                               | Total errors                                        |
+| `conflict_count`       | `u64`                               | Transaction and CAS conflicts                       |
+| `ttl_operations`       | `u64`                               | TTL operations count                                |
+| `health_check_count`   | `u64`                               | Health check count                                  |
+| `organization_metrics` | `Vec<OrganizationOperationSnapshot>`| Per-organization breakdown (top-N, sorted by total) |
+| (plus per-op latency totals, percentiles, and avg helpers) |                            |                                                     |
 
 #### Struct: `LatencyPercentiles`
 
@@ -474,14 +489,14 @@ Wraps any `StorageBackend` and checks rate limit before each operation. **Transa
 
 #### Enum: `HealthStatus`
 
-`Healthy(HealthMetadata)` | `Degraded(HealthMetadata)` | `Unhealthy(HealthMetadata)`
+`Healthy(HealthMetadata)` | `Degraded(HealthMetadata, String)` | `Unhealthy(HealthMetadata, String)`
 
 #### Struct: `HealthMetadata`
 
 | Field            | Type                      |
 | ---------------- | ------------------------- |
-| `check_duration` | `Option<Duration>`        |
-| `backend_name`   | `Option<String>`          |
+| `check_duration` | `Duration`                |
+| `backend`        | `String`                  |
 | `details`        | `HashMap<String, String>` |
 
 **Insights:**
@@ -508,7 +523,7 @@ Wraps any `StorageBackend` and checks rate limit before each operation. **Transa
 #### Function: `with_cas_retry`
 
 ```rust
-pub async fn with_cas_retry<F, Fut, T>(config: &CasRetryConfig, operation: F) -> StorageResult<T>
+pub async fn with_cas_retry<F, Fut>(config: &CasRetryConfig, mut operation: F) -> StorageResult<()>
 ```
 
 Retries only `StorageError::Conflict` errors with uniformly-distributed random jitter in `[0, base_delay * attempt]`. Returns `StorageError::CasRetriesExhausted` when attempts are exhausted. Uses `rand::rng().random_range()` for jitter.
@@ -601,9 +616,12 @@ Implements `MetricsCollector` trait. `#[derive(Clone)]` where `B: Clone`.
 #### Identifier Newtypes
 
 `OrganizationSlug(u64)` | `VaultSlug(u64)` — re-exported from `inferadb-ledger-types`
-`ClientId(i64)` | `CertId(i64)` — defined via `define_id!` macro
+`ClientId(u64)` | `CertId(u64)` — defined via `define_id!` macro
+`UserSlug(u64)` — re-exported from `inferadb-ledger-types`
 
-All derive: `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `Hash`, `Serialize`, `Deserialize`
+`KeyValue` derives: `Debug`, `Clone`, `PartialEq`, `Eq`
+
+Identifier newtypes (`OrganizationSlug`, `VaultSlug`, `UserSlug`, `ClientId`, `CertId`) derive: `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `Hash`, `PartialOrd`, `Ord`, `Serialize`, `Deserialize`
 
 **Insights:**
 
@@ -668,7 +686,7 @@ pub async fn run_all<B: StorageBackend + 'static>(backend: Arc<B>);
 
 #### Struct: `FailingBackend<B>`
 
-Wraps any backend and injects errors for a specified operation type. Controlled via `enable_failures()` / `disable_failures()`.
+Wraps any backend and injects errors for a specified operation type. Created via `FailingBackend::wrap(inner, config)` with `FailureConfig`. Provides `succeeded_count()` and `reset()` methods for test control.
 
 ---
 
@@ -676,7 +694,7 @@ Wraps any backend and injects errors for a specified operation type. Controlled 
 
 #### `src/auth/mod.rs` — Module Root
 
-Re-exports all auth types. Defines `SIGNING_KEY_PREFIX = "signing-keys/"`.
+Re-exports key store types (`PublicSigningKey`, `PublicSigningKeyStore`, `MemorySigningKeyStore`, `SIGNING_KEY_PREFIX`) and metrics types (`SigningKeyMetrics`, `SigningKeyMetricsSnapshot`, `SigningKeyErrorKind`). Audit types (`AuditAction`, `AuditEvent`, `AuditLogger`, etc.) are accessible via the public `audit` and `audited_store` submodules but are not re-exported at this level.
 
 #### `src/auth/signing_key.rs` — PublicSigningKey Type
 
@@ -701,7 +719,7 @@ Re-exports all auth types. Defines `SIGNING_KEY_PREFIX = "signing-keys/"`.
 
 - `Zeroizing<String>` zeroes key material on drop (defense in depth even for public keys)
 - Custom `Debug` impl redacts `public_key`
-- `#[serde(default)]` on `revoked_at` / `revocation_reason` for backward compatibility
+- `#[serde(default)]` on `revocation_reason` for backward compatibility (added later than other fields)
 
 #### `src/auth/store.rs` — PublicSigningKeyStore Trait
 
@@ -757,39 +775,13 @@ Tracks per-operation counts, latencies, error categorization, L3 cache metrics, 
 
 ---
 
-### Benchmark File
-
-#### `benches/storage_benchmarks.rs`
-
-**Purpose:** Criterion benchmarks for `MemoryBackend` performance.
-
-| Group                    | Benchmarks                                       |
-| ------------------------ | ------------------------------------------------ |
-| `get_operations`         | existing key (64B, 1KB, 64KB), missing key       |
-| `set_operations`         | new key (64B, 1KB, 64KB), overwrite              |
-| `delete_operations`      | existing key, missing key                        |
-| `get_range_operations`   | 10/100/1000 keys, prefix scan                    |
-| `clear_range_operations` | 10/100/1000 keys                                 |
-| `transaction_operations` | 1/10/100 ops                                     |
-| `concurrent_operations`  | parallel reads (4/16/64), parallel writes, mixed |
-| `ttl_operations`         | set with TTL (64B, 1KB, 64KB)                    |
-| `health_check`           | Probe overhead                                   |
-
-**Insights:**
-
-- Parameterized by value size to expose scaling behavior
-- Concurrent benchmarks use multi-threaded runtime
-- Throughput tracking via `Throughput::Bytes` and `Throughput::Elements`
-
----
-
 ### Test Files
 
 #### `tests/conformance.rs`
 
-Thin wrapper running the conformance suite against `MemoryBackend`. One test function per conformance check plus `run_all_conformance_tests()`.
+Runs the conformance suite against `MemoryBackend`. Contains 42 individual test functions (one per conformance check) plus `run_all_conformance_tests()`. Also includes 7 wrapper conformance tests: `buffered_backend_conformance`, `buffered_read_your_writes`, `buffered_commit_atomicity`, `buffered_transaction_accumulation`, `cached_backend_conformance`, `cached_invalidation_on_write`, `cached_invalidation_on_delete`.
 
-#### `tests/concurrent_stress.rs` (`#[ignore]`)
+#### `tests/concurrent_stress.rs` (feature-gated: `stress`)
 
 | Test                                      | Description                                       |
 | ----------------------------------------- | ------------------------------------------------- |
@@ -840,7 +832,6 @@ Fail-point injection for `batch-before-commit` and `health-check` failpoints.
 | Dependency                | Purpose                                                  |
 | ------------------------- | -------------------------------------------------------- |
 | `inferadb-common-storage` | `StorageBackend` trait + `StorageResult` for persistence |
-| `thiserror`               | Error derivation (reserved for future use)               |
 
 ---
 
@@ -848,7 +839,7 @@ Fail-point injection for `batch-before-commit` and `health-check` failpoints.
 
 **Purpose:** All types and logic in a single module. Lints: `#![deny(unsafe_code)]`, `#![warn(missing_docs)]`.
 
-**Re-exports:** `AppRateLimiter`, `RateLimitPolicy`, `RateLimitWindow`, `RateLimitOutcome`
+**Re-exports:** `AppRateLimiter`, `RateLimitPolicy`, `RateLimitWindow`, `RateLimitOutcome`, `RateLimitResponse`
 
 #### Key Format
 
@@ -879,40 +870,40 @@ Where `window_start` is Unix timestamp truncated to the window boundary. TTL dri
 | `max_requests` | `u32`             | Maximum allowed requests within window |
 | `window`       | `RateLimitWindow` | Time window duration                   |
 
-| Constructor                      | Description                  |
-| -------------------------------- | ---------------------------- |
-| `new(max_requests, window)`      | General constructor          |
-| `per_hour(max_requests)`         | Convenience: hourly window   |
-| `per_day(max_requests)`          | Convenience: daily window    |
-| `custom(max_requests, duration)` | Convenience: custom duration |
+| Constructor                      | Returns                      | Description                  |
+| -------------------------------- | ---------------------------- | ---------------------------- |
+| `new(max_requests, window)`      | `Result<Self, ConfigError>`  | General constructor          |
+| `per_hour(max_requests)`         | `Result<Self, ConfigError>`  | Convenience: hourly window   |
+| `per_day(max_requests)`          | `Result<Self, ConfigError>`  | Convenience: daily window    |
+| `custom(max_requests, duration)` | `Result<Self, ConfigError>`  | Convenience: custom duration |
 
-#### Struct: `RateLimitOutcome`
+#### Enum: `RateLimitOutcome`
 
-| Field         | Type   | Description                          |
-| ------------- | ------ | ------------------------------------ |
-| `allowed`     | `bool` | Whether the request is permitted     |
-| `remaining`   | `u32`  | Requests remaining in current window |
-| `reset_after` | `u64`  | Seconds until window resets          |
+| Variant   | Fields                                      | Description                    |
+| --------- | ------------------------------------------- | ------------------------------ |
+| `Allowed` | `remaining: u64`, `reset_after_secs: u64`   | Request permitted              |
+| `Limited` | `retry_after_secs: u64`                      | Request denied, retry later    |
+
+#### Struct: `RateLimitResponse`
+
+Flat representation of rate limit outcome with `allowed: bool`, `remaining: u64`, `reset_after_secs: u64`. When denied, `reset_after_secs` contains the retry delay (no separate `retry_after_secs` field).
 
 #### Struct: `AppRateLimiter<S: StorageBackend>`
 
-| Method                                                                                 | Description                                               |
-| -------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| `new(storage) -> Self`                                                                 | Wraps a `StorageBackend`                                  |
-| `storage() -> &S`                                                                      | Accessor for underlying backend                           |
-| `check(category, identifier, policy) -> StorageResult<bool>`                           | Core rate-limit check; increments on allow, no-op on deny |
-| `remaining(category, identifier, policy) -> StorageResult<u32>`                        | Read-only remaining quota                                 |
-| `reset_after(policy) -> u64`                                                           | Seconds until current window resets                       |
-| `check_with_metadata(category, identifier, policy) -> StorageResult<RateLimitOutcome>` | Full outcome with remaining + reset_after                 |
+| Method                                                                                    | Description                                               |
+| ----------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `new(storage) -> Self`                                                                    | Wraps a `StorageBackend`                                  |
+| `storage() -> &S`                                                                         | Accessor for underlying backend                           |
+| `check(category, identifier, policy) -> StorageResult<RateLimitOutcome>`                  | Core rate-limit check; increments on allow, no-op on deny |
+| `check_response(category, identifier, policy) -> StorageResult<RateLimitResponse>`        | Full outcome with flat struct                             |
 
-**Algorithm:** Get-then-set with TTL. Reads current counter, increments if under limit, writes back with `set_with_ttl` for automatic key expiration at window boundary. Non-atomic increment — under extreme concurrent load, the counter may briefly under-count (inherent fixed-window trade-off).
+**Algorithm:** Compare-and-set (CAS) with TTL. Reads current counter, increments if under limit, writes back with `compare_and_set_with_ttl` in a retry loop for automatic key expiration at window boundary.
 
 **Insights:**
 
-- Counter encoding is UTF-8 decimal string — human-readable in storage backends
+- Counter encoding is big-endian u64 bytes (8 bytes)
 - TTL drives cleanup — no background sweep needed, keys auto-expire after one window duration
 - Single-file crate — appropriate for the narrow scope
-- `thiserror` dependency is present but unused — reserved for a future `RateLimitError` type
 - All errors propagate as `StorageError` via `StorageResult`
 
 ---
@@ -930,9 +921,19 @@ Where `window_start` is Unix timestamp truncated to the window boundary. TTL dri
 | `blocks_requests_over_limit`               | Blocks after limit exceeded                       |
 | `isolates_identifiers`                     | Different identifiers have independent counters   |
 | `isolates_categories`                      | Different categories have independent counters    |
-| `remaining_count_decreases`                | `remaining()` decrements correctly                |
-| `check_with_metadata_returns_full_outcome` | Full outcome across allow/deny states             |
-| `reset_after_is_within_window`             | `reset_after()` returns value within window range |
+| `remaining_decreases_each_check`           | Remaining count decrements correctly              |
+| `outcome_includes_reset_after`             | Outcome includes reset_after within window range  |
+| `policy_rejects_zero_max_requests`         | Zero max_requests rejected at construction        |
+| `policy_rejects_zero_window_duration`      | Zero window duration rejected at construction     |
+| `policy_rejects_subsecond_window_duration` | Sub-second window duration rejected               |
+| `seconds_until_reset_within_window`        | Reset seconds is within window range              |
+| `seconds_until_reset_never_returns_zero`   | Reset seconds always >= 1                         |
+| `custom_window_duration`                   | Custom duration conversion                        |
+| `counter_encoding_round_trip`              | Big-endian u64 encoding round-trips correctly     |
+| `counter_parse_rejects_wrong_length`       | Rejects non-8-byte counter data                   |
+| `limited_outcome_includes_retry_after`     | Limited outcome includes retry_after              |
+| `concurrent_cas_retries`                   | CAS retries under concurrent access              |
+| `custom_window_rate_limiting`              | Rate limiting with custom window durations        |
 
 ---
 
@@ -955,12 +956,13 @@ Where `window_start` is Unix timestamp truncated to the window boundary. TTL dri
 
 - **`testutil`** — Key generation, JWT crafting helpers
 - **`failpoints`** — Cache fault injection
+- **`stress`** — Stress test helpers
 
 ---
 
 ### `src/lib.rs` — Crate Root
 
-Re-exports: `AuthError`, `Result`, `JwtClaims`, `DEFAULT_MAX_IAT_AGE`, `ReplayDetector`, `InMemoryReplayDetector`, `SigningKeyCache`, `DEFAULT_CACHE_CAPACITY`, `DEFAULT_CACHE_TTL`, `DEFAULT_FALLBACK_CAPACITY`, `DEFAULT_FALLBACK_TTL`, `DEFAULT_FALLBACK_WARN_THRESHOLD`, `DEFAULT_FALLBACK_CRITICAL_THRESHOLD`, `validate_algorithm`, `validate_kid`, `ACCEPTED_ALGORITHMS`, `FORBIDDEN_ALGORITHMS`, `MAX_KID_LENGTH`.
+Re-exports: `AuthError`, `Result`, `JwtClaims`, `DEFAULT_MAX_IAT_AGE`, `ReplayDetector`, `InMemoryReplayDetector`, `SigningKeyCache`, `DEFAULT_CACHE_CAPACITY`, `DEFAULT_CACHE_TTL`, `DEFAULT_FALLBACK_CAPACITY`, `DEFAULT_FALLBACK_TTL`, `DEFAULT_FALLBACK_WARN_THRESHOLD`, `DEFAULT_FALLBACK_CRITICAL_THRESHOLD`, `validate_algorithm`, `validate_kid`, `MAX_KID_LENGTH`.
 
 **Insights:** `#![deny(unsafe_code)]` at crate level. Documentation includes key material zeroing table showing what is protected.
 
@@ -983,11 +985,6 @@ Re-exports: `AuthError`, `Result`, `JwtClaims`, `DEFAULT_MAX_IAT_AGE`, `ReplayDe
 | `MissingClaim`                 | No                          | Required claim absent                       |
 | `InvalidScope`                 | No                          | Scope validation failed                     |
 | `UnsupportedAlgorithm`         | No                          | Algorithm not allowed                       |
-| `JwksError`                    | No                          | JWKS-related error                          |
-| `OidcDiscoveryFailed`          | No                          | OIDC discovery error                        |
-| `IntrospectionFailed`          | No                          | Token introspection error                   |
-| `InvalidIntrospectionResponse` | No                          | Malformed introspection response            |
-| `TokenInactive`                | No                          | Token inactive per introspection            |
 | `MissingTenantId`              | No                          | Missing `tenant_id` claim                   |
 | `TokenTooOld`                  | No                          | `iat` exceeds max age                       |
 | `KeyNotFound`                  | No                          | Signing key not in Ledger                   |
@@ -1042,7 +1039,7 @@ Re-exports: `AuthError`, `Result`, `JwtClaims`, `DEFAULT_MAX_IAT_AGE`, `ReplayDe
 | `require_org()`  | Returns org or `MissingClaim("org")` error |
 | `parse_scopes()` | Splits scope string into `Vec<String>`     |
 | `vault()`        | Returns vault if present                   |
-| `org()`          | Returns org clone                          |
+| `org()`          | Returns org as `Option<&str>`              |
 
 #### Functions
 
@@ -1061,7 +1058,8 @@ Re-exports: `AuthError`, `Result`, `JwtClaims`, `DEFAULT_MAX_IAT_AGE`, `ReplayDe
 2. Decode claims (unverified); extract `org` for organization-scoped key lookup
 3. Fetch decoding key from cache (`org` + `kid` -> Ledger)
 4. Verify signature with `jsonwebtoken`
-5. (Optional) Check JTI against replay detector
+5. Validate claims (exp, nbf enforced by `jsonwebtoken`; iat recency checked post-verification)
+6. (Optional) Check JTI against replay detector
 
 **Insights:**
 
@@ -1078,22 +1076,22 @@ Re-exports: `AuthError`, `Result`, `JwtClaims`, `DEFAULT_MAX_IAT_AGE`, `ReplayDe
 
 #### Constants
 
-| Constant               | Value                                 | Description                                      |
-| ---------------------- | ------------------------------------- | ------------------------------------------------ |
-| `FORBIDDEN_ALGORITHMS` | `["none", "HS256", "HS384", "HS512"]` | Rejected with "not allowed for security reasons" |
-| `ACCEPTED_ALGORITHMS`  | `["EdDSA"]`                           | Only accepted algorithms                         |
-| `MAX_KID_LENGTH`       | `256`                                 | Maximum kid string length                        |
+| Constant         | Value | Description             |
+| ---------------- | ----- | ----------------------- |
+| `MAX_KID_LENGTH` | `256` | Maximum kid string length |
+
+> **Note:** `validate_algorithm` uses a direct pattern match on the `Algorithm` enum rather than constant lists. It rejects symmetric algorithms (HS256/384/512) and "none" with security-specific error messages, and accepts only `EdDSA`.
 
 #### Functions
 
 | Function                  | Description                                                   |
 | ------------------------- | ------------------------------------------------------------- |
-| `validate_algorithm(alg)` | Rejects forbidden algorithms first, then checks accepted list |
+| `validate_algorithm(alg: Algorithm)` | Rejects symmetric/none algorithms via pattern match, accepts only `EdDSA` |
 | `validate_kid(kid)`       | Non-empty, max 256 chars, only `[a-zA-Z0-9._-]`               |
 
 **Insights:**
 
-- Two-phase algorithm check: forbidden then accepted (clear error messages for each)
+- Pattern-match algorithm check: rejects symmetric/none with security-specific messages, accepts only EdDSA
 - Kid validation prevents: path traversal (`../`), null bytes, colon injection (cache key safety)
 - RS256 intentionally excluded — described as "not currently supported end-to-end" in source comments
 
@@ -1123,13 +1121,19 @@ L3: Fallback cache (moka, default 1 hour TTL, 10K capacity)
 | `with_thresholds(self, warn, critical)`                         | L3 capacity alert thresholds                 |
 | `with_refresh_interval(self: Arc<Self>, interval)`              | Starts background key refresh                |
 | `get_decoding_key(org_slug, kid)`                               | Main API: L1 -> L2 -> L3 fallback            |
-| `invalidate(org_slug, kid)`                                     | Removes from L1, bumps generation counter    |
+| `invalidate(org_slug, kid)`                                     | Removes from L1 and L3, bumps generation counter |
 | `clear_all()`                                                   | Clears all caches                            |
 | `shutdown()`                                                    | Cancels background tasks                     |
 | `entry_count()`                                                 | Returns L1 cache entry count                 |
 | `fallback_entry_count()`                                        | Returns L3 fallback cache entry count        |
 | `fallback_capacity()`                                           | Returns L3 fallback cache max capacity       |
 | `fallback_fill_pct()`                                           | Returns L3 fill ratio (for alert thresholds) |
+| `refresh_count()`                                               | Number of completed background refresh cycles |
+| `refresh_keys_total()`                                          | Total keys successfully refreshed            |
+| `refresh_errors_total()`                                        | Total per-key refresh errors                 |
+| `refresh_latency_us()`                                          | Cumulative refresh latency in microseconds   |
+| `active_key_count()`                                            | Number of keys tracked for background refresh |
+| `cancel_token()`                                                | Returns cancellation token for background tasks |
 
 **Graceful Degradation:**
 
@@ -1221,7 +1225,7 @@ Raw UTF-8 byte fuzzing for JWT parsing. Complements structured fuzzing for edge 
 ## Crate: `inferadb-common-storage-ledger`
 
 **Path:** `crates/storage-ledger/`
-**Purpose:** Production `StorageBackend` implementation backed by InferaDB Ledger. Provides retry logic, circuit breaker, timeout management, and hex key encoding for byte-order preservation.
+**Purpose:** Production `StorageBackend` implementation backed by InferaDB Ledger. Provides timeout management, hex key encoding, and CAS retry logic for byte-order preservation. Circuit breaking and transient error retries are handled by the SDK.
 
 ### Key Dependencies
 
@@ -1234,8 +1238,8 @@ Raw UTF-8 byte fuzzing for JWT parsing. Complements structured fuzzing for edge 
 | `bytes`                   | Zero-copy byte buffers                                                 |
 | `chrono`                  | DateTime handling for signing keys                                     |
 | `hex`                     | Key encoding/decoding                                                  |
-| `parking_lot`             | High-performance locks                                                 |
 | `serde` / `serde_json`    | Serialization for signing keys                                         |
+| `tonic`                   | gRPC types for error mapping                                           |
 | `thiserror`               | Error derivation                                                       |
 | `tokio` / `tokio-util`    | Async runtime, timeouts, cancellation tokens                           |
 | `tracing`                 | Distributed tracing                                                    |
@@ -1243,7 +1247,7 @@ Raw UTF-8 byte fuzzing for JWT parsing. Complements structured fuzzing for edge 
 ### Features
 
 - **`testutil`** — Mock server helpers
-- **`failpoints`** — Retry/timeout fault injection
+- **`integration`** — Gates real Ledger integration tests
 
 ---
 
@@ -1262,8 +1266,8 @@ Comprehensive crate-level docs with architecture diagram, quick start, key mappi
 | Method                                                    | Description                                           |
 | --------------------------------------------------------- | ----------------------------------------------------- |
 | `new(config) -> Result<Self>`                             | Creates from `LedgerBackendConfig`                    |
-| `from_client(client, organization, vault, consistency)`   | Creates from existing `LedgerClient`                  |
-| `from_endpoint(endpoint, client_id, organization, vault)` | Convenience constructor for single-server deployments |
+| `from_client(client, caller, organization, vault, consistency)`   | Creates from existing `LedgerClient`                  |
+| `from_endpoint(endpoint, client_id, caller, organization, vault)` | Convenience constructor for single-server deployments |
 | `shutdown()`                                              | Signals graceful shutdown                             |
 | `is_shutting_down() -> bool`                              | Checks shutdown state                                 |
 | `organization()`                                          | Returns the configured organization slug              |
@@ -1272,8 +1276,6 @@ Comprehensive crate-level docs with architecture diagram, quick start, key mappi
 | `client_arc()`                                            | Returns `Arc<LedgerClient>` clone                     |
 | `page_size()`                                             | Returns pagination page size                          |
 | `max_range_results()`                                     | Returns range result safety limit                     |
-| `circuit_breaker_metrics()`                               | Returns circuit breaker counters                      |
-| `circuit_breaker_state()`                                 | Returns current circuit state                         |
 | `storage_metrics()`                                       | Returns storage metrics                               |
 
 **Key Implementation Details:**
@@ -1281,19 +1283,17 @@ Comprehensive crate-level docs with architecture diagram, quick start, key mappi
 - **Key encoding:** Hex encoding preserves byte ordering for range queries
 - **Range query optimization:** Computes longest common prefix between start/end bounds for server-side filtering
 - **Per-operation timeouts:** Read 5s, Write 10s, List 30s (configurable)
-- **Circuit breaker:** Optional, records only transient errors
-- **Health checks bypass circuit breaker** but record success/failure
 - **Size limits:** Optional validation before writes
 - **Graceful shutdown:** New ops return `ShuttingDown` after signal
 
 **Insights:**
 
-- Excellent separation of concerns — retry, timeout, circuit breaker are composable layers
+- Excellent separation of concerns — retry, timeout are composable layers
 - Range query prefix optimization via `common_prefix_len()` reduces network transfer
 - `set_with_ttl` computes absolute Unix timestamp (not relative duration) for Ledger compatibility
 - Safety limit (`max_range_results`) prevents unbounded memory growth
 - Property tests verify `common_prefix_len` correctness
-- Every backend operation follows a consistent pattern: start timer → check shutdown → check circuit → execute with retry/timeout → record circuit result → record metrics
+- Every backend operation follows a consistent pattern: start timer → check shutdown → execute with retry/timeout → record metrics
 
 ---
 
@@ -1303,20 +1303,17 @@ Comprehensive crate-level docs with architecture diagram, quick start, key mappi
 
 #### Struct: `LedgerTransaction`
 
-| Internal State    | Description                                            |
-| ----------------- | ------------------------------------------------------ |
-| `pending_sets`    | `HashMap<String, Vec<u8>>` — buffered writes           |
-| `pending_deletes` | `HashSet<String>` — buffered deletes                   |
-| `pending_ttls`    | `HashMap<String, Duration>` — TTLs for buffered writes |
-| `pending_cas`     | `Vec<CasOperation>` — buffered CAS ops                 |
+| Internal State | Description                                                                                                                                                 |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pending`      | `HashMap<String, PendingOp>` — where `PendingOp` is an enum with `Set { value, ttl }`, `Delete`, and `Cas { expected, new_value, ttl }` variants |
 
-**Commit:** Single SDK `write()` call with CAS conditions first, then sets, then deletes.
+**Commit:** Single SDK `write()` call submitting all buffered operations atomically. Operations are submitted in `HashMap` iteration order (unordered); the Ledger SDK applies CAS preconditions atomically regardless of submission order.
 
 **Insights:**
 
 - Correct read-your-writes: `get()` checks pending deletes -> pending sets -> Ledger
 - Empty transaction commit is a no-op (no SDK call)
-- Commit ordering: CAS operations first, then sets, then deletes — ensures preconditions are checked before unconditional writes apply
+- All operations are atomic — if any CAS condition fails, the entire transaction fails
 
 ---
 
@@ -1328,18 +1325,20 @@ Comprehensive crate-level docs with architecture diagram, quick start, key mappi
 
 | Method                                       | Description                           |
 | -------------------------------------------- | ------------------------------------- |
-| `new(client)`                                | Creates with linearizable consistency |
-| `with_read_consistency(client, consistency)` | Custom consistency                    |
+| `new(client: Arc<LedgerClient>, caller: UserSlug)` | Creates with linearizable consistency |
+| `with_read_consistency(self, consistency)`          | Builder method for custom consistency |
 | `with_metrics(metrics)`                      | Enables metrics collection            |
 | `with_cas_retry_config(config)`              | CAS retry policy                      |
+| `with_cancellation_token(self, token)`       | Sets cancellation token for shutdown  |
+| `metrics(&self)`                             | Returns optional metrics reference    |
+| `client(&self)`                              | Returns reference to `LedgerClient`   |
 
 **CAS Pattern:** All mutations use optimistic locking — read current, modify in-memory, write with `SetCondition::ValueEquals`, retry on conflict.
-
-**Optimized: `create_keys`** — Single SDK `write()` for bulk creates (overrides default sequential impl).
 
 **Insights:**
 
 - Signing keys stored at `signing-keys/{kid}` in Ledger
+- `create_key` uses `set_entity` with `SetCondition::NotExists` for atomic insert-if-absent
 - `revoke_key` is idempotent (preserves original revocation timestamp)
 - `list_active_keys` gracefully handles malformed keys (logs error, continues)
 - Hard-coded list limit of 1000 could be made configurable
@@ -1347,43 +1346,7 @@ Comprehensive crate-level docs with architecture diagram, quick start, key mappi
 
 ---
 
-### `src/circuit_breaker.rs` — Circuit Breaker
-
-**Purpose:** Fail-fast pattern for sustained backend outages.
-
-#### State Machine
-
-```
-Closed --[threshold failures]--> Open --[recovery timeout]--> HalfOpen
-  ^                                                              |
-  +--[success threshold]─────────────────────────────────────────+
-  +--[any failure]───────────────────────────────────────────────+
-```
-
-#### Struct: `CircuitBreakerConfig`
-
-| Field                         | Description                       |
-| ----------------------------- | --------------------------------- |
-| `failure_threshold`           | Failures before opening circuit   |
-| `recovery_timeout`            | Wait time before half-open        |
-| `half_open_success_threshold` | Successes needed to close circuit |
-
-#### Struct: `CircuitBreaker`
-
-| Method                               | Description                        |
-| ------------------------------------ | ---------------------------------- |
-| `allow_request() -> bool`            | Checks if request should proceed   |
-| `record_success()`                   | Records success; may close circuit |
-| `record_failure()`                   | Records failure; may open circuit  |
-| `state() -> CircuitState`            | Returns current state              |
-| `metrics() -> CircuitBreakerMetrics` | Returns snapshot                   |
-
-**Insights:**
-
-- `parking_lot::Mutex` for minimal lock contention
-- Only transient errors (connection, timeout) recorded
-- Health checks bypass breaker but record results
-- `CircuitOpen` error is NOT transient — retrying immediately hits the open breaker
+**Note:** `CircuitBreakerConfig` is re-exported from the SDK for client configuration. Circuit breaking is handled by the SDK, not this crate.
 
 ---
 
@@ -1403,8 +1366,8 @@ Closed --[threshold failures]--> Open --[recovery timeout]--> HalfOpen
 
 #### Struct: `LedgerBackendConfig`
 
-Required: `client: ClientConfig`, `organization: OrganizationSlug`
-Optional: `vault`, `read_consistency`, `page_size`, `max_range_results`, `retry_config`, `timeout_config`, `size_limits`, `circuit_breaker_config`, `cancellation_token`
+Required: `client: ClientConfig`, `organization: OrganizationSlug`, `caller: UserSlug`
+Optional: `vault`, `read_consistency`, `page_size`, `max_range_results`, `timeout_config`, `size_limits`, `cancellation_token`
 
 **Insights:**
 
@@ -1439,7 +1402,16 @@ Optional: `vault`, `read_consistency`, `page_size`, `max_range_results`, `retry_
 | `Rpc(InvalidArgument)`    | `Serialization`          |
 | `Rpc(Unavailable)`        | `Connection`             |
 | `RetryExhausted`          | `Connection`             |
-| `RateLimited`             | `Connection` (transient) |
+| `RateLimited`             | `RateLimitExceeded`      |
+| `CircuitOpen`             | `CircuitOpen`            |
+| `Validation`              | `Serialization`          |
+| `Transport`               | `Connection`             |
+| `StreamDisconnected`      | `Connection`             |
+| `Shutdown`                | `ShuttingDown`           |
+| `Cancelled`               | `ShuttingDown`           |
+| `Rpc(Aborted)`            | `Conflict`               |
+| `Rpc(DeadlineExceeded)`   | `Connection`             |
+| `Rpc(ResourceExhausted)`  | `Connection`             |
 | `ProofVerification`       | `Internal`               |
 | All other RPC codes       | `Internal`               |
 
@@ -1447,7 +1419,7 @@ Optional: `vault`, `read_consistency`, `page_size`, `max_range_results`, `retry_
 
 - Preserves error chains via `source` field
 - Separate `Display` (API-safe) vs `detail()` (server-side)
-- `RateLimited` mapped to `Connection` — could benefit from dedicated variant in future
+- `RateLimited` mapped to `RateLimitExceeded` for proper rate limit handling
 
 ---
 
@@ -1466,18 +1438,6 @@ Optional: `vault`, `read_consistency`, `page_size`, `max_range_results`, `retry_
 
 - Critical for correctness: byte ordering must be preserved for range queries
 - Property tests cover all essential invariants
-
----
-
-### `src/retry.rs` — CAS Retry Re-export
-
-**Purpose:** Re-exports `with_cas_retry` from the base storage crate for internal use.
-
-```rust
-pub(crate) use inferadb_common_storage::with_cas_retry;
-```
-
-This is a thin re-export file. The actual CAS retry implementation (including `CasRetryConfig`, jitter, and `CasRetriesExhausted` error) lives in `inferadb-common-storage/src/cas_retry.rs`. Transient error retries are handled by the Ledger SDK's built-in retry mechanism — there is no `with_retry` or `with_retry_timeout` in this crate.
 
 ---
 
@@ -1500,7 +1460,7 @@ Comprehensive mock-based tests covering all `StorageBackend` methods, signing ke
 
 #### `tests/real_ledger_integration.rs`
 
-Real Ledger cluster tests (gated by `RUN_LEDGER_INTEGRATION_TESTS=1`). Tests actual behavior including TTL expiration, CAS conflicts, concurrent writes, reconnection, and stress tests. Uses unique vault IDs per test for isolation.
+Real Ledger cluster tests (gated by `integration` Cargo feature (`required-features = ["integration"]`)). Tests actual behavior including TTL expiration, CAS conflicts, concurrent writes, reconnection, and stress tests. Uses unique vault IDs per test for isolation.
 
 ---
 
@@ -1522,7 +1482,7 @@ Real Ledger cluster tests (gated by `RUN_LEDGER_INTEGRATION_TESTS=1`). Tests act
 | ---------------------------- | --------------------------------------------------------------------------------------- | --------------- |
 | Async traits                 | Could migrate to native `async fn in trait` when stabilized (removes `async-trait` dep) | Low (future)    |
 | Metrics unification          | `Metrics` and `SigningKeyMetrics` share code patterns — could extract shared module     | Low             |
-| Rate limiting in SDK mapping | `RateLimited` mapped to `Connection` loses semantics — could add dedicated variant      | Low             |
+| Rate limiting in SDK mapping | `RateLimited` correctly mapped to `RateLimitExceeded` (resolved)                        | Resolved        |
 | Signing key list limit       | Hard-coded 1000 in `list_active_keys` could be configurable                             | Low             |
 | Replay detection             | In-memory only — distributed systems need Ledger-backed implementation                  | Medium (future) |
 | Time-based tests             | Some use real `sleep` — could use `tokio::time::pause` for faster execution             | Low             |
