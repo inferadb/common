@@ -178,7 +178,7 @@ pub trait OrganizationExtractor: Send + Sync {
 /// Token-bucket rate limiter with optional per-organization buckets.
 ///
 /// Thread-safe via internal [`parking_lot::Mutex`]. Supports both a global
-/// bucket and optional per-organization buckets sharded across [`NUM_SHARDS`]
+/// bucket and optional per-organization buckets sharded across 64
 /// independent locks to reduce cross-organization contention.
 pub struct TokenBucketLimiter {
     global: Mutex<BucketState>,
@@ -338,8 +338,8 @@ impl TokenBucketLimiter {
     /// Sets the idle timeout for organization buckets.
     ///
     /// Buckets not accessed within this duration are evicted during
-    /// periodic cleanup. Defaults to [`DEFAULT_ORG_IDLE_TIMEOUT`] when
-    /// enabled. Pass `None` to disable eviction entirely.
+    /// periodic cleanup. Defaults to 10 minutes when enabled.
+    /// Pass `None` to disable eviction entirely.
     #[must_use = "returns the modified limiter for chaining"]
     pub fn with_org_idle_timeout(mut self, timeout: Duration) -> Self {
         self.org_idle_timeout = Some(timeout);
@@ -348,7 +348,7 @@ impl TokenBucketLimiter {
 
     /// Sets the maximum number of distinct organizations tracked in
     /// per-org metrics. Organizations beyond this limit are aggregated
-    /// under the `_other` key. Defaults to [`DEFAULT_PER_ORG_METRICS_MAX`].
+    /// under the `_other` key. Defaults to 1000.
     #[must_use = "returns the modified limiter for chaining"]
     pub fn with_per_org_metrics_max(mut self, max: usize) -> Self {
         self.metrics.per_org_max = max;
@@ -476,7 +476,7 @@ impl TokenBucketLimiter {
     ///
     /// Iterates all shards and evicts stale entries. Callers can invoke this
     /// directly for deterministic cleanup in tests; in production the
-    /// periodic check inside [`check_organization`](Self::check_organization) handles eviction.
+    /// periodic check inside `check_organization` handles eviction.
     pub fn evict_stale(&self, max_idle: Duration) {
         let now = Instant::now();
         for shard_mutex in &self.organization_shards {
