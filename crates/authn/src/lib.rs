@@ -80,7 +80,7 @@ pub use error::{AuthError, Result};
 pub use jwt::{DEFAULT_MAX_IAT_AGE, JwtClaims};
 pub use replay::{InMemoryReplayDetector, ReplayDetector};
 pub use signing_key_cache::{
-    DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, DEFAULT_FALLBACK_CAPACITY,
+    CacheMetricsSnapshot, DEFAULT_CACHE_CAPACITY, DEFAULT_CACHE_TTL, DEFAULT_FALLBACK_CAPACITY,
     DEFAULT_FALLBACK_CRITICAL_THRESHOLD, DEFAULT_FALLBACK_TTL, DEFAULT_FALLBACK_WARN_THRESHOLD,
     SigningKeyCache,
 };

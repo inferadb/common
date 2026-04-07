@@ -477,7 +477,8 @@ impl LedgerBackend {
         // Paginate through results, bounded by list timeout.
         let list_timeout = self.timeout_config.list_timeout;
         tokio::time::timeout(list_timeout, async {
-            let mut all_key_values = Vec::new();
+            let mut all_key_values =
+                Vec::with_capacity(self.page_size.min(self.max_range_results as u32) as usize);
             let mut page_token: Option<String> = None;
 
             loop {
@@ -498,10 +499,6 @@ impl LedgerBackend {
                     .list_entities(self.caller, self.organization, opts)
                     .await
                     .map_err(|e| StorageError::from(LedgerStorageError::from(e)))?;
-
-                if all_key_values.is_empty() {
-                    all_key_values.reserve(result.items.len());
-                }
 
                 for entity in &result.items {
                     let after_start = match &start_key {

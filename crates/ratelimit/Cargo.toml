@@ -14,6 +14,7 @@ workspace = true
 
 [dependencies]
 inferadb-common-storage = { path = "../storage", version = ">=0.1.0-0" }
+tokio = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

@@ -547,6 +547,61 @@ pub trait StorageBackendExt: StorageBackend {
 
         self.compare_and_set(key, expected_bytes.as_deref(), new_bytes).await
     }
+
+    /// Performs a compare-and-set using pre-serialized bytes for the expected value.
+    ///
+    /// Unlike [`compare_and_set_json`](Self::compare_and_set_json), this method
+    /// accepts the expected value as raw bytes (typically from a prior `get()`),
+    /// avoiding redundant serialization in read-modify-write loops.
+    ///
+    /// The `new_value` is serialized to JSON with canonical field ordering.
+    ///
+    /// # Errors
+    ///
+    /// - [`StorageError::Conflict`](crate::StorageError) if the current value does not match
+    ///   `expected_bytes`.
+    /// - [`StorageError::Serialization`](crate::StorageError) if `new_value` cannot be serialized.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use inferadb_common_storage::{MemoryBackend, StorageBackend, StorageBackendExt};
+    /// use serde::{Deserialize, Serialize};
+    ///
+    /// #[derive(Serialize, Deserialize)]
+    /// struct Config {
+    ///     version: u32,
+    /// }
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let backend = MemoryBackend::new();
+    ///
+    /// // Write initial value
+    /// let v1 = serde_json::to_vec(&Config { version: 1 })?;
+    /// backend.set(b"config".to_vec(), v1).await?;
+    ///
+    /// // Read raw bytes, then CAS with a new serialized value
+    /// let raw = backend.get(b"config").await?.expect("just wrote it");
+    /// let v2 = Config { version: 2 };
+    /// backend.compare_and_set_bytes(b"config", Some(&raw), &v2).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[must_use = "compare-and-set may fail with a conflict and errors must be handled"]
+    async fn compare_and_set_bytes<T>(
+        &self,
+        key: &[u8],
+        expected_bytes: Option<&[u8]>,
+        new_value: &T,
+    ) -> StorageResult<()>
+    where
+        T: Serialize + Send + Sync,
+    {
+        let new_bytes = serde_json::to_vec(new_value)
+            .map_err(|e| StorageError::serialization(e.to_string()))?;
+
+        self.compare_and_set(key, expected_bytes, new_bytes).await
+    }
 }
 
 /// Blanket implementation: every `StorageBackend` automatically gets `StorageBackendExt`.
@@ -756,5 +811,54 @@ mod tests {
 
         let status = backend.health_check(HealthProbe::Liveness).await.unwrap();
         assert!(matches!(status, HealthStatus::Healthy(_)));
+    }
+
+    #[tokio::test]
+    async fn test_compare_and_set_bytes_with_raw_expected() {
+        let backend = MemoryBackend::new();
+
+        #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq)]
+        struct Item {
+            count: u32,
+        }
+
+        // Write initial value as JSON bytes
+        let v1 = Item { count: 1 };
+        let v1_bytes = serde_json::to_vec(&v1).unwrap();
+        backend.set(b"item".to_vec(), v1_bytes).await.unwrap();
+
+        // Read raw bytes back
+        let raw = backend.get(b"item").await.unwrap().expect("key should exist");
+
+        // CAS using the raw bytes as expected, and a new typed value
+        let v2 = Item { count: 2 };
+        backend.compare_and_set_bytes(b"item", Some(&raw), &v2).await.unwrap();
+
+        // Verify the stored value is the serialized v2
+        let updated = backend.get(b"item").await.unwrap().expect("key should still exist");
+        let deserialized: Item = serde_json::from_slice(&updated).unwrap();
+        assert_eq!(deserialized, Item { count: 2 });
+    }
+
+    #[tokio::test]
+    async fn test_compare_and_set_bytes_conflict_on_mismatch() {
+        let backend = MemoryBackend::new();
+
+        #[derive(serde::Serialize)]
+        struct Item {
+            count: u32,
+        }
+
+        // Write initial value
+        let v1_bytes = serde_json::to_vec(&Item { count: 1 }).unwrap();
+        backend.set(b"item".to_vec(), v1_bytes).await.unwrap();
+
+        // Attempt CAS with wrong expected bytes
+        let wrong_expected = b"not-the-right-bytes";
+        let v2 = Item { count: 2 };
+        let result =
+            backend.compare_and_set_bytes(b"item", Some(wrong_expected.as_slice()), &v2).await;
+
+        assert!(matches!(result, Err(StorageError::Conflict { .. })));
     }
 }

@@ -56,6 +56,20 @@ use crate::{
 /// multi-tenant deployments with high organization cardinality.
 pub const DEFAULT_MAX_ORGANIZATION_BUCKETS: usize = 10_000;
 
+/// Number of shards for per-organization bucket storage.
+/// Reduces cross-organization mutex contention under high concurrency.
+const NUM_SHARDS: usize = 64;
+
+/// Default idle timeout for organization buckets (10 minutes).
+const DEFAULT_ORG_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Interval between periodic stale-bucket cleanup sweeps (60 seconds).
+const CLEANUP_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Default maximum number of distinct organizations tracked in per-org metrics.
+/// Organizations beyond this limit are aggregated under the `_other` key.
+const DEFAULT_PER_ORG_METRICS_MAX: usize = 1000;
+
 /// Configuration for a token-bucket rate limiter.
 ///
 /// The bucket refills at `rate` tokens per second with a maximum burst
@@ -118,12 +132,14 @@ impl RateLimitConfig {
 struct BucketState {
     tokens: f64,
     last_refill: Instant,
+    last_accessed: Instant,
     config: RateLimitConfig,
 }
 
 impl BucketState {
     fn new(config: RateLimitConfig) -> Self {
-        Self { tokens: config.burst as f64, last_refill: Instant::now(), config }
+        let now = Instant::now();
+        Self { tokens: config.burst as f64, last_refill: now, last_accessed: now, config }
     }
 
     /// Attempts to consume one token, refilling first. Returns `Ok(())` on
@@ -134,6 +150,7 @@ impl BucketState {
         let refill = elapsed.as_secs_f64() * self.config.rate as f64;
         self.tokens = (self.tokens + refill).min(self.config.burst as f64);
         self.last_refill = now;
+        self.last_accessed = now;
 
         if self.tokens >= 1.0 {
             self.tokens -= 1.0;
@@ -161,15 +178,18 @@ pub trait OrganizationExtractor: Send + Sync {
 /// Token-bucket rate limiter with optional per-organization buckets.
 ///
 /// Thread-safe via internal [`parking_lot::Mutex`]. Supports both a global
-/// bucket and optional per-organization buckets.
+/// bucket and optional per-organization buckets sharded across [`NUM_SHARDS`]
+/// independent locks to reduce cross-organization contention.
 pub struct TokenBucketLimiter {
     global: Mutex<BucketState>,
-    organizations: Mutex<HashMap<String, BucketState>>,
+    organization_shards: Vec<Mutex<HashMap<String, BucketState>>>,
     organization_config: Option<HashMap<String, RateLimitConfig>>,
     default_config: RateLimitConfig,
     extractor: Option<Arc<dyn OrganizationExtractor>>,
     metrics: RateLimitMetrics,
     max_organization_buckets: usize,
+    org_idle_timeout: Option<Duration>,
+    last_cleanup: std::sync::atomic::AtomicU64,
 }
 
 impl std::fmt::Debug for TokenBucketLimiter {
@@ -186,6 +206,9 @@ impl std::fmt::Debug for TokenBucketLimiter {
 struct RateLimitMetrics {
     allowed: std::sync::atomic::AtomicU64,
     rejected: std::sync::atomic::AtomicU64,
+    per_org_allowed: Mutex<HashMap<String, u64>>,
+    per_org_rejected: Mutex<HashMap<String, u64>>,
+    per_org_max: usize,
 }
 
 impl RateLimitMetrics {
@@ -193,6 +216,37 @@ impl RateLimitMetrics {
         Self {
             allowed: std::sync::atomic::AtomicU64::new(0),
             rejected: std::sync::atomic::AtomicU64::new(0),
+            per_org_allowed: Mutex::new(HashMap::new()),
+            per_org_rejected: Mutex::new(HashMap::new()),
+            per_org_max: DEFAULT_PER_ORG_METRICS_MAX,
+        }
+    }
+
+    fn record_allowed(&self, org: Option<&str>) {
+        self.allowed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Some(org) = org {
+            let mut map = self.per_org_allowed.lock();
+            if let Some(count) = map.get_mut(org) {
+                *count += 1;
+            } else if map.len() < self.per_org_max {
+                map.insert(org.to_owned(), 1);
+            } else {
+                *map.entry("_other".to_owned()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    fn record_rejected(&self, org: Option<&str>) {
+        self.rejected.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Some(org) = org {
+            let mut map = self.per_org_rejected.lock();
+            if let Some(count) = map.get_mut(org) {
+                *count += 1;
+            } else if map.len() < self.per_org_max {
+                map.insert(org.to_owned(), 1);
+            } else {
+                *map.entry("_other".to_owned()).or_insert(0) += 1;
+            }
         }
     }
 }
@@ -204,20 +258,47 @@ pub struct RateLimitMetricsSnapshot {
     pub allowed: u64,
     /// Total requests that were rejected.
     pub rejected: u64,
+    /// Per-organization allowed counts.
+    pub per_org_allowed: HashMap<String, u64>,
+    /// Per-organization rejected counts.
+    pub per_org_rejected: HashMap<String, u64>,
+}
+
+/// Computes a shard index for the given organization name using the
+/// djb2 hash algorithm. Deterministic and dependency-free.
+fn shard_index(org: &str) -> usize {
+    let mut hash: u64 = 5381;
+    for byte in org.as_bytes() {
+        hash = hash.wrapping_mul(33).wrapping_add(u64::from(*byte));
+    }
+    (hash as usize) % NUM_SHARDS
+}
+
+/// Returns the current time as milliseconds since `UNIX_EPOCH`.
+fn epoch_millis_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 impl TokenBucketLimiter {
     /// Creates a new limiter with the given global configuration.
     #[must_use = "constructing a limiter has no side effects"]
     pub fn new(config: RateLimitConfig) -> Self {
+        let shards: Vec<Mutex<HashMap<String, BucketState>>> =
+            (0..NUM_SHARDS).map(|_| Mutex::new(HashMap::new())).collect();
+
         Self {
             global: Mutex::new(BucketState::new(config)),
-            organizations: Mutex::new(HashMap::new()),
+            organization_shards: shards,
             organization_config: None,
             default_config: config,
             extractor: None,
             metrics: RateLimitMetrics::new(),
             max_organization_buckets: DEFAULT_MAX_ORGANIZATION_BUCKETS,
+            org_idle_timeout: None,
+            last_cleanup: std::sync::atomic::AtomicU64::new(epoch_millis_now()),
         }
     }
 
@@ -254,6 +335,26 @@ impl TokenBucketLimiter {
         self
     }
 
+    /// Sets the idle timeout for organization buckets.
+    ///
+    /// Buckets not accessed within this duration are evicted during
+    /// periodic cleanup. Defaults to [`DEFAULT_ORG_IDLE_TIMEOUT`] when
+    /// enabled. Pass `None` to disable eviction entirely.
+    #[must_use = "returns the modified limiter for chaining"]
+    pub fn with_org_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.org_idle_timeout = Some(timeout);
+        self
+    }
+
+    /// Sets the maximum number of distinct organizations tracked in
+    /// per-org metrics. Organizations beyond this limit are aggregated
+    /// under the `_other` key. Defaults to [`DEFAULT_PER_ORG_METRICS_MAX`].
+    #[must_use = "returns the modified limiter for chaining"]
+    pub fn with_per_org_metrics_max(mut self, max: usize) -> Self {
+        self.metrics.per_org_max = max;
+        self
+    }
+
     /// Checks the rate limit for the given key.
     ///
     /// # Errors
@@ -276,11 +377,11 @@ impl TokenBucketLimiter {
         let mut bucket = self.global.lock();
         match bucket.try_acquire() {
             Ok(()) => {
-                self.metrics.allowed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.metrics.record_allowed(None);
                 Ok(())
             },
             Err(retry_after) => {
-                self.metrics.rejected.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.metrics.record_rejected(None);
                 Err(StorageError::rate_limit_exceeded(retry_after))
             },
         }
@@ -293,35 +394,101 @@ impl TokenBucketLimiter {
             .and_then(|m| m.get(org).copied())
             .unwrap_or(self.default_config);
 
-        let mut organizations = self.organizations.lock();
+        let shard_idx = shard_index(org);
+        let mut shard = self.organization_shards[shard_idx].lock();
 
-        // If the org already has a bucket, use it. Otherwise, check the
-        // cardinality limit before inserting a new one.
-        if !organizations.contains_key(org) && organizations.len() >= self.max_organization_buckets
-        {
-            warn!(
-                organization = org,
-                bucket_count = organizations.len(),
-                max = self.max_organization_buckets,
-                "organization bucket limit reached, falling back to global bucket"
-            );
-            drop(organizations);
-            return self.check_global();
+        // Periodic cleanup of stale buckets in this shard
+        self.maybe_cleanup_shard(&mut shard);
+
+        // Count total orgs across all shards for the cardinality limit.
+        // If the org already has a bucket in this shard, skip the check.
+        if !shard.contains_key(org) {
+            let total_orgs: usize = shard.len() + self.count_orgs_in_other_shards(shard_idx);
+            if total_orgs >= self.max_organization_buckets {
+                warn!(
+                    organization = org,
+                    bucket_count = total_orgs,
+                    max = self.max_organization_buckets,
+                    "organization bucket limit reached, falling back to global bucket"
+                );
+                drop(shard);
+                return self.check_global();
+            }
         }
 
-        let bucket =
-            organizations.entry(org.to_owned()).or_insert_with(|| BucketState::new(config));
+        let bucket = shard.entry(org.to_owned()).or_insert_with(|| BucketState::new(config));
 
         match bucket.try_acquire() {
             Ok(()) => {
-                self.metrics.allowed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.metrics.record_allowed(Some(org));
                 Ok(())
             },
             Err(retry_after) => {
-                self.metrics.rejected.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.metrics.record_rejected(Some(org));
                 Err(StorageError::rate_limit_exceeded(retry_after))
             },
         }
+    }
+
+    /// Counts organizations in all shards except the one at `exclude_idx`.
+    fn count_orgs_in_other_shards(&self, exclude_idx: usize) -> usize {
+        self.organization_shards
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != exclude_idx)
+            .map(|(_, s)| s.lock().len())
+            .sum()
+    }
+
+    /// Runs stale-bucket cleanup on the given shard if enough time has passed
+    /// since the last cleanup.
+    fn maybe_cleanup_shard(&self, shard: &mut HashMap<String, BucketState>) {
+        let timeout = match self.org_idle_timeout {
+            Some(t) => t,
+            None => DEFAULT_ORG_IDLE_TIMEOUT,
+        };
+
+        let now_millis = epoch_millis_now();
+        let last = self.last_cleanup.load(std::sync::atomic::Ordering::Relaxed);
+        if now_millis.saturating_sub(last) < CLEANUP_INTERVAL.as_millis() as u64 {
+            return;
+        }
+
+        // Try to claim the cleanup. If another thread beat us, skip.
+        if self
+            .last_cleanup
+            .compare_exchange(
+                last,
+                now_millis,
+                std::sync::atomic::Ordering::Release,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            return;
+        }
+
+        let now = Instant::now();
+        shard.retain(|_, bucket| now.duration_since(bucket.last_accessed) < timeout);
+    }
+
+    /// Removes organization buckets that have not been accessed within `max_idle`.
+    ///
+    /// Iterates all shards and evicts stale entries. Callers can invoke this
+    /// directly for deterministic cleanup in tests; in production the
+    /// periodic check inside [`check_organization`](Self::check_organization) handles eviction.
+    pub fn evict_stale(&self, max_idle: Duration) {
+        let now = Instant::now();
+        for shard_mutex in &self.organization_shards {
+            let mut shard = shard_mutex.lock();
+            shard.retain(|_, bucket| now.duration_since(bucket.last_accessed) < max_idle);
+        }
+    }
+
+    /// Returns the total number of organization buckets across all shards.
+    #[must_use = "returns a count without side effects"]
+    pub fn organization_count(&self) -> usize {
+        self.organization_shards.iter().map(|s| s.lock().len()).sum()
     }
 
     /// Returns a snapshot of the rate limiter metrics.
@@ -330,7 +497,16 @@ impl TokenBucketLimiter {
         RateLimitMetricsSnapshot {
             allowed: self.metrics.allowed.load(std::sync::atomic::Ordering::Relaxed),
             rejected: self.metrics.rejected.load(std::sync::atomic::Ordering::Relaxed),
+            per_org_allowed: self.metrics.per_org_allowed.lock().clone(),
+            per_org_rejected: self.metrics.per_org_rejected.lock().clone(),
         }
+    }
+
+    /// Returns the shard index for a given organization name.
+    /// Exposed for testing shard distribution.
+    #[cfg(test)]
+    fn shard_index_for(org: &str) -> usize {
+        shard_index(org)
     }
 }
 
@@ -684,8 +860,8 @@ mod tests {
         assert!(limiter.check(b"org3:k1").is_ok());
 
         // Verify no third org bucket was created
-        let orgs = limiter.organizations.lock();
-        assert_eq!(orgs.len(), 2, "should not exceed max_organization_buckets");
+        let total_orgs: usize = limiter.organization_count();
+        assert_eq!(total_orgs, 2, "should not exceed max_organization_buckets");
     }
 
     #[test]
@@ -928,7 +1104,108 @@ mod tests {
         assert!(limiter.check(b"anything_else").is_ok());
         assert!(limiter.check(b"third").is_err());
 
-        let orgs = limiter.organizations.lock();
-        assert!(orgs.is_empty());
+        let total_orgs = limiter.organization_count();
+        assert_eq!(total_orgs, 0);
+    }
+
+    // --- New tests ---
+
+    #[test]
+    fn test_shard_distribution_spreads_organizations() {
+        let orgs = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta"];
+        let mut shard_indices: Vec<usize> =
+            orgs.iter().map(|o| TokenBucketLimiter::shard_index_for(o)).collect();
+        shard_indices.sort_unstable();
+        shard_indices.dedup();
+        assert!(
+            shard_indices.len() >= 2,
+            "expected at least 2 distinct shards from {} orgs, got {:?}",
+            orgs.len(),
+            shard_indices
+        );
+    }
+
+    #[test]
+    fn test_org_bucket_eviction_removes_stale_entries() {
+        let config = RateLimitConfig::new(1000, 100).unwrap();
+        let limiter = TokenBucketLimiter::new(config)
+            .with_organization_extractor(Arc::new(PrefixExtractor))
+            .with_org_idle_timeout(Duration::from_secs(60));
+
+        // Create some org buckets
+        assert!(limiter.check(b"org1:k").is_ok());
+        assert!(limiter.check(b"org2:k").is_ok());
+        assert!(limiter.check(b"org3:k").is_ok());
+        assert_eq!(limiter.organization_count(), 3);
+
+        // Backdate last_accessed on org1 and org2 to simulate staleness
+        for shard_mutex in &limiter.organization_shards {
+            let mut shard = shard_mutex.lock();
+            for (name, bucket) in shard.iter_mut() {
+                if name == "org1" || name == "org2" {
+                    bucket.last_accessed -= Duration::from_secs(120);
+                }
+            }
+        }
+
+        // Evict with a 60s window — org1 and org2 should be removed
+        limiter.evict_stale(Duration::from_secs(60));
+        assert_eq!(limiter.organization_count(), 1);
+
+        // org3 should still be present
+        let mut found_org3 = false;
+        for shard_mutex in &limiter.organization_shards {
+            let shard = shard_mutex.lock();
+            if shard.contains_key("org3") {
+                found_org3 = true;
+            }
+        }
+        assert!(found_org3, "org3 should survive eviction");
+    }
+
+    #[test]
+    fn test_per_org_metrics_track_allowed_and_rejected() {
+        let config = RateLimitConfig::new(1000, 2).unwrap();
+        let limiter =
+            TokenBucketLimiter::new(config).with_organization_extractor(Arc::new(PrefixExtractor));
+
+        // org_a: 2 allowed, 1 rejected
+        assert!(limiter.check(b"org_a:k1").is_ok());
+        assert!(limiter.check(b"org_a:k2").is_ok());
+        assert!(limiter.check(b"org_a:k3").is_err());
+
+        // org_b: 1 allowed
+        assert!(limiter.check(b"org_b:k1").is_ok());
+
+        let snap = limiter.metrics_snapshot();
+        assert_eq!(snap.per_org_allowed.get("org_a"), Some(&2));
+        assert_eq!(snap.per_org_rejected.get("org_a"), Some(&1));
+        assert_eq!(snap.per_org_allowed.get("org_b"), Some(&1));
+        assert_eq!(snap.per_org_rejected.get("org_b"), None);
+    }
+
+    #[test]
+    fn test_per_org_metrics_overflow_uses_other_bucket() {
+        let config = RateLimitConfig::new(1000, 100).unwrap();
+        let limiter = TokenBucketLimiter::new(config)
+            .with_organization_extractor(Arc::new(PrefixExtractor))
+            .with_per_org_metrics_max(3);
+
+        // Fill up 3 distinct org metric slots
+        assert!(limiter.check(b"a:k").is_ok());
+        assert!(limiter.check(b"b:k").is_ok());
+        assert!(limiter.check(b"c:k").is_ok());
+
+        // 4th org should overflow to "_other"
+        assert!(limiter.check(b"d:k").is_ok());
+        assert!(limiter.check(b"e:k").is_ok());
+
+        let snap = limiter.metrics_snapshot();
+        assert_eq!(snap.per_org_allowed.get("a"), Some(&1));
+        assert_eq!(snap.per_org_allowed.get("b"), Some(&1));
+        assert_eq!(snap.per_org_allowed.get("c"), Some(&1));
+        assert_eq!(snap.per_org_allowed.get("_other"), Some(&2));
+        assert_eq!(snap.per_org_allowed.get("d"), None, "d should not have its own slot");
+        assert_eq!(snap.per_org_allowed.get("e"), None, "e should not have its own slot");
     }
 }

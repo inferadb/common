@@ -300,10 +300,11 @@ fn sdk_error_to_storage_error(err: SdkError) -> StorageError {
             StorageError::serialization_with_source(message.clone(), err)
         },
 
-        // Circuit breaker open
+        // Circuit breaker open — intentionally non-transient; callers must
+        // not retry immediately since the breaker opened for a reason.
         SdkError::CircuitOpen { endpoint, .. } => {
             tracing::warn!(endpoint = %endpoint, "Circuit breaker open");
-            StorageError::connection_with_source(format!("Circuit open for {endpoint}"), err)
+            StorageError::circuit_open()
         },
 
         // Regional data residency — org/user is migrating between regions
@@ -876,8 +877,8 @@ mod tests {
             retry_after: std::time::Duration::from_secs(10),
         };
         let storage_err: StorageError = LedgerStorageError::from(sdk_err).into();
-        assert!(matches!(storage_err, StorageError::Connection { .. }));
-        assert!(storage_err.source().is_some());
+        assert!(matches!(storage_err, StorageError::CircuitOpen { .. }));
+        assert!(!storage_err.is_transient());
     }
 
     #[test]

@@ -69,6 +69,9 @@ use inferadb_common_storage::{ConfigError, StorageBackend, StorageError, Storage
 /// [`StorageError::CasRetriesExhausted`].
 const MAX_CAS_RETRIES: u32 = 10;
 
+/// Base delay between CAS retries to reduce contention storms.
+const CAS_RETRY_BASE_DELAY: Duration = Duration::from_millis(1);
+
 /// Rate limit window duration.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
@@ -342,7 +345,17 @@ impl<S: StorageBackend> AppRateLimiter<S> {
                     if attempt == MAX_CAS_RETRIES {
                         return Err(StorageError::cas_retries_exhausted(MAX_CAS_RETRIES));
                     }
-                    // Retry from step 1
+                    // Sleep with jitter to reduce contention storms on hot keys.
+                    // Deterministic jitter based on attempt number and current time
+                    // avoids pulling in `rand` for a simple backoff.
+                    let base_delay_us = CAS_RETRY_BASE_DELAY.as_micros() as u64;
+                    let now_us = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_micros() as u64;
+                    let jitter_us =
+                        (u64::from(attempt) * 137 + now_us % 1000) % (base_delay_us + 1);
+                    tokio::time::sleep(Duration::from_micros(base_delay_us + jitter_us)).await;
                 },
                 Err(e) => return Err(e),
             }
@@ -721,5 +734,35 @@ mod tests {
         let err = AppRateLimiter::<MemoryBackend>::parse_counter(&[]).unwrap_err();
 
         assert!(matches!(err, StorageError::Internal { .. }));
+    }
+
+    #[tokio::test]
+    async fn cas_retry_delay_does_not_prevent_success() {
+        // Verify that a limiter with a small limit still correctly allows exactly
+        // `max_requests` under moderate concurrency, confirming the inter-retry
+        // delay does not break the CAS retry logic.
+        let limiter = Arc::new(AppRateLimiter::new(MemoryBackend::new()));
+        let policy = RateLimitPolicy::per_hour(5).unwrap();
+        let num_tasks: usize = 20;
+
+        let mut handles = Vec::with_capacity(num_tasks);
+        for _ in 0..num_tasks {
+            let l = Arc::clone(&limiter);
+            let p = policy.clone();
+            handles.push(tokio::spawn(async move { l.check("cas_delay", "user1", &p).await }));
+        }
+
+        let mut allowed_count = 0u64;
+        let mut limited_count = 0u64;
+        for handle in handles {
+            let outcome = handle.await.unwrap().unwrap();
+            match outcome {
+                RateLimitOutcome::Allowed { .. } => allowed_count += 1,
+                RateLimitOutcome::Limited { .. } => limited_count += 1,
+            }
+        }
+
+        assert_eq!(allowed_count, 5);
+        assert_eq!(limited_count, (num_tasks as u64) - 5);
     }
 }

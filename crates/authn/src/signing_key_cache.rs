@@ -44,6 +44,7 @@
 
 use std::{
     collections::HashSet,
+    fmt::Write,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -113,6 +114,35 @@ struct FallbackEntry {
     key: Arc<DecodingKey>,
     /// Insertion time for age tracking during fallback usage.
     inserted_at: Instant,
+}
+
+/// Builds a cache key from organization slug and key ID.
+///
+/// Pre-allocates the string to avoid the overhead of `format!()` on every
+/// lookup. The maximum `u64` decimal representation is 20 characters, plus
+/// the `:` separator, plus the `kid` length.
+fn cache_key(organization: OrganizationSlug, kid: &str) -> String {
+    // OrganizationSlug is a u64 newtype; max decimal length is 20 chars.
+    let mut key = String::with_capacity(20 + 1 + kid.len());
+    // write! on String is infallible.
+    let _ = write!(key, "{organization}:{kid}");
+    key
+}
+
+/// Point-in-time snapshot of cache effectiveness counters.
+///
+/// Returned by [`SigningKeyCache::cache_metrics`]. All values are
+/// cumulative since cache creation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheMetricsSnapshot {
+    /// Number of lookups served directly from L1 (TTL cache).
+    pub l1_hits: u64,
+    /// Number of lookups that missed L1 and required an L2 fetch attempt.
+    pub l1_misses: u64,
+    /// Number of L2 (Ledger) fetch calls issued.
+    pub l2_fetches: u64,
+    /// Number of times L3 (fallback cache) was used due to transient L2 errors.
+    pub l3_fallbacks: u64,
 }
 
 /// Ledger-backed cache for JWT public signing key lookup and validation.
@@ -189,6 +219,14 @@ pub struct SigningKeyCache {
     refresh_errors_total: AtomicU64,
     /// Cumulative refresh latency in microseconds across all cycles.
     refresh_latency_us: AtomicU64,
+    /// Number of L1 cache hits.
+    l1_hits: AtomicU64,
+    /// Number of L1 cache misses.
+    l1_misses: AtomicU64,
+    /// Number of L2 (Ledger) fetches.
+    l2_fetches: AtomicU64,
+    /// Number of L3 (fallback) cache accesses due to transient L2 errors.
+    l3_fallbacks: AtomicU64,
 }
 
 impl SigningKeyCache {
@@ -282,6 +320,10 @@ impl SigningKeyCache {
             refresh_keys_total: AtomicU64::new(0),
             refresh_errors_total: AtomicU64::new(0),
             refresh_latency_us: AtomicU64::new(0),
+            l1_hits: AtomicU64::new(0),
+            l1_misses: AtomicU64::new(0),
+            l2_fetches: AtomicU64::new(0),
+            l3_fallbacks: AtomicU64::new(0),
         }
     }
 
@@ -318,16 +360,18 @@ impl SigningKeyCache {
         organization: OrganizationSlug,
         kid: &str,
     ) -> Result<Arc<DecodingKey>, AuthError> {
-        let cache_key = format!("{organization}:{kid}");
+        let cache_key = cache_key(organization, kid);
 
         // Track this key as "active" for background refresh.
         self.active_keys.lock().insert(cache_key.clone());
 
         // L1: Check local cache (TTL-based)
         if let Some(key) = self.cache.get(&cache_key).await {
+            self.l1_hits.fetch_add(1, Ordering::Relaxed);
             tracing::debug!(cache = "L1", "cache hit");
             return Ok(key);
         }
+        self.l1_misses.fetch_add(1, Ordering::Relaxed);
         tracing::debug!(cache = "L1", "cache miss");
 
         // Snapshot the invalidation generation before the L2 fetch.
@@ -342,6 +386,7 @@ impl SigningKeyCache {
                 "injected failure before L2 fetch",
             )))
         });
+        self.l2_fetches.fetch_add(1, Ordering::Relaxed);
         let ledger_result = self.key_store.get_key(organization, kid).await;
 
         match ledger_result {
@@ -390,6 +435,7 @@ impl SigningKeyCache {
                 if is_transient_error(&storage_error)
                     && let Some(entry) = self.fallback.get(&cache_key).await
                 {
+                    self.l3_fallbacks.fetch_add(1, Ordering::Relaxed);
                     let age = entry.inserted_at.elapsed();
                     tracing::warn!(
                         cache = "L3",
@@ -417,7 +463,7 @@ impl SigningKeyCache {
     /// The next lookup will fetch fresh state from Ledger.
     #[tracing::instrument(skip(self))]
     pub async fn invalidate(&self, organization: OrganizationSlug, kid: &str) {
-        let cache_key = format!("{organization}:{kid}");
+        let cache_key = cache_key(organization, kid);
         // Bump generation first so any in-flight L2 reads will detect the change
         self.invalidation_gen.fetch_add(1, Ordering::Release);
         self.cache.invalidate(&cache_key).await;
@@ -535,6 +581,9 @@ impl SigningKeyCache {
     /// `interval` and refreshes all keys that were accessed since the
     /// previous refresh tick. Keys that have not been accessed are
     /// skipped, so the task only does work proportional to actual traffic.
+    /// This is intentional: if a key is evicted from L1 between refresh
+    /// cycles and is not accessed again, it will not be refreshed. Only
+    /// keys that callers actively request are tracked and kept warm.
     ///
     /// The background task stops when [`shutdown`](Self::shutdown) is called
     /// or when the `SigningKeyCache` is dropped (via `CancellationToken`).
@@ -711,6 +760,17 @@ impl SigningKeyCache {
     #[must_use = "returns a latency measurement without side effects"]
     pub fn refresh_latency_us(&self) -> u64 {
         self.refresh_latency_us.load(Ordering::Relaxed)
+    }
+
+    /// Returns a snapshot of the cache hit/miss/fetch/fallback counters.
+    #[must_use = "returns a metrics snapshot without side effects"]
+    pub fn cache_metrics(&self) -> CacheMetricsSnapshot {
+        CacheMetricsSnapshot {
+            l1_hits: self.l1_hits.load(Ordering::Relaxed),
+            l1_misses: self.l1_misses.load(Ordering::Relaxed),
+            l2_fetches: self.l2_fetches.load(Ordering::Relaxed),
+            l3_fallbacks: self.l3_fallbacks.load(Ordering::Relaxed),
+        }
     }
 
     /// Checks L3 fallback cache fill against thresholds and emits alerts.
@@ -2784,5 +2844,99 @@ mod tests {
         // Duplicate access should not increase count (HashSet).
         cache.get_decoding_key(OrganizationSlug::from(1), "track-a").await.expect("get");
         assert_eq!(cache.active_key_count(), 2);
+    }
+
+    // ── Cache Metrics Tests ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_cache_metrics_l1_hit_increments() {
+        let store = Arc::new(MemorySigningKeyStore::new());
+        let key = create_valid_test_key("metrics-hit");
+        store.create_key(OrganizationSlug::from(1), &key).await.expect("create_key");
+
+        let cache = SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        );
+
+        // First call is a miss + L2 fetch.
+        cache.get_decoding_key(OrganizationSlug::from(1), "metrics-hit").await.expect("get");
+        let m = cache.cache_metrics();
+        assert_eq!(m.l1_hits, 0);
+        assert_eq!(m.l1_misses, 1);
+        assert_eq!(m.l2_fetches, 1);
+
+        // Second call should be an L1 hit.
+        cache.get_decoding_key(OrganizationSlug::from(1), "metrics-hit").await.expect("get");
+        let m = cache.cache_metrics();
+        assert_eq!(m.l1_hits, 1);
+        assert_eq!(m.l1_misses, 1);
+        assert_eq!(m.l2_fetches, 1);
+
+        // Third call — another L1 hit.
+        cache.get_decoding_key(OrganizationSlug::from(1), "metrics-hit").await.expect("get");
+        let m = cache.cache_metrics();
+        assert_eq!(m.l1_hits, 2);
+    }
+
+    #[tokio::test]
+    async fn test_cache_metrics_l1_miss_increments() {
+        let store = Arc::new(MemorySigningKeyStore::new());
+        let key_a = create_valid_test_key("miss-a");
+        let key_b = create_valid_test_key("miss-b");
+        store.create_key(OrganizationSlug::from(1), &key_a).await.expect("create_key");
+        store.create_key(OrganizationSlug::from(1), &key_b).await.expect("create_key");
+
+        let cache = SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        );
+
+        // Two cold misses.
+        cache.get_decoding_key(OrganizationSlug::from(1), "miss-a").await.expect("get");
+        cache.get_decoding_key(OrganizationSlug::from(1), "miss-b").await.expect("get");
+
+        let m = cache.cache_metrics();
+        assert_eq!(m.l1_misses, 2);
+        assert_eq!(m.l2_fetches, 2);
+        assert_eq!(m.l1_hits, 0);
+    }
+
+    #[tokio::test]
+    async fn test_cache_metrics_l3_fallback_increments() {
+        let store = Arc::new(FailingStore::new());
+        let key = create_valid_test_key("metrics-fallback");
+        store.inner.create_key(OrganizationSlug::from(1), &key).await.expect("create_key");
+
+        let cache = SigningKeyCache::new(
+            Arc::clone(&store) as Arc<dyn PublicSigningKeyStore>,
+            Duration::from_secs(60),
+        );
+
+        // Populate L1 + L3.
+        cache.get_decoding_key(OrganizationSlug::from(1), "metrics-fallback").await.expect("get");
+        let m = cache.cache_metrics();
+        assert_eq!(m.l3_fallbacks, 0);
+
+        // Simulate transient failure and clear L1.
+        store.set_failure(Some(StorageError::connection("outage")));
+        cache.clear_l1().await;
+        cache.sync().await;
+
+        // This should trigger L3 fallback.
+        cache
+            .get_decoding_key(OrganizationSlug::from(1), "metrics-fallback")
+            .await
+            .expect("fallback");
+        let m = cache.cache_metrics();
+        assert_eq!(m.l3_fallbacks, 1);
+
+        // Another fallback access.
+        cache
+            .get_decoding_key(OrganizationSlug::from(1), "metrics-fallback")
+            .await
+            .expect("fallback");
+        let m = cache.cache_metrics();
+        assert_eq!(m.l3_fallbacks, 2);
     }
 }
